@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>O conector da Mente</title>
+<!--
+  O PAINEL DO CONECTOR — servido pelo próprio conector, não pela tela do jogo.
+
+  De propósito, NÃO herda o HUD do jogo. Aquilo é a cena; isto é a bancada. Um
+  painel de configuração vestido de jogo confunde as duas coisas, e o jogador
+  precisa saber, sem pensar, quando está mexendo na máquina e quando está jogando.
+
+  Sem dependências, como o resto do conector: é auditável numa sentada.
+-->
+<style>
+  :root {
+    --fundo: #14161a; --caixa: #1b1e24; --caixa2: #23272f;
+    --linha: #2e333d; --texto: #d8dce3; --fraco: #8b93a1;
+    --acento: #6fb2c9; --ok: #6fc98d; --ruim: #c96f6f; --aviso: #c9a76f;
+  }
+  * { box-sizing: border-box; }
+  /* `hidden` TEM de vencer o display do bloco. Os três grupos de campo do modelo
+     são `.linha { display: flex }`, e regra de autor bate o `[hidden]` do
+     navegador — então marcar `hidden` no JS não escondia nada, e os campos das
+     três opções apareciam todos ao mesmo tempo. Vale para qualquer bloco que
+     venha depois, não só para estes. */
+  [hidden] { display: none !important; }
+  body {
+    margin: 0; background: var(--fundo); color: var(--texto);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 820px; margin: 0 auto; padding: 28px 20px 80px; }
+  h1 { font-size: 20px; margin: 0 0 4px; font-weight: 600; }
+  h1 + p { margin: 0 0 26px; color: var(--fraco); font-size: 14px; }
+  section {
+    background: var(--caixa); border: 1px solid var(--linha);
+    border-radius: 8px; padding: 18px 20px; margin-bottom: 16px;
+  }
+  h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--acento); margin: 0 0 14px; font-weight: 600;
+  }
+  label { display: block; margin-bottom: 12px; font-size: 13px; color: var(--fraco); }
+  input[type=text], input[type=password], input[type=number], select, textarea {
+    display: block; width: 100%; margin-top: 5px; padding: 8px 10px;
+    background: var(--caixa2); color: var(--texto);
+    border: 1px solid var(--linha); border-radius: 5px;
+    font: inherit; font-size: 14px;
+  }
+  textarea { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px;
+             line-height: 1.5; min-height: 130px; resize: vertical; }
+  input:focus, select:focus, textarea:focus {
+    outline: none; border-color: var(--acento);
+  }
+  .linha { display: flex; gap: 14px; flex-wrap: wrap; }
+  .linha > label { flex: 1 1 220px; }
+  .chaveia { display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
+             color: var(--texto); font-size: 14px; }
+  .chaveia input { width: auto; margin: 0; }
+  button {
+    background: var(--acento); color: #10151a; border: 0; border-radius: 5px;
+    padding: 8px 16px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button.fraco { background: transparent; color: var(--fraco);
+                 border: 1px solid var(--linha); font-weight: 400; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .nota { color: var(--fraco); font-size: 12.5px; margin: 8px 0 0; }
+  .pilula { display: inline-block; padding: 2px 9px; border-radius: 99px;
+            font-size: 12px; border: 1px solid var(--linha); color: var(--fraco); }
+  .pilula.ok { color: var(--ok); border-color: #2f5a41; }
+  .pilula.ruim { color: var(--ruim); border-color: #5a2f2f; }
+  .estado { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .rotina { border-top: 1px solid var(--linha); padding-top: 14px; margin-top: 14px; }
+  .rotina:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+  .rotina h3 { font-size: 14px; margin: 0 0 2px; font-weight: 600; }
+  .cabeca { display: flex; align-items: flex-start; justify-content: space-between;
+            gap: 12px; }
+  button.mini { background: transparent; color: var(--fraco);
+                border: 1px solid var(--linha); border-radius: 4px;
+                padding: 4px 10px; font-size: 12px; font-weight: 400;
+                white-space: nowrap; flex: none; }
+  button.mini:hover:not(:disabled) { color: var(--texto); border-color: var(--acento); }
+  .rotina .quando { color: var(--fraco); font-size: 12.5px; margin: 0 0 8px; }
+  .barra { position: sticky; bottom: 0; background: var(--fundo);
+           border-top: 1px solid var(--linha); padding: 14px 0; margin-top: 6px;
+           display: flex; gap: 12px; align-items: center; }
+  .aviso { background: #2a2318; border: 1px solid #5a4a2f; color: var(--aviso);
+           padding: 12px 14px; border-radius: 6px; margin-bottom: 16px;
+           font-size: 13.5px; }
+  ul.seco { list-style: none; padding: 0; margin: 0; }
+  ul.seco li { padding: 7px 0; border-top: 1px solid var(--linha); font-size: 13.5px; }
+  ul.seco li:first-child { border-top: 0; }
+  code { background: var(--caixa2); padding: 1px 5px; border-radius: 3px;
+         font-size: 12.5px; }
+  .relogio { display: flex; align-items: center; gap: 12px; margin: 4px 0 10px; }
+  .trilho { flex: 1; height: 6px; background: var(--caixa2);
+            border: 1px solid var(--linha); border-radius: 4px; overflow: hidden; }
+  .preenche { height: 100%; width: 0; background: var(--acento);
+              transition: width .45s linear; }
+  .relogio.parado .preenche { background: var(--linha); transition: none; }
+  .relogio.travado .preenche { opacity: .45; transition: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>O conector da Mente</h1>
+  <p>A inteligência do seu personagem roda aqui, na sua máquina. Esta página é
+     servida por ele — não pelo site do jogo.</p>
+
+  <div id="aviso-remoto" class="aviso" hidden>
+    Você está vendo isto de <strong>outro aparelho</strong>. Dá para conferir tudo,
+    mas <strong>não dá para alterar</strong>: configurar a Mente inclui trocar de
+    modelo e gravar prompts, e isso só da máquina onde o conector roda.
+  </div>
+
+  <section>
+    <h2>Agora</h2>
+    <div class="estado" id="estado">carregando…</div>
+  </section>
+
+  <section>
+    <h2>Mundo e personagem</h2>
+    <label>Endereço do mundo
+      <input id="mundo" type="text" placeholder="http://localhost:8777">
+    </label>
+    <label>Quem esta Mente joga
+      <select id="personagem"></select>
+    </label>
+    <p class="nota">Um conector joga <strong>um</strong> personagem por vez. Trocar
+       aqui vale na hora — não precisa reiniciar nada.</p>
+  </section>
+
+  <section>
+    <h2>O modelo</h2>
+    <div class="chaveia">
+      <label class="chaveia"><input type="radio" name="rt" value="local"> Ollama local</label>
+      <label class="chaveia"><input type="radio" name="rt" value="remote"> Claude</label>
+      <label class="chaveia"><input type="radio" name="rt" value="openrouter"> OpenRouter</label>
+    </div>
+    <div id="bloco-local" class="linha">
+      <label>Endereço do Ollama <input id="endpoint" type="text" placeholder="http://localhost:11434"></label>
+      <label>Modelo <input id="model" type="text" placeholder="llama3.1:8b"></label>
+    </div>
+    <div id="bloco-remote" class="linha" hidden>
+      <label>Modelo Claude <input id="remoteModel" type="text"></label>
+      <label>Chave da Anthropic <input id="apiKey" type="password" placeholder="deixe vazio para manter" autocomplete="off"></label>
+    </div>
+    <div id="bloco-or" class="linha" hidden>
+      <label>Endpoint <input id="openrouterEndpoint" type="text"></label>
+      <label>Modelo <input id="openrouterModel" type="text"></label>
+      <label>Chave <input id="openrouterKey" type="password" placeholder="deixe vazio para manter" autocomplete="off"></label>
+    </div>
+    <p class="nota">A chave fica em <code id="arquivo"></code>, só nesta máquina, e
+       <strong>nunca é devolvida por esta página</strong> — nem para preencher o
+       campo. Deixe vazio para manter a que já está gravada.</p>
+  </section>
+
+  <section>
+    <h2>A Mente joga sozinha</h2>
+    <label class="chaveia">
+      <input id="autonomia" type="checkbox">
+      Deixar em laço: o personagem toma iniciativa a cada ~45s, sem sussurro seu
+    </label>
+
+    <!-- O RELÓGIO MORA AQUI, e agora aparece aqui. A tela do jogo tinha uma barra
+         mostrando esta contagem, o que era um mostrador de relógio alheio: parecia
+         controle e não era. Saiu de lá; está no lugar onde o botão de fato age. -->
+    <div class="relogio">
+      <div class="trilho"><div id="preenche" class="preenche"></div></div>
+      <span id="conta" class="nota" style="margin:0; min-width:9ch">—</span>
+    </div>
+    <p class="nota">O relógio é <strong>daqui</strong>, não da aba do navegador — ele
+       age mesmo com a tela fechada. Cada volta custa uma chamada ao seu modelo.
+       Enquanto um turno corre, a contagem <strong>congela</strong>: travado é tempo
+       que não conta, nunca tempo perdido.</p>
+  </section>
+
+  <section>
+    <h2>Reiniciar o conector</h2>
+
+    <!-- O AVISO DE TURNO PENDURADO. Só aparece quando há motivo: um turno correndo
+         há mais tempo do que qualquer turno honesto leva. Ficar sempre visível
+         ensinaria a ignorá-lo. -->
+    <div id="aviso-travado" class="aviso" hidden></div>
+
+    <button id="reiniciar" class="fraco">Reiniciar o conector</button>
+    <p class="nota"><strong>O que isto faz:</strong> derruba e sobe de novo <em>este
+       processo</em> — o que serve esta página e joga com o seu personagem. Sobe com
+       as mesmas opções de linha de comando, e <strong>lendo a configuração do
+       disco</strong>: é por isso que reiniciar faz valer uma configuração que ficou
+       esperando o turno acabar.</p>
+    <p class="nota"><strong>O que isto NÃO faz:</strong> não toca no mundo, não apaga
+       memória, não desfaz nada que o seu personagem já fez — o mundo é do servidor,
+       e ele não é reiniciado aqui. Nem apaga prompts ou chave: estão no disco. O
+       único custo é o turno em andamento, que é abandonado no meio.</p>
+    <p class="nota">Depois de reiniciar, esta página <strong>reconecta sozinha</strong>
+       em alguns segundos.</p>
+  </section>
+
+  <section>
+    <h2>O que fica registrado</h2>
+    <p class="nota" style="margin:0 0 12px">Cada turno escreve uma linha no registro
+       do mundo. <strong>Isto não é uma opção</strong> — é a regra da casa deste
+       mundo, e está aqui para você saber exatamente o que fica gravado.</p>
+
+    <ul class="seco">
+      <li><strong>Quem, quando, qual turno</strong> — e qual personagem.</li>
+      <li><strong>Qual modelo e qual versão de prompt</strong> você estava rodando,
+          mais o custo em tokens e a duração.</li>
+      <li><strong>O sussurro</strong> que você digitou, ou o que a Mente decidiu
+          sozinha.</li>
+      <li><strong>O raciocínio dela</strong>, com as palavras do próprio modelo.</li>
+      <li><strong>Cada capacidade escolhida</strong>, com o alvo e a prosa da
+          tentativa — e as recusas do mundo, com o motivo.</li>
+      <li><strong>A narração</strong> entregue no fim.</li>
+    </ul>
+
+    <p class="nota"><strong>O que NUNCA sobe:</strong> a sua credencial de modelo.
+       Ela fica no arquivo desta máquina e não sai daqui — nem para esta página,
+       que só sabe dizer se existe uma chave gravada.</p>
+
+    <p class="nota"><strong>Não muda o jogo.</strong> O registro é só de escrita
+       para o jogo: nenhum caminho de arbitragem o lê, e há teste que garante. Ele
+       existe para quem hospeda o mundo entender como as Mentes jogam e melhorar os
+       prompts — não para julgar ninguém.</p>
+  </section>
+
+  <section>
+    <h2>Os prompts</h2>
+    <p class="nota" style="margin:0 0 14px">Vazio = usa o padrão, e o texto cinza do
+       campo é exatamente o padrão que está valendo. O que você escrever vira um
+       arquivo de <strong>texto</strong> em <code>extensoes/prompts/</code> — nunca
+       código executável. <strong>Voltar ao padrão</strong> apaga o seu arquivo na
+       hora, sem esperar o Salvar.</p>
+    <div id="rotinas"></div>
+  </section>
+
+  <section>
+    <h2>Extensões instaladas</h2>
+    <div id="extensoes"></div>
+  </section>
+
+  <div class="barra">
+    <button id="salvar">Salvar</button>
+    <button id="recarregar" class="fraco">Descartar e reler</button>
+    <span id="recado" class="nota" style="margin:0"></span>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let dados = null;
+
+async function ler() {
+  dados = await (await fetch("/api/config")).json();
+  pintar();
+}
+
+function pintar() {
+  const c = dados.config;
+  $("aviso-remoto").hidden = !!dados.podeEscrever;
+  $("salvar").disabled = !dados.podeEscrever;
+
+  const m = dados.modelo || {};
+  $("estado").innerHTML =
+    `<span class="pilula ${m.ok ? "ok" : "ruim"}">${m.reason || "modelo"}</span>` +
+    `<span class="pilula">joga ${c.personagem || "—"}</span>` +
+    `<span class="pilula">${dados.turnos} turnos</span>` +
+    `<span class="pilula">${dados.extensoes.versaoPrompt}</span>` +
+    (dados.ocupado ? `<span class="pilula">turno em andamento</span>` : "") +
+    ((dados.pendente || []).length
+      ? `<span class="pilula" style="color:var(--aviso);border-color:#5a4a2f">` +
+        `${dados.pendente.length} ajuste(s) esperando o turno acabar</span>` : "");
+
+  $("mundo").value = c.mundo || "";
+  $("arquivo").textContent = c.arquivo || "";
+  const sel = $("personagem");
+  sel.innerHTML = "";
+  for (const p of dados.personagens || []) {
+    const o = document.createElement("option");
+    o.value = p.id || p;
+    o.textContent = (p.name || p.id || p) + (p.location ? ` — ${p.location}` : "");
+    sel.appendChild(o);
+  }
+  sel.value = c.personagem || "";
+
+  for (const r of document.querySelectorAll('input[name=rt]')) {
+    r.checked = r.value === c.runtime;
+    r.onchange = blocos;
+  }
+  $("endpoint").value = c.endpoint || "";
+  $("model").value = c.model || "";
+  $("remoteModel").value = c.remoteModel || "";
+  $("openrouterEndpoint").value = c.openrouterEndpoint || "";
+  $("openrouterModel").value = c.openrouterModel || "";
+  $("apiKey").placeholder = c.temChaveAnthropic
+    ? "há uma chave gravada — deixe vazio para mantê-la" : "sk-ant-…";
+  $("openrouterKey").placeholder = c.temChaveOpenrouter
+    ? "há uma chave gravada — deixe vazio para mantê-la" : "sk-or-…";
+  blocos();
+
+  $("autonomia").checked = dados.autonomia.ligada && !dados.autonomia.pausado;
+  avisoDeTravado(dados);
+
+  // --- prompts, um por rotina ---
+  const emUso = Object.fromEntries(
+    (dados.extensoes.prompts || []).map((p) => [p.nome, p.texto]));
+  $("rotinas").innerHTML = "";
+  for (const rot of dados.rotinas) {
+    const div = document.createElement("div");
+    div.className = "rotina";
+    const tem = emUso[rot.nome] !== undefined;
+    div.innerHTML =
+      `<div class="cabeca">
+         <div>
+           <h3>${rot.titulo} <span class="pilula ${tem ? "ok" : ""}" data-pilula>${
+             tem ? "seu" : "padrão"}</span></h3>
+           <p class="quando">${rot.quando}</p>
+         </div>
+         <button type="button" class="mini" data-reset>Voltar ao padrão</button>
+       </div>`;
+    const ta = document.createElement("textarea");
+    ta.value = tem ? emUso[rot.nome] : "";
+    ta.placeholder = dados.padroes[rot.nome] || "";
+    ta.dataset.rotina = rot.nome;
+    ta.disabled = !dados.podeEscrever;
+    div.appendChild(ta);
+
+    // VOLTAR AO PADRÃO age NA HORA, sem esperar o Salvar — "reset" que só vale
+    // depois de outro clique não é reset, é rascunho. E toca SÓ esta rotina:
+    // recarregar a página inteira levaria embora o que estivesse sendo escrito
+    // nas outras.
+    const botao = div.querySelector("[data-reset]");
+    const pilula = div.querySelector("[data-pilula]");
+    botao.disabled = !dados.podeEscrever || (!ta.value.trim() && !tem);
+    botao.onclick = async () => {
+      botao.disabled = true;
+      try {
+        const r = await fetch("/api/prompt", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nome: rot.nome, texto: "" }),
+        });
+        const saida = await r.json();
+        if (saida.erro) throw new Error(saida.erro);
+        ta.value = "";
+        pilula.textContent = "padrão";
+        pilula.classList.remove("ok");
+        // o identificador do conjunto muda quando um prompt some — e é ele que
+        // separa uma corrida de tunagem da outra no registro
+        const pv = document.querySelector("#estado .pilula:last-child");
+        if (saida.versaoPrompt && pv) pv.textContent = saida.versaoPrompt;
+        recado(`"${rot.titulo}" voltou ao padrão do código`, "var(--ok)");
+      } catch (e) {
+        recado(e.message, "var(--ruim)");
+        botao.disabled = false;
+      }
+    };
+    ta.addEventListener("input", () => {
+      if (dados.podeEscrever) botao.disabled = false;
+    });
+
+    $("rotinas").appendChild(div);
+  }
+
+  // --- extensões instaladas ---
+  const e = dados.extensoes;
+  const li = (t) => `<li>${t}</li>`;
+  $("extensoes").innerHTML =
+    `<p class="nota" style="margin:0 0 10px">Pasta: <code>${e.pasta}</code></p>` +
+    `<ul class="seco">` +
+    (e.tools.length
+      ? e.tools.map((t) => li(`<strong>${t.nome}</strong> — ${t.descricao || "sem descrição"}`)).join("")
+      : li("<em>nenhuma ferramenta local instalada</em>")) +
+    e.hooks.filter((h) => h.quantos)
+           .map((h) => li(`hook <code>${h.ponto}</code> — ${h.quantos}`)).join("") +
+    (e.falhas.length
+      ? e.falhas.map((f) => li(`<span style="color:var(--ruim)">falhou: ${f.onde} — ${f.erro}</span>`)).join("")
+      : "") +
+    `</ul>` +
+    `<p class="nota">Ferramentas e hooks são código, então continuam sendo arquivos
+      que você coloca na pasta — esta página lista, mas não escreve código.</p>`;
+}
+
+function blocos() {
+  const rt = document.querySelector('input[name=rt]:checked');
+  const v = rt ? rt.value : "local";
+  $("bloco-local").hidden = v !== "local";
+  $("bloco-remote").hidden = v !== "remote";
+  $("bloco-or").hidden = v !== "openrouter";
+}
+
+function recado(txt, cor) {
+  $("recado").textContent = txt;
+  $("recado").style.color = cor || "var(--fraco)";
+}
+
+// --- O AVISO DE TURNO PENDURADO --------------------------------------------- //
+// Um turno que não volta trava o conector inteiro EM SILÊNCIO: `ocupado` nunca
+// volta a false, a autonomia para de tickar, e a configuração adiada (a troca de
+// personagem, inclusive) fica presa no disco sem entrar em vigor. Aconteceu de
+// verdade — a troca ficou 22 minutos esperando um turno que nunca fechou, e nada
+// na tela dizia isso: a página mostrava a configuração salva, e ela estava salva
+// mesmo, só não valendo.
+//
+// O aviso é DERIVADO do estado, nunca de um palpite: `ocupadoSegundos` vem do
+// laço, que sabe quando o turno começou. Só aparece quando passa do que qualquer
+// turno honesto leva — sempre visível ensinaria a ignorar.
+const TURNO_SUSPEITO_S = 180;
+
+function avisoDeTravado(dados) {
+  const el = $("aviso-travado");
+  if (!el) return;
+  const s = Number(dados.ocupadoSegundos) || 0;
+  const presos = (dados.pendente || []).length;
+  if (!dados.ocupado || s < TURNO_SUSPEITO_S) {
+    el.hidden = true;
+    return;
+  }
+  const min = Math.floor(s / 60);
+  el.hidden = false;
+  el.innerHTML =
+    `<strong>Este turno já dura ${min} min.</strong> Um turno leva segundos, então
+     provavelmente ele <strong>travou</strong> — em geral o modelo parou de responder.
+     Enquanto ele não fecha, o personagem não age sozinho` +
+    (presos
+      ? ` e <strong>a configuração que você salvou não entra em vigor</strong>
+         (esperando: ${(dados.pendente || []).join(", ")})`
+      : "") +
+    `. Reiniciar o conector, abaixo, é a saída — e faz valer o que está no disco.`;
+}
+
+$("salvar").onclick = async () => {
+  $("salvar").disabled = true;
+  recado("salvando…");
+  try {
+    for (const ta of document.querySelectorAll("textarea[data-rotina]")) {
+      const r = await fetch("/api/prompt", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nome: ta.dataset.rotina, texto: ta.value }),
+      });
+      if (!r.ok) throw new Error((await r.json()).erro || "prompt recusado");
+    }
+    const rt = document.querySelector('input[name=rt]:checked');
+    const corpo = {
+      mundo: $("mundo").value, personagem: $("personagem").value,
+      runtime: rt ? rt.value : "local",
+      endpoint: $("endpoint").value, model: $("model").value,
+      remoteModel: $("remoteModel").value,
+      openrouterEndpoint: $("openrouterEndpoint").value,
+      openrouterModel: $("openrouterModel").value,
+      autonomia: $("autonomia").checked,
+    };
+    if ($("apiKey").value.trim()) corpo.apiKey = $("apiKey").value.trim();
+    if ($("openrouterKey").value.trim()) corpo.openrouterKey = $("openrouterKey").value.trim();
+
+    const r = await fetch("/api/config", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(corpo),
+    });
+    const saida = await r.json();
+    if (saida.erro) throw new Error(saida.erro);
+    $("apiKey").value = ""; $("openrouterKey").value = "";
+    if (saida.adiado) {
+      // NÃO repinta: com um turno correndo, a configuração VIVA ainda é a
+      // antiga, e repintar com ela jogaria fora o que a pessoa acabou de
+      // escrever — depois de dizer que salvou.
+      dados.podeEscrever = saida.podeEscrever;
+      recado("salvo no disco — entra em vigor quando este turno terminar",
+             "var(--aviso)");
+    } else {
+      dados = saida;
+      pintar();
+      recado("salvo — vale a partir do próximo turno", "var(--ok)");
+    }
+  } catch (e) {
+    recado(e.message, "var(--ruim)");
+  } finally {
+    $("salvar").disabled = !dados.podeEscrever;
+  }
+};
+
+$("recarregar").onclick = () => { recado(""); ler(); };
+
+// O RELÓGIO AO VIVO, pelo mesmo canal que a tela do jogo usa. É o conector
+// contando — esta página só mostra, mas mostra o relógio DELE, não um paralelo.
+try {
+  const fonte = new EventSource("/eventos");
+  fonte.addEventListener("autonomia", (ev) => {
+    let d = {}; try { d = JSON.parse(ev.data); } catch (_) { return; }
+    const rel = document.querySelector(".relogio");
+    const frac = Math.max(0, Math.min(1, (d.restante || 0) / (d.total || 1)));
+    rel.classList.toggle("parado", !!d.pausado);
+    $("preenche").style.width = (d.pausado ? 1 : frac) * 100 + "%";
+    $("conta").textContent = d.pausado
+      ? "em pausa"
+      : `${Math.ceil((d.restante || 0) / 1000)}s`;
+  });
+  fonte.addEventListener("estado", (ev) => {
+    let d = {}; try { d = JSON.parse(ev.data); } catch (_) { return; }
+    document.querySelector(".relogio").classList.toggle("travado", !!d.ocupado);
+    if (d.ocupado) $("conta").textContent = "turno correndo";
+    // o aviso de travado tem de nascer SEM recarregar a página: quem está olhando a
+    // tela quando o turno pendura é justamente quem precisa dele.
+    if (dados) {
+      dados.ocupado = !!d.ocupado;
+      dados.ocupadoDesde = d.ocupadoDesde || null;
+      dados.ocupadoSegundos = d.ocupadoDesde
+        ? Math.round((Date.now() - d.ocupadoDesde) / 1000) : 0;
+      avisoDeTravado(dados);
+    }
+  });
+} catch (_) { /* sem canal: a página segue servindo para configurar */ }
+
+// O aviso precisa APARECER com o tempo passando, não só quando um evento chega —
+// um turno pendurado não emite nada, e é exatamente o silêncio que se quer avisar.
+setInterval(() => {
+  if (!dados || !dados.ocupado || !dados.ocupadoDesde) return;
+  dados.ocupadoSegundos = Math.round((Date.now() - dados.ocupadoDesde) / 1000);
+  avisoDeTravado(dados);
+}, 15000);
+
+$("reiniciar").onclick = async () => {
+  $("reiniciar").disabled = true;
+  recado("reiniciando o conector…");
+  try {
+    const r = await fetch("/api/reiniciar", { method: "POST" });
+    const saida = await r.json();
+    if (!r.ok || saida.erro) throw new Error(saida.erro || "HTTP " + r.status);
+  } catch (e) {
+    // a conexão CAIR aqui é o caso normal: o processo fecha a porta para o novo
+    // poder escutar. Só é falha de verdade se o servidor respondeu recusando.
+    recado("reiniciando…", "var(--fraco)");
+  }
+  // espera a porta voltar e recarrega — sem chute de tempo fixo: pergunta até
+  // responder, e diz o que está fazendo enquanto isso.
+  let tentativas = 0;
+  const volta = setInterval(async () => {
+    tentativas++;
+    try {
+      const r = await fetch("/api/config", { cache: "no-store" });
+      if (r.ok) { clearInterval(volta); location.reload(); return; }
+    } catch (_) { /* ainda subindo */ }
+    recado(`reiniciando… (${tentativas})`, "var(--fraco)");
+    if (tentativas > 40) {
+      clearInterval(volta);
+      recado("o conector não voltou — veja o terminal onde ele roda.", "var(--ruim)");
+      $("reiniciar").disabled = false;
+    }
+  }, 1000);
+};
+
+ler();
+</script>
+</body>
+</html>

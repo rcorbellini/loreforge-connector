@@ -1,0 +1,7 @@
+{
+  "main": "bin/conector.js",
+  "output": "conector.blob",
+  "disableExperimentalSEAWarning": true,
+  "useSnapshot": false,
+  "useCodeCache": true
+}
