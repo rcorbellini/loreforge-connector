@@ -1,0 +1,11 @@
+# A configuracao do jogador NUNCA entra no repositorio: ela guarda a credencial.
+conector.config.json
+*.blob
+loreforge-bin
+
+node_modules/
+dist/
+build/
+*.log
+.env*
+.DS_Store

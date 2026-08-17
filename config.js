@@ -26,7 +26,7 @@ const DEFAULTS = {
   openrouterModel: "poolside/laguna-m.1:free",
   openrouterEndpoint: "https://openrouter.ai/api/v1",
   // o conector, nao mais o navegador
-  mundo: "http://localhost:8777",
+  mundo: "http://0.0.0.0:8777",
   personagem: "",
   canal: 8899,
   log: true,

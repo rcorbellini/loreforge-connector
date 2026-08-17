@@ -580,7 +580,7 @@ RESTRIÇÕES SEVERAS:
     };
   }
 
-  async function _contextoPayload(context) {
+  async function _contextoPayload(context, { comCapacidades = true } = {}) {
     return {
       personalidade: context.self && context.self.body,
       // O QUE ELE SENTE (item 51, fatia 1). Vem em RÓTULO do mundo — nunca número,
@@ -604,10 +604,22 @@ RESTRIÇÕES SEVERAS:
       // Aplica a blindagem aqui:
       memorias: _limparMemorias(context.memories),
       rotas_disponiveis: (context.routes || []).map((r) => ({ id: r.id, nome: r.name, para: r.destination_name })),
-      // O QUE ELE PODE TENTAR AQUI — a lista vem do mundo, já filtrada pela cena.
-      // Sem `descricao` inteira: o nome e os alvos é que a Mente precisa para
-      // escolher; a prosa longa infla o prompt de toda cena (a provocação do custo).
-      capacidades: (context.capacidades || []).map((c) => ({
+      // `comCapacidades` é FALSE só na chamada de `interpret` que já manda `tools`
+      // nativas (spec 043) — lá, repetir a mesma informação em prosa é DUPLICAÇÃO,
+      // não reforço. Medido ao vivo em 2026-08-17 (18 chamadas reais ao llama3.1:8b,
+      // 3 casos × com/sem o bloco × 3 repetições): com o bloco duplicado, 4 de 9
+      // chamadas saíam SEM tool_call nenhuma — o modelo "pensava em voz alta" sobre
+      // qual tool usar em vez de chamar uma (o padrão que o devlog marca como "SEM
+      // TOOL CALLS — caindo no caminho de prosa" / "TOOLS DESCRITAS EM PROSA"). Sem
+      // o bloco: 9 de 9 saíram certas, com 35-65% menos tokens de prompt e 2-10x
+      // mais rápido; quando a chamada saía nas duas variantes, o id vinha certo nas
+      // duas — o enum de `tools` já basta. Se cogitar tirar o bloco de outro lugar
+      // (o fallback de prosa em `INTERPRET_SYSTEM`, ou `deriveWhisper`/
+      // `AUTONOMY_SYSTEM`), NÃO copie esta conclusão sem novo teste: os dois não têm
+      // `tools` nativas — lá o `capacidades` em prosa é a ÚNICA fonte do que existe,
+      // não uma duplicata. Script do teste, pra rodar de novo antes de mexer aqui:
+      // `specs/043-tools-exposed-to-mind/testar_duplicacao_capacidades.py`.
+      ...(comCapacidades ? { capacidades: (context.capacidades || []).map((c) => ({
         nome: c.nome,
         o_que_faz: c.descricao,
         // `alvos_possiveis` (LISTA de opções) tem nome DIFERENTE do `alvos` que a
@@ -621,7 +633,7 @@ RESTRIÇÕES SEVERAS:
         // `content`, `promise` sem `expectativa`. Medido: era a recusa mais comum
         // depois que os nomes de capacidade passaram a sair certos.
         exige: c.exige,
-      })),
+      })) } : {}),
     };
   }
 
@@ -694,8 +706,11 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
                    .map((t) => t.name));
           const ehConsulta = (nome) => nomesDeConsulta.has(nome);
 
+          // `comCapacidades: false` — `tools` (abaixo) já manda a mesma informação
+          // estruturada; ver o comentário em `_contextoPayload` sobre por que
+          // repeti-la aqui é o que estava atrapalhando.
           const base = "O que ele faz?\n\nINSTRUÇÃO: " + instruction + "\n\n"
-                     + JSON.stringify(await _contextoPayload(context), null, 2);
+                     + JSON.stringify(await _contextoPayload(context, { comCapacidades: false }), null, 2);
 
           // O RACIOCÍNIO É UMA CONVERSA, e não uma sequência de perguntas amnésicas.
           //
