@@ -124,11 +124,18 @@ class Laco {
 
     // A SESSÃO, não uma lista: o `interpret` devolve as propostas E o fio da
     // conversa (`continuar`), para o desfecho de cada uma voltar a ela sem
-    // remontagem. Sem `propostas`, é o caminho de prosa de sempre.
+    // remontagem.
     const propostas = Array.isArray(intent && intent.propostas)
       ? intent.propostas : null;
     if (propostas) return this._porPropostas(intent, cena.contexto, t);
-    return this._porProsa(intent, cena.contexto, origem, t);
+    // SEM PROPOSTAS (spec 045): antes, isto caía no caminho de prosa legado —
+    // um SEGUNDO motor de decisão, medido menos confiável que este. A Mente já
+    // teve `MAX_RODADAS` chances (mente.js) nesta mesma sessão; se ainda assim
+    // não decidiu nada, o turno termina no recado honesto — nunca troca de
+    // motor no meio do caminho. `desfechos` vazio é exatamente o sinal que
+    // `_fecharTurno` já sabe ler como "nada aconteceu", com a explicação certa
+    // pra cena estreita (dormindo, caído) ou larga.
+    return this._fecharTurno([], cena.contexto, [], t);
   }
 
   // O CAMINHO NOVO (spec 043): uma chamada por capacidade proposta, na ordem.
@@ -406,57 +413,6 @@ class Laco {
     return inventadas.length
       ? "A Mente hesitou: nada do que ela pensou em fazer cabia nesta cena."
       : "Nada em que ele pudesse agir agora.";
-  }
-
-  // O CAMINHO DE PROSA (`/api/act`). Não é resto morto: é o que segura o jogo
-  // quando o modelo devolve prosa solta em vez de capacidade nomeada, e é o que
-  // permite trocar de modelo sem quebrar nada (FR-026 da 043).
-  async _porProsa(intent, contexto, origem, t) {
-    sanitizeMovement(intent, contexto.routes || []);
-    const vistos = new Set();
-    const aoVivo = (ev) => {
-      for (const frase of ev.inworld || []) {
-        if (vistos.has(frase)) continue;
-        vistos.add(frase);
-        this._emite("beat", { texto: frase });
-      }
-    };
-
-    const { outcome, rejeitado, viuFim } =
-      await this.mundo.agir(intent, aoVivo, origem, null);
-
-    if (rejeitado) {
-      this._emite("sistema",
-        { texto: "Uma ação já está em andamento para este personagem — aguarde." });
-      return;
-    }
-    if (!viuFim) {
-      // a conexão caiu antes do fim: RE-SYNC do mundo (fonte única em arquivo),
-      // sem retomar nem reenviar. O que se aplicou já está nos `.md`.
-      this._emite("sistema",
-        { texto: "A conexão vacilou no meio da ação — reencontrando o fio da cena…" });
-      return;
-    }
-    const r = outcome || {};
-    if (r.error) throw new Error(r.error);
-    if (t) t.propos("(prosa)", null, intent, { narrativa: r, recusado: false });
-
-    let depois = contexto;
-    try {
-      depois = await this.mundo.contexto();
-    } catch (_) { /* segue sem diff */ }
-
-    await this._narrar({
-      hint: r.narrative_hint,
-      contexto,
-      falhas: r.failed_effects || [],
-      viradas: r.viradas || [],
-      aconteceu: r.aconteceu || [],
-      informes: r.informes || [],
-      reconhecimentos: r.reconhecimentos || [],
-      material: { lido: r.lido || [], wares: r.wares || [], falas: r.falas || [] },
-      paralelos: diffTextual(contexto, depois),
-    }, t);
   }
 
   async _narrar(arco, t) {

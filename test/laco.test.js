@@ -121,6 +121,36 @@ test("A RECUSA NÃO É SILENCIOSA: vira evento e chega à narração", async () 
             "a narração foi chamada sem saber que houve recusa");
 });
 
+// SPEC 045 — FALHA HONESTA EM VEZ DE DEGRADAÇÃO SILENCIOSA (US2).
+//
+// Quando a Mente esgota o orçamento de rodadas sem produzir nenhuma chamada de
+// ferramenta (`interpret()` devolve `null` — nem exceção, nem sessão), o turno
+// NÃO pode cair num segundo motor (o Fluxo B morreu) nem travar sem explicação.
+// Ele tem de terminar exatamente como "nenhuma proposta chegou ao mundo": um
+// recado de sistema honesto, sem narração inventada e sem propostas fantasmas.
+test("interpret() sem sessão (orçamento esgotado) termina no recado honesto, nunca em erro", async () => {
+  const c = coletor();
+  const laco = new Laco({
+    mundo: mundoDe({ respostas: [] }),  // nenhuma capacidade deveria ser chamada
+    mente: {
+      interpret: async () => null,       // a Mente não decidiu nada, mesmo com retry
+      narrate: async () => { throw new Error("narrate não deveria ser chamado sem fato nenhum"); },
+      deriveWhisper: async () => null,
+    },
+    extensoes: extVazio(), registro: null, emitir: c.emitir,
+  });
+
+  await laco.sussurrar("faça alguma coisa");
+
+  const sistema = c.eventos.find((e) => e.ev === "sistema");
+  assert.ok(sistema && sistema.texto && sistema.texto.trim().length,
+    "sessão nula devia terminar num recado de sistema honesto, não em silêncio");
+  assert.ok(!c.eventos.some((e) => e.ev === "erro"),
+    "sessão nula não é uma falha de transporte — não deve virar 'erro'");
+  assert.ok(!c.eventos.some((e) => e.ev === "beat"),
+    "sem desfecho nenhum, não pode haver beat (nada aconteceu de verdade)");
+});
+
 // ITEM 53.2 — O PLANO MORRE COM O PASSO QUE FALHOU.
 // Este teste afirmava o CONTRÁRIO ("recusa no meio não interrompe as propostas
 // seguintes"), e o mantenedor virou a decisão: uma sequência é encadeada, e os

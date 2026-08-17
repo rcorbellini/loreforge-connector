@@ -101,43 +101,6 @@ class Mundo {
     };
   }
 
-  // --- o caminho legado (/api/act) ---------------------------------------- //
-  //
-  // NAO e resto morto: quando a Mente devolve prosa solta em vez de propostas
-  // nomeadas, e por aqui que o turno acontece. E o que permite trocar de modelo
-  // sem quebrar o jogo, e a spec 044 nao o aposenta.
-  async agir(intent, aoVivo, origem, plano) {
-    const res = await fetch(this.base + "/api/act", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ character_id: this.personagem, intent,
-                             origem, plano: plano || null }),
-      signal: AbortSignal.timeout(TIMEOUT),
-    });
-    if (!res.ok) {
-      const erro = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(erro.error || `o mundo respondeu ${res.status}`);
-    }
-    const ctype = res.headers.get("Content-Type") || "";
-    if (!ctype.includes("x-ndjson")) {
-      const outcome = await res.json().catch(() => ({}));
-      return { outcome, rejeitado: null, viuFim: true };
-    }
-    let outcome = null, rejeitado = null, viuFim = false;
-    await porLinha(res, (linha) => {
-      let ev;
-      try { ev = JSON.parse(linha); } catch (_) { return; }
-      if (!ev || !ev.ev) return;
-      if (ev.ev === "done") { outcome = ev.outcome || {}; viuFim = true; }
-      else if (ev.ev === "rejected") { rejeitado = ev; }
-      else if (ev.ev === "op_applied" || ev.ev === "failed") {
-        if (aoVivo) aoVivo(ev);
-      }
-      // turn_start / heartbeat: sinal de vida, nada a fazer
-    });
-    return { outcome, rejeitado, viuFim };
-  }
-
   // --- o registro do turno (spec 044) ------------------------------------- //
   //
   // Canal PROPRIO, fora do caminho da proposta — de proposito. O que sobe na
@@ -157,24 +120,6 @@ class Mundo {
     } catch (e) {
       log("REGISTRO NAO SUBIU (o turno segue)", e.message);
       return false;
-    }
-  }
-}
-
-// Le uma resposta linha a linha (NDJSON). `TextDecoder` e global no Node.
-async function porLinha(res, aoLer) {
-  const leitor = res.body.getReader();
-  const dec = new TextDecoder();
-  let buf = "";
-  for (;;) {
-    const { value, done } = await leitor.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let nl;
-    while ((nl = buf.indexOf("\n")) >= 0) {
-      const linha = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (linha) aoLer(linha);
     }
   }
 }

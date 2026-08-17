@@ -24,7 +24,14 @@ const { log: _logExterno } = require("./log");
 // Quantas voltas de RACIOCÍNIO uma vez pode ter — consultas e continuações somadas.
 // Não é limite sobre o que A Mente pode querer: é o fim do turno, senão uma conversa
 // que não converge pensa para sempre, queimando modelo e segurando a trava.
-const MAX_RODADAS = 6;
+//
+// DOBRADO (spec 045): antes, esgotar o orçamento aqui caía num SEGUNDO motor de
+// decisão (o caminho de prosa legado, /api/act) — medido menos confiável que
+// este caminho, não mais. Sem esse plano B, a resposta certa a "ela ainda não
+// decidiu nada" é dar mais uma chance DENTRO da mesma sessão, não trocar de
+// estratégia. O valor é um múltiplo modesto do original, não ilimitado — uma
+// conversa que não converge em 12 rodadas não vai convergir em 100.
+const MAX_RODADAS = 12;
 
 const Mente = (() => {
   const DEFAULTS = configuracao.DEFAULTS;
@@ -189,71 +196,6 @@ const Mente = (() => {
       }
     }
     if (buf.trim()) onLine(buf.trim());
-  }
-
-  // === EXTRATOR DE CAMPO EM JSON STREAMADO (spec 043) =========================
-  // A chamada de INTERPRETAR devolve JSON, e é a PRIMEIRA do turno — enquanto ela
-  // roda, a tela fica muda. Streamar o JSON cru seria pior que o silêncio (chaves,
-  // aspas, nomes de campo). Este extrator surfaça SÓ o conteúdo de UM campo: começa
-  // a emitir quando o valor da string abre, e PÁRA na aspa que a fecha — o que vem
-  // antes e depois (estrutura do JSON, outros campos) nunca chega à tela.
-  //
-  // Trabalha sobre o texto ACUMULADO, não sobre o delta: um token pode partir
-  // `"action"` no meio, e um extrator que olhasse só o pedaço perderia o começo.
-  //
-  // Não é um parser de JSON e não tenta ser — é uma varredura de caracteres que
-  // sobrevive a JSON malformado (o `parseJsonLenient` continua sendo a autoridade
-  // sobre o resultado final; isto aqui é só a vitrine).
-  function _extratorDeCampo(campo) {
-    const alvo = `"${campo}"`;
-    let bruto = "";       // tudo o que chegou
-    let cursor = 0;       // até onde já varremos
-    let dentro = false;   // estamos dentro do valor?
-    let fechou = false;   // o valor já terminou?
-    let escapando = false;
-
-    return function aoDelta(delta, emitir) {
-      if (fechou) return;
-      bruto += delta;
-      if (!dentro) {
-        const i = bruto.indexOf(alvo);
-        if (i < 0) return;
-        // procura a aspa que ABRE o valor, depois dos dois-pontos
-        const doisPontos = bruto.indexOf(":", i + alvo.length);
-        if (doisPontos < 0) return;
-        const abre = bruto.indexOf('"', doisPontos + 1);
-        if (abre < 0) return;
-        dentro = true;
-        cursor = abre + 1;
-      }
-      let saida = "";
-      while (cursor < bruto.length) {
-        const c = bruto[cursor];
-        if (c === "\\") {
-          // a escapa pode estar PARTIDA entre dois tokens: se o que falta ainda
-          // não chegou, recua e espera. Sem isto, "ã" vira "00e3" e toda
-          // palavra acentuada sai quebrada — em português, quase todas.
-          const prox = bruto[cursor + 1];
-          if (prox === undefined) break;
-          if (prox === "u") {
-            if (cursor + 6 > bruto.length) break;   // faltam dígitos: espera
-            const hex = bruto.slice(cursor + 2, cursor + 6);
-            saida += /^[0-9a-fA-F]{4}$/.test(hex)
-                   ? String.fromCharCode(parseInt(hex, 16)) : "";
-            cursor += 6;
-            continue;
-          }
-          saida += prox === "n" ? "\n" : prox === "t" ? "\t"
-                 : prox === "r" ? "" : prox;   // \" \\ \/ entram literais
-          cursor += 2;
-          continue;
-        }
-        cursor++;
-        if (c === '"') { fechou = true; break; }   // fim do valor: não mostra mais nada
-        saida += c;
-      }
-      if (saida) emitir(saida);
-    };
   }
 
   // Extrai o payload de uma linha SSE ("data: {...}"), ou null se não for dado.
@@ -445,31 +387,6 @@ Responda EXCLUSIVAMENTE com um objeto JSON válido. Use a chave "sussurro" para 
   "sussurro": "[3. Ação Narrada: Descreva em um parágrafo fluido de roleplay como essa sequência de regras se traduz fisicamente na cena. Descreva a TENTATIVA e SÓ ela: o que ele faz e diz. Nunca escreva o que os outros respondem, o que sentem ou como reagem, nem se ele conseguiu — nada disso é seu para decidir, e o mundo ainda não julgou.]"
 }`;
 
-  const INTERPRET_SYSTEM = `Você é A Mente de um personagem de RPG em um mundo persistente. A instrução do jogador (ou pensamento autônomo) é uma sugestão de vontade, mas o personagem NÃO É UM ROBÔ: ele possui uma índole e personalidade inegociáveis.
-
-Você recebe em "capacidades" TUDO o que o personagem pode tentar AQUI, AGORA — o mundo já filtrou pela cena. Cada capacidade traz o que ela faz e os ALVOS possíveis. Escolha entre elas.
-
-Regras de Ouro:
-1. SÓ O QUE ESTÁ NA LISTA. Use o "nome" EXATO de uma capacidade de "capacidades", e para cada parâmetro ESCOLHA UM id de "alvos_possiveis" dela. Nome ou alvo inventado é recusado pelo mundo e o turno se perde.
-2. PREENCHA TUDO O QUE "exige" PEDE. Parâmetro que não aparece em "alvos_possiveis" é TEXTO LIVRE que você escreve (o conteúdo de um plano, o teor de uma promessa, sobre o que se pergunta) — sem ele a tentativa é recusada.
-3. ENCADEIE quando for um movimento contínuo: várias propostas, NA ORDEM de execução. Cada uma resolve antes da seguinte, e a seguinte já vê o mundo mudado.
-4. PROSA SEMPRE. Cada proposta leva "prosa.acao" — a descrição in-world, concreta, do que ele faz ali (ex.: "Fenn apanha a moeda do chão com um grunhido"). "prosa.fala" só se ele falar em voz alta.
-5. VOCÊ NÃO DECIDE O DESFECHO. Se convenceu, se acertou, se passou despercebido — quem decide é o mundo. Descreva a TENTATIVA, nunca o resultado.
-6. JUÍZO MORAL. Se a instrução violar a "personalidade", proponha só o que ele de fato faria (falar, recusar, sair), e a prosa descreve a recusa.
-7. Se NADA na lista servir, devolva "propostas": [] e explique em "pensamento".
-
-Responda SOMENTE com JSON válido neste formato:
-{
-  "pensamento": "Em 1 frase: o que ele quer e por quê.",
-  "propostas": [
-    {
-      "capacidade": "nome EXATO da lista",
-      "alvos": { "parametro": "UM id, como TEXTO — nunca uma lista, nunca o array de opções" },
-      "prosa": { "acao": "o que ele faz, in-world. NUNCA vazio.", "fala": "o que diz em voz alta, ou null" }
-    }
-  ]
-}`;
-
   // O RAMO DE CRIAR do tick autônomo (spec 033). Cada volta do relógio bifurca:
   // quem TEM compromisso decide se age por ele; quem não tem PARA e faz um.
   //
@@ -613,11 +530,13 @@ RESTRIÇÕES SEVERAS:
       // TOOL CALLS — caindo no caminho de prosa" / "TOOLS DESCRITAS EM PROSA"). Sem
       // o bloco: 9 de 9 saíram certas, com 35-65% menos tokens de prompt e 2-10x
       // mais rápido; quando a chamada saía nas duas variantes, o id vinha certo nas
-      // duas — o enum de `tools` já basta. Se cogitar tirar o bloco de outro lugar
-      // (o fallback de prosa em `INTERPRET_SYSTEM`, ou `deriveWhisper`/
-      // `AUTONOMY_SYSTEM`), NÃO copie esta conclusão sem novo teste: os dois não têm
-      // `tools` nativas — lá o `capacidades` em prosa é a ÚNICA fonte do que existe,
-      // não uma duplicata. Script do teste, pra rodar de novo antes de mexer aqui:
+      // duas — o enum de `tools` já basta. Se cogitar tirar o bloco também de
+      // `deriveWhisper`/`AUTONOMY_SYSTEM` (o único outro caminho que ainda lê
+      // `capacidades` em prosa, spec 045 — o caminho de prosa do `interpret`
+      // morreu junto com o Fluxo B), NÃO copie esta conclusão sem novo teste:
+      // `AUTONOMY_SYSTEM` não tem `tools` nativas — lá o `capacidades` em prosa é
+      // a ÚNICA fonte do que existe, não uma duplicata. Script do teste, pra
+      // rodar de novo antes de mexer aqui:
       // `specs/043-tools-exposed-to-mind/testar_duplicacao_capacidades.py`.
       ...(comCapacidades ? { capacidades: (context.capacidades || []).map((c) => ({
         nome: c.nome,
@@ -641,11 +560,11 @@ RESTRIÇÕES SEVERAS:
   // sendo escrito. É a primeira chamada do turno e a que mais tempo deixava a tela
   // muda; mostrar o personagem decidindo, palavra a palavra, é o maior ganho de
   // percepção do turno inteiro. A estrutura do JSON nunca aparece: o extrator abre no
-  // valor da string e fecha na aspa (ver `_extratorDeCampo`).
-  // O SYSTEM do caminho por TOOL NATIVA. Curto de propósito: o schema das
-  // capacidades já vai estruturado, então este texto não precisa ensinar formato —
-  // só quem o personagem é e o que NÃO fazer. O prompt longo continua existindo
-  // (INTERPRET_SYSTEM) para o caminho de prosa, onde o formato é tudo.
+  // valor da string e fecha na aspa.
+  // O SYSTEM do caminho por TOOL NATIVA — o ÚNICO caminho de ação agora (spec 045
+  // aposentou o caminho de prosa e o prompt longo que o formato dele exigia).
+  // Curto de propósito: o schema das capacidades já vai estruturado, então este
+  // texto não precisa ensinar formato — só quem o personagem é e o que NÃO fazer.
   const ESCOLHER_SYSTEM = `Você é A Mente de um personagem de RPG num mundo persistente. A instrução do jogador é uma sugestão de vontade — o personagem NÃO é um robô: tem índole e personalidade inegociáveis.
 
 As ferramentas disponíveis são TUDO o que ele pode tentar aqui e agora; o mundo já filtrou pela cena.
@@ -762,7 +681,9 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
               }
               if (!consultas.length && !(pedidosLocais.length && _ext)) {
                 // sem tool_calls: ou o runtime não suporta, ou ela decidiu não agir.
-                devlog("SEM TOOL CALLS — caindo no caminho de prosa", r && r.texto);
+                // Spec 045: NÃO cai mais num segundo motor — o laço (`laco.js`)
+                // trata sessão nula como "nada aconteceu", com o recado honesto.
+                devlog("SEM TOOL CALLS — turno sem decisão", r && r.texto);
                 _avisaSemTools("nenhuma tool call na resposta");
                 return null;
               }
@@ -801,28 +722,15 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
           if (sessao) return sessao;
         }
       } catch (e) {
-        // o caminho novo NUNCA pode deixar o jogador sem turno: qualquer falha
-        // (runtime sem tools, server velho, rede) cai na prosa, que sempre funcionou.
-        devlog("MCP/tools indisponível — caminho de prosa", String(e && e.message || e));
+        // Spec 045: NÃO existe mais um segundo motor pra cair. Uma falha aqui
+        // (runtime sem tools, server velho, rede) termina o turno sem decisão —
+        // o laço (`laco.js`) trata isso como "nada aconteceu", com o recado
+        // honesto (Princípio VIII: nunca há substituição automática).
+        devlog("MCP/tools indisponível — turno sem decisão", String(e && e.message || e));
         _avisaSemTools(String((e && e.message) || e));
       }
     }
-
-    // CAMINHO DE PROSA (compatibilidade, FR-026): modelo sem tool-calling.
-    const payload = { instrucao: instruction, ...(await _contextoPayload(context)) };
-    let onToken;
-    if (typeof onAction === "function") {
-      const extrair = _extratorDeCampo("acao");
-      onToken = (delta) => extrair(delta, onAction);
-    }
-    const raw = await callModel(
-      _sys("interpretar_prosa", INTERPRET_SYSTEM),
-      "Interprete a instrução e produza a intenção baseada estritamente nas capacidades.\n\n"
-      + JSON.stringify(payload, null, 2),
-      { forceJson: true, temperature: 0.4, label: "INTERPRETAR (instrução → intenção)",
-        onToken }
-    );
-    return parseJsonLenient(raw);
+    return null;
   }
 
   async function deriveWhisper(context) {
@@ -944,14 +852,6 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     ).trim();
   }
 
-  function parseJsonLenient(raw) {
-    try { return JSON.parse(raw); } catch (_) {
-      const s = raw.indexOf("{"), e = raw.lastIndexOf("}");
-      if (s !== -1 && e > s) { try { return JSON.parse(raw.slice(s, e + 1)); } catch (_) {} }
-      return { action: raw.slice(0, 200), target: null, utterance: null, movement: null, note: "" };
-    }
-  }
-
   function parseAutonomyJson(raw) {
     try { return JSON.parse(raw); } catch (_) {
       const s = raw.indexOf("{"), e = raw.lastIndexOf("}");
@@ -966,7 +866,6 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
   function promptsPadrao() {
     return {
       interpretar: ESCOLHER_SYSTEM,
-      interpretar_prosa: INTERPRET_SYSTEM,
       autonomia: AUTONOMY_SYSTEM,
       refletir: REFLECT_COMMAND,
       narrar: NARRATE_SYSTEM,
@@ -975,11 +874,8 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
 
   const ROTINAS = [
     { nome: "interpretar",
-      titulo: "Escolher a ação (capacidades nativas)",
-      quando: "a cada sussurro, quando o modelo fala tool-calling" },
-    { nome: "interpretar_prosa",
-      titulo: "Escolher a ação (caminho de prosa)",
-      quando: "quando o modelo não devolve chamada de capacidade" },
+      titulo: "Escolher a ação",
+      quando: "a cada sussurro — o único caminho de ação (spec 045)" },
     { nome: "autonomia",
       titulo: "Decidir agir sozinho",
       quando: "a cada volta do relógio, COM um compromisso em mente" },

@@ -198,17 +198,15 @@ test("a consulta do mundo não vira proposta nem quando é a única coisa que a 
   // o modelo só consulta, para sempre: o laço tem de PARAR e nada pode ser proposto
   const modelo = modeloQueChama([[{ nome: "consultar_memoria", args: { sobre: "ladrão" } }]]);
   try {
+    // spec 045: sem tool_call real após esgotar o orçamento, `interpret` devolve
+    // `null` — não existe mais um caminho de prosa pra devolver objeto nenhum. É
+    // o laço (`laco.js`) que trata sessão nula como "nada aconteceu".
     const r = await Mente.interpret("veja se alguém aqui roubou", CENA);
-    assert.ok(!r.propostas || !r.propostas.length,
-      "uma CONSULTA virou proposta ao mundo");
+    assert.strictEqual(r, null, "uma CONSULTA-sem-fim devia esgotar sem virar proposta");
     // o freio é o ORÇAMENTO DE RODADAS da vez, e o teste lê o número de lá em vez
-    // de guardar uma cópia — cópia envelhece calada. Ele passou de 3 para 6 quando
-    // consulta e continuação passaram a dividir o mesmo orçamento (antes eram 3 de
-    // consulta MAIS 2 replanejamentos de 3 cada: pior caso 9).
-    // orçamento + UMA: ao esgotar as rodadas, o `interpret` desemboca no caminho de
-    // prosa, que é mais uma ida ao modelo. Era por isso que este teste dizia `<= 4`
-    // quando o orçamento era 3.
-    assert.ok(modelo.rodadas() <= Mente.MAX_RODADAS + 1,
+    // de guardar uma cópia — cópia envelhece calada. Sem o caminho de prosa (spec
+    // 045), esgotar o orçamento não paga mais uma ida extra ao modelo.
+    assert.ok(modelo.rodadas() <= Mente.MAX_RODADAS,
               `o laço de raciocínio não tem freio (${modelo.rodadas()} rodadas)`);
   } finally {
     modelo.restaurar();
@@ -258,17 +256,15 @@ test("a ferramenta local não vira proposta ao mundo, nem depois de N rodadas", 
   // o modelo só chama a ferramenta local, para sempre: o laço tem de PARAR
   const modelo = modeloQueChama([[{ nome: "pensar_mais", args: {} }]]);
   try {
+    // spec 045: sem tool_call real após esgotar o orçamento, `interpret` devolve
+    // `null` — não existe mais um caminho de prosa pra devolver objeto nenhum. É
+    // o laço (`laco.js`) que trata sessão nula como "nada aconteceu".
     const r = await Mente.interpret("pense", CENA);
-    assert.ok(!r.propostas || !r.propostas.length,
-      "uma ferramenta LOCAL virou proposta ao mundo");
+    assert.strictEqual(r, null, "uma ferramenta LOCAL-sem-fim devia esgotar sem virar proposta");
     // o freio é o ORÇAMENTO DE RODADAS da vez, e o teste lê o número de lá em vez
-    // de guardar uma cópia — cópia envelhece calada. Ele passou de 3 para 6 quando
-    // consulta e continuação passaram a dividir o mesmo orçamento (antes eram 3 de
-    // consulta MAIS 2 replanejamentos de 3 cada: pior caso 9).
-    // orçamento + UMA: ao esgotar as rodadas, o `interpret` desemboca no caminho de
-    // prosa, que é mais uma ida ao modelo. Era por isso que este teste dizia `<= 4`
-    // quando o orçamento era 3.
-    assert.ok(modelo.rodadas() <= Mente.MAX_RODADAS + 1,
+    // de guardar uma cópia — cópia envelhece calada. Sem o caminho de prosa (spec
+    // 045), esgotar o orçamento não paga mais uma ida extra ao modelo.
+    assert.ok(modelo.rodadas() <= Mente.MAX_RODADAS,
               `o laço de raciocínio não tem freio (${modelo.rodadas()} rodadas)`);
   } finally {
     modelo.restaurar();
