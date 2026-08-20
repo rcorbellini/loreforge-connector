@@ -501,6 +501,24 @@ class Laco {
       try {
         const contexto = await this.mundo.contexto();
         if (t) t.pretendia(contexto.intentions);
+        // QUEM DORME FUNDO NÃO DECIDE. Na vida real ninguém fica avaliando de
+        // minuto em minuto se já está na hora de levantar: dorme até se recuperar
+        // ou ser acordado. A Mente nem é acionada — e é aqui, ANTES do
+        // `deriveWhisper`, porque é essa a chamada ao modelo que se quer evitar.
+        //
+        // Não é economia teórica: na rodada da Elga (2026-08-20) 122 dos 654
+        // turnos foram só deitar e levantar, 1,05M tokens, porque a face oferece
+        // a quem dorme UMA capacidade (`wake_up`) e ela nunca falhava.
+        //
+        // Isto é GATE DE CLIENT, ou seja, UX. A autoridade continua no Motor, que
+        // recusa `wake_up` em sono profundo por conta própria — este atalho só
+        // evita pagar por uma resposta cujo desfecho o servidor já conhece.
+        if (contexto && contexto.self && contexto.self.sono_profundo) {
+          // Mesma saída do "nada a fazer agora" logo abaixo: turno descartado,
+          // sem emitir `decidiu` — uma fala vazia viraria bolha vazia na tela.
+          if (t) t.descartar();
+          return;
+        }
         const decidido = await this.mente.deriveWhisper(contexto);
         const texto = decidido && decidido.texto;
         // A ORIGEM diz QUAL rotina produziu o sussurro, e não só que foi
