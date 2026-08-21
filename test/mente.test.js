@@ -92,3 +92,83 @@ test("interpret() com tools nativas NÃO duplica as capacidades em prosa no user
     "o user ainda descreve as capacidades em prosa — duplicação viva de novo: " +
     userMsg.content.slice(0, 300));
 });
+
+// --------------------------------------------------------------------------- //
+// O CONTRATO DO MUNDO É O SCHEMA — trava de regressão (2026-08-20).
+//
+// `cook.ingredientes` é declarado `array` no `inputSchema` que o `tools/list`
+// entrega. O llama3.1:8b às vezes manda a lista como texto com vírgulas, e o
+// conector repassava verbatim: o mundo tratava a string INTEIRA como um id só e
+// respondia "'moeda-a, moeda-b' não está ao alcance" — apontando para ALCANCE
+// quando o defeito era FORMATO. A Mente leu isso como "os ingredientes é que
+// estão errados" e enumerou 20 combinações em 49 tentativas.
+//
+// A correção é DESTE lado: o contrato está certo, o cliente é que precisa
+// mandar certo — e ele tem o schema em mãos desde o `tools/list`.
+// --------------------------------------------------------------------------- //
+
+function espiaProposta(argsDaTool) {
+  const original = globalThis.fetch;
+  let rodada = 0;
+  globalThis.fetch = async (_url, opts) => {
+    const corpo = JSON.parse((opts && opts.body) || "{}");
+    rodada++;
+    const chamada = rodada === 1
+      ? { function: { name: "cook", arguments: argsDaTool } }
+      : { function: { name: "narrate", arguments: { narrative_hint: "fim" } } };
+    return {
+      ok: true,
+      headers: { get: () => "application/json" },
+      json: async () => ({ message: { content: "", tool_calls: [chamada] },
+                           prompt_eval_count: 10, eval_count: 5 }),
+    };
+  };
+  return { restaurar: () => { globalThis.fetch = original; }, corpo: null };
+}
+
+const TOOLS_COOK = [
+  { name: "cook", description: "Cozinha.",
+    inputSchema: { type: "object",
+      properties: { ingredientes: { type: "array", items: { type: "string" } },
+                    fonte_calor: { type: "string" } },
+      required: ["ingredientes", "fonte_calor"] } },
+  { name: "narrate", description: "Encerra.", inputSchema: { type: "object" } },
+];
+
+async function propostaDe(args) {
+  const cfg = configuracao.carregar(true);
+  cfg.runtime = "local";
+  configuracao.gravar(cfg);
+  Mente.usarMundo(mundoFalso(TOOLS_COOK));
+  Mente.usarExtensoes({ toolsLocais: () => [], ehLocal: () => false,
+                        hook: async (_p, dado) => dado });
+  const espiao = espiaProposta(args);
+  try {
+    const sessao = await Mente.interpret("cozinhe algo", CENA);
+    return sessao && sessao.propostas && sessao.propostas[0];
+  } finally {
+    espiao.restaurar();
+  }
+}
+
+test("param `array`: string com vírgulas vira LISTA antes de subir ao mundo", async () => {
+  const p = await propostaDe({ ingredientes: "moeda-a, moeda-b, moeda-c",
+                               fonte_calor: "fogao",
+                               prosa: { acao: "cozinha", fala: "" } });
+  assert.ok(p, "não veio proposta nenhuma");
+  assert.deepStrictEqual(p.alvos.ingredientes, ["moeda-a", "moeda-b", "moeda-c"],
+    "a string com vírgulas subiu sem virar lista: " + JSON.stringify(p.alvos));
+  assert.strictEqual(p.alvos.fonte_calor, "fogao",
+    "param `string` NÃO pode ser tocado — só os declarados `array`");
+});
+
+test("param `array`: id único vira lista de um; lista já certa não é mexida", async () => {
+  const um = await propostaDe({ ingredientes: "coelho-do-cais", fonte_calor: "fogao",
+                                prosa: { acao: "cozinha", fala: "" } });
+  assert.deepStrictEqual(um.alvos.ingredientes, ["coelho-do-cais"]);
+
+  const ja = await propostaDe({ ingredientes: ["carne-a", "carne-b"],
+                                fonte_calor: "fogao",
+                                prosa: { acao: "cozinha", fala: "" } });
+  assert.deepStrictEqual(ja.alvos.ingredientes, ["carne-a", "carne-b"]);
+});

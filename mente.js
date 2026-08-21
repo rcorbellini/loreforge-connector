@@ -652,11 +652,43 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
           let ultima = null;          // a última resposta dela, para o histórico
           let rodadas = 0;
 
+          // O CONTRATO DO MUNDO É O SCHEMA, e quem tem de honrá-lo é ESTE lado.
+          //
+          // O `tools/list` do MCP entrega o `inputSchema` de cada capacidade —
+          // então o conector SABE que `cook.ingredientes` é `array`. O modelo
+          // pequeno às vezes manda a lista como texto com vírgulas
+          // ("moeda-cobre-025, moeda-cobre-026"), e nós repassávamos verbatim.
+          //
+          // O mundo então tratava a string INTEIRA como um id só e respondia
+          // "'moeda-cobre-025, moeda-cobre-026' não está ao alcance" — apontando
+          // para ALCANCE quando o defeito era FORMATO. A Elga leu isso como "os
+          // ingredientes é que estão errados" e enumerou 20 combinações de moedas
+          // em 49 tentativas (2026-08-20), todas recusadas pelo mesmo motivo.
+          //
+          // Corrigir aqui, e não no mundo: o contrato está certo, é o cliente que
+          // precisa mandar certo. Ids são slugs e nunca contêm vírgula, então a
+          // separação é inequívoca — mesma régua que o mundo já aplica na direção
+          // inversa (lista de um elemento onde se espera escalar), e pelo mesmo
+          // motivo: recusar seria perder o turno por uma vírgula.
+          const _tipos = new Map(
+            tools.map((t) => [t.name,
+              ((t.inputSchema || t.parameters || {}).properties) || {}]));
+          const _lista = (v) => {
+            if (Array.isArray(v)) return v;
+            if (typeof v !== "string") return v;
+            const partes = v.split(",").map((s) => s.trim()).filter(Boolean);
+            return partes.length ? partes : v;
+          };
+          const _conforme = (nome, args) => {
+            const props = _tipos.get(nome) || {};
+            return Object.fromEntries(Object.entries(args).map(([k, v]) =>
+              [k, (props[k] || {}).type === "array" ? _lista(v) : v]));
+          };
           const _mapear = (calls) => calls.map((c) => ({
             id: c.id,               // é por ele que o resultado volta amarrado
             capacidade: c.nome,
-            alvos: Object.fromEntries(Object.entries(c.args || {})
-                                      .filter(([k]) => k !== "prosa")),
+            alvos: _conforme(c.nome, Object.fromEntries(
+              Object.entries(c.args || {}).filter(([k]) => k !== "prosa"))),
             prosa: (c.args || {}).prosa || null,
           }));
 
