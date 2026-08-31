@@ -22,10 +22,48 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { log } = require("./log");
+const pareamento = require("./pareamento");
 
 function servir({ porta, laco, cfg, expor, painel,
-                  permitirConfigRemota }) {
+                  permitirConfigRemota, mundo, configuracao, authAtivo,
+                  onPareado }) {
   const ouvintes = new Set();
+  // Codigo de pareamento em aberto (spec 056, US4) — vive so na MEMORIA deste
+  // processo, igual a trava de turno: reiniciou, o codigo morreu junto, e o
+  // jogador gera outro. Nunca e persistido porque e de uso unico.
+  let pareamentoPendente = null;   // { codigo, expiraEm }
+
+  function gerarCodigoPareamento() {
+    pareamentoPendente = { codigo: pareamento.gerarCodigo(),
+                            expiraEm: Date.now() + pareamento.VALIDADE_MS };
+    return pareamentoPendente;
+  }
+
+  // A GUARDA DE IDENTIDADE (spec 056, FR-021/022). Duas perguntas, nesta
+  // ordem: o JWT e autentico (pergunta ao server — o conector nunca guarda o
+  // `auth.secret` pra conferir sozinho, e por isso NUNCA pode assinar um em
+  // nome de outro jogador), e o `sub` dele bate com o dono deste conector (o
+  // pareamento). A primeira sem a segunda deixaria QUALQUER jogador do MESMO
+  // server usar este conector; a segunda sem a primeira aceitaria qualquer
+  // string que alegasse o `sub` certo.
+  async function autorizarJogador(req, url) {
+    if (!authAtivo) return { ok: true };   // mundo sem auth.secret: modo legado
+    if (!cfg.jwt || !cfg.authSub) {
+      return { ok: false, status: 401,
+               erro: "conector não pareado — rode `loreforge --parear`" };
+    }
+    const cabecalho = req.headers.authorization || "";
+    const token = /^Bearer\s+/i.test(cabecalho)
+      ? cabecalho.replace(/^Bearer\s+/i, "")
+      : (url.searchParams.get("token") || "");
+    if (!token) return { ok: false, status: 401, erro: "autenticação necessária" };
+    const quem = await mundo.validarToken(token);
+    if (!quem) return { ok: false, status: 401, erro: "token inválido" };
+    if (quem.sub !== cfg.authSub) {
+      return { ok: false, status: 403, erro: "este conector pertence a outro jogador" };
+    }
+    return { ok: true, quem };
+  }
 
   // ESCREVER SÓ DA PRÓPRIA MÁQUINA. Com `--expor` ligado, qualquer aparelho da
   // rede alcança este processo — e configurar a Mente inclui trocar o modelo e
@@ -60,7 +98,10 @@ function servir({ porta, laco, cfg, expor, painel,
   function cabecalhos(res, origem) {
     res.setHeader("Access-Control-Allow-Origin", origem || "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    // "Authorization" entrou com o JWT do jogador (spec 056) — sem ele aqui, o
+    // preflight do navegador barra a requisição ANTES dela sair, e o `fetch`
+    // falha silencioso ("Failed to fetch") sem nenhum log deste lado pra caçar.
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
     // a resposta ao preflight de rede privada: a página vem de origem pública e
     // quer alcançar um endereço local. Sem isto, nem chega a tentar.
     res.setHeader("Access-Control-Allow-Private-Network", "true");
@@ -98,6 +139,11 @@ function servir({ porta, laco, cfg, expor, painel,
     }
 
     if (req.method === "GET" && url.pathname === "/eventos") {
+      const veredito = await autorizarJogador(req, url);
+      if (!veredito.ok) {
+        res.writeHead(veredito.status, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ erro: veredito.erro }));
+      }
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
@@ -110,7 +156,62 @@ function servir({ porta, laco, cfg, expor, painel,
       return;
     }
 
+    // O PAREAMENTO (spec 056, US4) — codigo gerado por ESTE processo
+    // (terminal ou painel, sempre da propria maquina) e resgatado aqui pelo
+    // client, que traz o codigo de volta junto com o JWT do jogador.
+    if (req.method === "POST" && url.pathname === "/api/parear/gerar") {
+      if (!daPropriaMaquina(req)) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ erro:
+          "gerar código só da máquina onde o conector roda" }));
+      }
+      const { codigo, expiraEm } = gerarCodigoPareamento();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({
+        codigo, expiraEmSegundos: Math.round((expiraEm - Date.now()) / 1000) }));
+    }
+
+    if (req.method === "POST" && url.pathname === "/parear") {
+      const corpo = await corpoDe(req);
+      if (!pareamentoPendente) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({
+          erro: "nenhum pareamento em aberto — gere um código no conector antes" }));
+      }
+      if (Date.now() > pareamentoPendente.expiraEm) {
+        pareamentoPendente = null;
+        res.writeHead(410, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ erro: "código expirado" }));
+      }
+      if (String(corpo.codigo || "").toUpperCase() !== pareamentoPendente.codigo) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ erro: "código não confere" }));
+      }
+      const quem = await mundo.validarToken(corpo.jwt);
+      if (!quem) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({
+          erro: "token inválido — faça login de novo no client" }));
+      }
+      cfg.jwt = corpo.jwt;
+      cfg.authSub = quem.sub;
+      cfg.authEmail = quem.email;
+      cfg.authName = quem.name;
+      configuracao.gravar(cfg);
+      mundo.jwt = cfg.jwt;
+      pareamentoPendente = null;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, email: quem.email }));
+      if (onPareado) onPareado(quem);
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/sussurro") {
+      const veredito = await autorizarJogador(req, url);
+      if (!veredito.ok) {
+        res.writeHead(veredito.status, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ erro: veredito.erro }));
+      }
       let corpo = "";
       req.on("data", (c) => { corpo += c; });
       req.on("end", () => {
@@ -132,6 +233,11 @@ function servir({ porta, laco, cfg, expor, painel,
 
     // Observar: a tela leu o pacote do mundo e nao tem com que narra-lo.
     if (req.method === "POST" && url.pathname === "/observar") {
+      const veredito = await autorizarJogador(req, url);
+      if (!veredito.ok) {
+        res.writeHead(veredito.status, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ erro: veredito.erro }));
+      }
       let corpo = "";
       req.on("data", (c) => { corpo += c; });
       req.on("end", () => {
@@ -246,7 +352,7 @@ function servir({ porta, laco, cfg, expor, painel,
     // cabeçalho conserta. Quem liga aceita o preço, que está escrito no aviso.
     const iface = expor ? "0.0.0.0" : "127.0.0.1";
     servidor.listen(porta, iface, () => resolve({
-      servidor, emitir, ouvintes,
+      servidor, emitir, ouvintes, gerarCodigoPareamento,
       // FECHAR DE VERDADE. `servidor.close()` sozinho só para de ACEITAR conexão
       // nova e espera as abertas drenarem — e a tela mantém um `text/event-stream`
       // aberto de propósito, que nunca drena. Um `await fechar()` ficaria pendurado

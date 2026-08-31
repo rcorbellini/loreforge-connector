@@ -32,7 +32,10 @@ const DEFAULTS = {
   log: true,
 };
 
-const SEGREDOS = ["apiKey", "openrouterKey"];
+// O JWT do jogador pareado (spec 056) e credencial igual as outras: quem o
+// possui age no mundo pela conta dele, sem expiracao (FR-002 da spec 056). Por
+// isso entra em SEGREDOS — mesma trava estrutural, nao so disciplina.
+const SEGREDOS = ["apiKey", "openrouterKey", "jwt"];
 
 function _montar(bruto) {
   const cfg = {};
@@ -117,6 +120,9 @@ function paraPagina(cfg) {
     openrouterModel: c.openrouterModel, openrouterEndpoint: c.openrouterEndpoint,
     temChaveAnthropic: !!c.apiKey,
     temChaveOpenrouter: !!c.openrouterKey,
+    // pareamento (spec 056): so o email aparece — nunca o JWT.
+    pareado: !!c.jwt,
+    logadoComo: c.authEmail || null,
     arquivo: require("./armazenamento").caminho(),
   };
 }

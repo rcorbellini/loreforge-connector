@@ -48,6 +48,7 @@ O conector da Mente — Loreforge
   loreforge --canal 8899                           serve a tela nesta porta
   loreforge --canal 8899 --expor                   ...e aceita a tela de outro aparelho
   loreforge --canal 8899 --expor --config-remota   ...e deixa CONFIGURAR de fora
+  loreforge --parear                               gera o código pra vincular ao client
   loreforge --configurar                           grava a configuração e sai
   loreforge --verificar                            testa mundo, personagem e modelo
   loreforge --personagens                          lista quem existe no mundo
@@ -136,6 +137,33 @@ async function verificar(cfg, mundo) {
     tudoBem = false;
   }
 
+  // spec 056: mundo com login ligado exige pareamento E posse — sem isto, o
+  // conector so descobriria o 403 no meio de um turno de LLM já gasto.
+  try {
+    const authCfg = await mundo.authConfig();
+    if (authCfg && authCfg.google_client_id) {
+      if (!cfg.jwt) {
+        linhas.push("  ✗ este mundo exige login, e o conector não está pareado " +
+                    "(rode `loreforge --parear`)");
+        tudoBem = false;
+      } else {
+        linhas.push(`  ✓ pareado como ${cfg.authEmail || cfg.authSub}`);
+        const minhas = await mundo.personagensMinhas();
+        if (minhas.some((c) => (c.id || c) === cfg.personagem)) {
+          linhas.push(`  ✓ '${cfg.personagem}' está associado a esta conta`);
+        } else {
+          linhas.push(`  ✗ '${cfg.personagem}' não está associado à conta pareada`);
+          tudoBem = false;
+        }
+      }
+    } else {
+      linhas.push("  · mundo sem login exigido (modo legado)");
+    }
+  } catch (e) {
+    linhas.push(`  ✗ não consegui checar autenticação: ${e.message}`);
+    tudoBem = false;
+  }
+
   const m = await Mente.check();
   linhas.push(m.ok ? `  ✓ modelo: ${m.reason}` : `  ✗ modelo: ${m.reason}`);
   if (!m.ok) tudoBem = false;
@@ -155,6 +183,41 @@ async function verificar(cfg, mundo) {
 
   process.stdout.write("\n" + linhas.join("\n") + "\n\n");
   return tudoBem;
+}
+
+// A GUARDA DE POSSE (spec 056) antes de gastar turno de LLM à toa: se o mundo
+// exige login, confere pareamento e, com ele, se ESTE personagem é mesmo da
+// conta pareada. Um servidor inalcançável AGORA não é motivo pra recusar — o
+// erro de verdade (mundo fora do ar) aparece no primeiro turno, que é onde ele
+// pertence.
+async function confirmarPosse(cfg, mundo) {
+  let authCfg;
+  try {
+    authCfg = await mundo.authConfig();
+  } catch (_) {
+    return true;
+  }
+  if (!authCfg || !authCfg.google_client_id) return true;   // modo legado
+  if (!cfg.jwt) {
+    process.stdout.write(
+      "\nEste mundo exige login. Rode `loreforge --parear` primeiro.\n\n");
+    return false;
+  }
+  try {
+    const minhas = await mundo.personagensMinhas();
+    if (!minhas.some((c) => (c.id || c) === cfg.personagem)) {
+      process.stdout.write(
+        `\n'${cfg.personagem}' não está associado à conta pareada ` +
+        `(${cfg.authEmail || cfg.authSub}).\n` +
+        `Associe pelo client, ou pareie a conta certa com --parear.\n\n`);
+      return false;
+    }
+  } catch (e) {
+    process.stdout.write(
+      `\nNão consegui confirmar a posse do personagem: ${e.message}\n\n`);
+    return false;
+  }
+  return true;
 }
 
 // --------------------------------------------------------------------------- //
@@ -197,12 +260,82 @@ async function main() {
     return 0;
   }
 
+  // --parear é ação própria (como --configurar/--personagens): não precisa de
+  // --personagem, só de --mundo, e não compõe com --headless/--canal na mesma
+  // chamada — pareia e sai. Sobe o canal só pra ISSO, e derruba no final.
+  if (args.parear) {
+    if (!cfg.mundo) {
+      process.stdout.write(
+        "\nDefina --mundo antes de parear (ex.: --mundo http://localhost:8777).\n\n");
+      return 1;
+    }
+    const mundoP = new Mundo(cfg.mundo, cfg.personagem);
+    let authCfg;
+    try {
+      authCfg = await mundoP.authConfig();
+    } catch (e) {
+      process.stdout.write(
+        `\nNão consegui alcançar o mundo em ${cfg.mundo}: ${e.message}\n\n`);
+      return 1;
+    }
+    if (!authCfg || !authCfg.google_client_id) {
+      process.stdout.write(
+        "\nEste mundo não exige login (auth desligada) — não há o que parear.\n\n");
+      return 0;
+    }
+    const porta = Number(args.canal) || cfg.canal;
+    const painelVazio = {
+      ler: async () => ({}), salvar: async () => ({ ok: true }),
+      gravarPrompt: () => ({ ok: true }), reiniciar: async () => ({ ok: true }),
+    };
+    let resolverPareado;
+    const aguardarPareado = new Promise((resolve) => { resolverPareado = resolve; });
+    const c = await require("../canal").servir({
+      porta, laco: { ocupado: false, numeroTurno: 0 }, cfg, expor: !!args.expor,
+      painel: painelVazio, permitirConfigRemota: false,
+      mundo: mundoP, configuracao, authAtivo: true,
+      onPareado: (quem) => resolverPareado({ ok: true, quem }),
+    });
+    const { codigo, expiraEm } = c.gerarCodigoPareamento();
+    process.stdout.write(
+      `\nCódigo de pareamento: ${codigo}\n` +
+      `  Cole no client, em Configurações → Pareamento do Conector, em até ` +
+      `${Math.round((expiraEm - Date.now()) / 60000)} minutos.\n` +
+      `  Escutando em http://${args.expor ? "0.0.0.0" : "127.0.0.1"}:${porta}\n\n`);
+    const resultado = await Promise.race([
+      aguardarPareado,
+      new Promise((resolve) => setTimeout(() => resolve({ ok: false }),
+                                           expiraEm - Date.now() + 500)),
+    ]);
+    await c.fechar();
+    if (resultado.ok) {
+      process.stdout.write(`\nPareado com ${resultado.quem.email}. Pronto pra jogar.\n\n`);
+      return 0;
+    }
+    process.stdout.write(
+      "\nExpirou sem ninguém parear. Rode --parear de novo quando quiser.\n\n");
+    return 1;
+  }
+
   if (cobraConfiguracao(cfg)) return 1;
 
   const mundo = new Mundo(cfg.mundo, cfg.personagem);
+  mundo.jwt = cfg.jwt || null;
   Mente.usarMundo(mundo);
 
   if (args.verificar) return (await verificar(cfg, mundo)) ? 0 : 1;
+
+  if (!(await confirmarPosse(cfg, mundo))) return 1;
+
+  // Computado uma vez: se o mundo troca de auth.secret no meio da sessão, a
+  // reinicialização (já existente, `/api/reiniciar`) é o caminho — não vale a
+  // pena checar de novo a cada sussurro por uma mudança que não acontece ao
+  // vivo.
+  let authAtivo = false;
+  try {
+    const authCfg = await mundo.authConfig();
+    authAtivo = !!(authCfg && authCfg.google_client_id);
+  } catch (_) { /* mundo fora do ar agora: o erro de verdade aparece adiante */ }
 
   const ext = extensoes.criar(path.join(__dirname, "..", "extensoes"));
   Mente.usarExtensoes(ext);
@@ -361,7 +494,8 @@ async function main() {
     const c = await require("../canal").servir({ porta: cfg.canal, laco, cfg,
                                                 expor: !!args.expor, painel,
                                                 permitirConfigRemota:
-                                                  !!args["config-remota"] });
+                                                  !!args["config-remota"],
+                                                mundo, configuracao, authAtivo });
     paraOCanal = c.emitir;
     // Com tela aberta, a Mente continua tendo iniciativa própria — o relógio é
     // daqui agora, não da aba. `--sem-autonomia` desliga.

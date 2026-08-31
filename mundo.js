@@ -24,11 +24,17 @@ class Mundo {
     // argumento de capacidade e materia de julgamento, e isto nao e.
     this.turnoId = null;
     this.capacidadesDaCena = null;
+    // o JWT do jogador pareado (spec 056) — quando o server exige login, todo
+    // pedido daqui sai com ele. `null` = mundo sem auth, ou ainda nao pareado.
+    this.jwt = null;
   }
 
   async _json(caminho, opcoes) {
+    const cabecalhos = { ...((opcoes && opcoes.headers) || {}) };
+    if (this.jwt) cabecalhos.Authorization = "Bearer " + this.jwt;
     const res = await fetch(this.base + caminho, {
       ...opcoes,
+      headers: cabecalhos,
       signal: AbortSignal.timeout(TIMEOUT),
     });
     if (!res.ok) {
@@ -47,6 +53,39 @@ class Mundo {
 
   personagens() {
     return this._json("/api/characters");
+  }
+
+  // --- autenticacao (spec 056) --------------------------------------------- //
+
+  // Se o mundo exige login, `google_client_id` vem preenchido. Vazio = modo
+  // legado — nenhuma checagem daqui pra frente faz sentido.
+  authConfig() {
+    return this._json("/api/auth/config");
+  }
+
+  // So os personagens que sao MEUS (owner == sub do meu JWT). Usado pra
+  // recusar cedo, antes de gastar turno de LLM num personagem que nao e meu.
+  personagensMinhas() {
+    return this._json("/api/characters/mine");
+  }
+
+  // Pergunta ao SERVER se este `jwt` (de OUTRO lado, nao necessariamente
+  // `this.jwt`) e autentico, e devolve {sub, email, name} ou `null`. E a
+  // verificacao que o conector delega em vez de reimplementar — ele nunca
+  // guarda o `auth.secret` do server, entao nunca poderia assinar nem
+  // conferir a assinatura sozinho.
+  async validarToken(jwt) {
+    if (!jwt) return null;
+    try {
+      const res = await fetch(this.base + "/api/auth/me", {
+        headers: { Authorization: "Bearer " + jwt },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!res.ok) return null;
+      return await res.json();
+    } catch (_) {
+      return null;
+    }
   }
 
   // --- MCP: o caminho da Mente -------------------------------------------- //
