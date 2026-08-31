@@ -1,14 +1,18 @@
 {
   "name": "loreforge-conector",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "O conector da Mente — voce roda, voce audita, sua chave nunca sai daqui.",
   "type": "commonjs",
-  "bin": { "loreforge": "bin/conector.js" },
+  "bin": {
+    "loreforge": "bin/conector.js"
+  },
   "scripts": {
     "test": "node --test",
     "build": "node --experimental-sea-config sea-config.json"
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "license": "MIT",
   "private": true
 }

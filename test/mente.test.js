@@ -268,3 +268,68 @@ test("060/US2: o enum de LISTA DE CENA sai das tools; o CALCULADO fica", () => {
   assert.ok(!arr.inputSchema.properties.ingredientes.items.enum,
     "enum dentro de array também sai");
 });
+
+
+// ===========================================================================
+// SPEC 060 / US3 — a cena em PROSA.
+//
+// Medida contra quatro alternativas: a prosa foi a mais barata E a mais certeira
+// (20/20 contra 19/20 do JSON). E o resultado NÃO é "menos estrutura é melhor" —
+// as linhas `chave: valor` são quase tão baratas e foram as PIORES (15/20).
+// ===========================================================================
+
+test("060/US3: a prosa leva TODOS os nomes da cena e NENHUM id", async () => {
+  const m = require("../mente");
+  const CTX = {
+    self: { id: "torvin-ferreiro", name: "Torvin", body: "Um ferreiro calado.",
+            necessidade: { fome: "com fome" },
+            inventory: [{ id: "bolsa-de-couro", name: "Bolsa de Couro" }] },
+    location: { id: "praca-do-mercado", name: "Praça do Mercado",
+                narrative: "Barracas e gente." },
+    characters_present: [
+      { id: "obadiah-mascate", name: "Obadiah, o Mascate", action: "vende",
+        carrying: [{ id: "cravos-de-ferro", name: "Cravos de Ferro" }] },
+      { id: "torvin-ferreiro", name: "Torvin", state: "self" }],
+    items_present: [{ id: "frasco-de-oleo", name: "Frasco de Óleo" }],
+    objects_present: [{ id: "poco-da-praca", name: "Poço", contains: [] }],
+    routes: [{ id: "rua-do-portao", name: "Rua do Portão",
+               destination_name: "Porto Negro" }],
+    memories: [{ content: "Prometi cravos a Obadiah.", timestamp_start: 1 }],
+  };
+  const prosa = m._cenaEmProsa(await m._contextoPayload(CTX, { comCapacidades: false }));
+
+  for (const nome of ["Praça do Mercado", "Obadiah, o Mascate", "Cravos de Ferro",
+                      "Frasco de Óleo", "Poço", "Bolsa de Couro", "Rua do Portão",
+                      "Porto Negro", "Um ferreiro calado", "com fome"]) {
+    assert.ok(prosa.includes(nome), `a prosa perdeu "${nome}"`);
+  }
+  for (const id of ["obadiah-mascate", "frasco-de-oleo", "bolsa-de-couro",
+                    "cravos-de-ferro", "poco-da-praca", "rua-do-portao"]) {
+    assert.ok(!prosa.includes(id), `o id "${id}" vazou para a prosa`);
+  }
+});
+
+test("060/US3: a MEMÓRIA chega à prosa — o campo é `o_que`, não `content`", async () => {
+  // Este teste existe por um bug real, pego antes de ir ao ar: o renderizador
+  // procurava `summary`/`content`, mas `_limparMemorias` entrega `o_que`. A
+  // memória sumiria da cena EM SILÊNCIO — e memória é o eixo do jogo.
+  const m = require("../mente");
+  const prosa = m._cenaEmProsa(await m._contextoPayload({
+    self: { name: "T", inventory: [] }, location: { name: "Praça" },
+    characters_present: [], items_present: [], objects_present: [], routes: [],
+    memories: [{ content: "Prometi cravos a Obadiah.", timestamp_start: 1 }],
+  }, { comCapacidades: false }));
+  assert.ok(/Ele lembra:.*Prometi cravos/.test(prosa), prosa);
+});
+
+test("060/US3: cena vazia não quebra e não mente", async () => {
+  const m = require("../mente");
+  const prosa = m._cenaEmProsa(await m._contextoPayload({
+    self: { name: "T", inventory: [] }, location: { name: "Ermo" },
+    characters_present: [], items_present: [], objects_present: [], routes: [],
+    memories: [],
+  }, { comCapacidades: false }));
+  assert.ok(prosa.includes("Não há mais ninguém aqui"));
+  assert.ok(prosa.includes("Ele não carrega nada"));
+  assert.ok(!prosa.includes("undefined"), prosa);
+});

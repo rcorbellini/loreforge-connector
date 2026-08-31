@@ -582,6 +582,70 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
 - Se nada couber exatamente, escolha a ferramenta MAIS PRÓXIMA do que ele quer e diga na prosa o que ele tenta. Quem decide se cabe é o mundo, não você — um "não" dele é jogo; ficar calado não é.
 - CONFIRME ANTES DE AGIR. Algumas ferramentas só PERGUNTAM (a sua memória, o momento do dia) — não mudam nada e não gastam a vez. Se o que ele pretende depende de uma CONDIÇÃO ("se aquele ali roubou", "quem é ladrão aqui") ou de um MOMENTO ("ao anoitecer", "no fim do dia"), pergunte primeiro e decida depois. Agir sobre palpite é como se acusa e se fere quem não devia. Nunca cite o nome de uma ferramenta na prosa.`;
 
+  // A CENA EM PROSA (spec 060, US3).
+  //
+  // MEDIDO, cinco formatos da MESMA informação, em token E em acerto:
+  //
+  //   JSON indentado (o de antes)  18.306 cobrado · 19/20 tool · 19/20 alvo
+  //   JSON compacto                17.983 · 19/20 · 19/20
+  //   linhas `chave: valor`        17.851 · 16/20 · 15/20
+  //   tabular                      17.847 · 19/20 · 19/20
+  //   PROSA CORRIDA                17.818 · 20/20 · 20/20
+  //
+  // A prosa é a mais barata E a mais certeira. E o resultado NÃO é "menos
+  // estrutura é melhor": as linhas `chave: valor` são quase tão baratas e foram
+  // as PIORES. A forma específica importa — por isso este texto é o que foi
+  // medido, e mudá-lo pede medir de novo.
+  //
+  // Só o caminho do SUSSURRO usa isto. O de AUTONOMIA continua em JSON de
+  // propósito: lá o bloco `capacidades` em prosa é a ÚNICA fonte do que existe
+  // (não há `tools` nativas), e trocar o formato sem medir aquele caminho seria
+  // exatamente o que a regra da 058 proíbe.
+  function _cenaEmProsa(d) {
+    const c = d.contexto || {};
+    const linhas = [];
+    linhas.push(`Ele está em ${c.local || "algum lugar"}.` +
+                (c.descricao ? ` ${c.descricao}` : ""));
+    if (c.pertence_a) linhas.push(`O lugar é de ${c.pertence_a}.`);
+    if (d.personalidade) linhas.push(`Quem ele é: ${d.personalidade}`);
+    if (d.necessidade) {
+      const n = Object.entries(d.necessidade)
+        .filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(", ");
+      if (n) linhas.push(`Como ele está: ${n}.`);
+    }
+    const presentes = (c.presentes || []).map((p) => {
+      const carrega = (p.carrega || []).length
+        ? `, carregando ${(p.carrega || []).join(", ")}` : "";
+      return `${p.nome}${p.fazendo ? ` (${p.fazendo})` : ""}${carrega}`;
+    });
+    linhas.push(presentes.length
+      ? `Estão aqui: ${presentes.join("; ")}.` : "Não há mais ninguém aqui.");
+    const itens = (c.itens_presentes || []).map((i) => i.nome);
+    if (itens.length) linhas.push(`No chão: ${itens.join(", ")}.`);
+    const objs = (c.objetos_presentes || []).map((o) => {
+      const dentro = (o.contem || []).length ? ` (com ${(o.contem || []).join(", ")})` : "";
+      return `${o.nome}${dentro}`;
+    });
+    if (objs.length) linhas.push(`Por perto: ${objs.join(", ")}.`);
+    const inv = c.inventario || [];
+    linhas.push(inv.length ? `Ele carrega: ${inv.join(", ")}.` : "Ele não carrega nada.");
+    const rotas = (d.rotas_disponiveis || []).map((r) =>
+      `${r.nome}${r.para ? `, que leva a ${r.para}` : ""}`);
+    if (rotas.length) linhas.push(`Saídas: ${rotas.join("; ")}.`);
+    // `_limparMemorias` entrega `{saliencia, recencia, intensidade, o_que}` — é o
+    // `o_que` que carrega o texto. Aceitar as outras formas é defensivo, não
+    // esperança: se a forma mudar, a prosa não emudece em silêncio.
+    const mem = (d.memorias || []).map((m) =>
+      typeof m === "string" ? m
+        : (m && (m.o_que || m.summary || m.content || m.conteudo || m.resumo)) || "")
+      .filter(Boolean);
+    if (mem.length) linhas.push(`Ele lembra: ${mem.join(" | ")}`);
+    const intencoes = (d.intencoes || []).map((i) =>
+      typeof i === "string" ? i : (i && (i.content || i.conteudo)) || "").filter(Boolean);
+    if (intencoes.length) linhas.push(`Ele se comprometeu a: ${intencoes.join(" | ")}`);
+    return linhas.join("\n");
+  }
+
   // O RESOLVEDOR (spec 060, US2), criado sob demanda e reusado.
   //
   // A camada semântica só existe se o jogador tiver apontado um modelo de
@@ -763,7 +827,8 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
           // estruturada; ver o comentário em `_contextoPayload` sobre por que
           // repeti-la aqui é o que estava atrapalhando.
           const base = "O que ele faz?\n\nINSTRUÇÃO: " + instruction + "\n\n"
-                     + JSON.stringify(await _contextoPayload(context, { comCapacidades: false }), null, 2);
+                     + _cenaEmProsa(await _contextoPayload(context,
+                                      { comCapacidades: false }));
 
           // O RACIOCÍNIO É UMA CONVERSA, e não uma sequência de perguntas amnésicas.
           //
@@ -1116,7 +1181,7 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     // é distinguida do fim legítimo da vez, e a função é pura.
     _paradaFalsa,
     // expostas para o teste da US2 provar que o id não vaza
-    _contextoPayload, _semIdDeCena,
+    _contextoPayload, _semIdDeCena, _cenaEmProsa,
   };
 })();
 
