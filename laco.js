@@ -19,6 +19,19 @@ const { log } = require("./log");
 // `take` da corda são duas propostas; `take` da faca duas vezes é uma repetida.
 const _chaveDe = (p) => `${p.capacidade}\u0000${JSON.stringify(p.alvos || {})}`;
 
+// Quantos passos uma ÚNICA vez pode APLICAR antes de terminar (spec 060).
+//
+// NÃO é o teto de PROPOSTAS que o mantenedor recusou no 53.2 — aquele limitava o
+// que A Mente pode QUERER numa resposta, e continua não existindo. Este limita
+// quanto a vez DURA: sem ele, uma Mente que nunca se declare satisfeita segura o
+// turno indefinidamente, e cada rodada custa uma chamada de modelo.
+//
+// Seis é folgado de propósito: as cadeias medidas em jogo têm dois ou três
+// passos, então o orçamento é fim de linha, não régua de comportamento. Se ele
+// começar a disparar com frequência, o número não é o problema — é sinal de que
+// A Mente não está sabendo parar, e isso se investiga, não se aperta.
+const MAX_PASSOS_APLICADOS = 6;
+
 
 class Laco {
   constructor({ mundo, mente, extensoes, registro, emitir }) {
@@ -153,6 +166,9 @@ class Laco {
     const jaTentadas = new Set();
     let inventadas = [];
     let atual = sessao;
+    // passos que de fato MUDARAM o mundo nesta vez, contra o orçamento abaixo
+    let aplicados = 0;
+    let aplicadosAntes = 0;
 
     // O PLANO MORRE COM O PASSO QUE FALHOU — e a Mente sabe disso NA MESMA CONVERSA.
     //
@@ -176,7 +192,43 @@ class Laco {
       const parou = await this._executar(lista, atual, t, desfechos, vistos,
                                          jaTentadas, resultados);
       if (parou && parou.abortar) break;
-      if (!parou) break;                 // foi até o fim: nada a repensar
+
+      // O TURNO CONTINUA NO SUCESSO — e não só depois de um "não" (spec 060).
+      //
+      // Aqui havia `if (!parou) break;  // foi até o fim: nada a repensar`, e a
+      // consequência era grande: quando o passo proposto DAVA CERTO, a vez
+      // acabava ali e A Mente nunca era perguntada "e agora?". Um sussurro de
+      // dois passos rendia um.
+      //
+      // MEDIDO antes de mexer: a Mente propõe UMA chamada por rodada, sempre —
+      // 1.0 em 35 rodadas, e o controle de duas ferramentas INDEPENDENTES falha
+      // igual ao de duas encadeadas, então não é encadear, é emitir a segunda.
+      // Como ela não emite duas, alguém tem de perguntar de novo.
+      //
+      // E continuar é MAIS BARATO que recomeçar, não menos: dois turnos custam 4
+      // chamadas e 36.863 tokens de entrada; um turno com duas rodadas custa 3 e
+      // 20.726 (-44%), porque `system + user + tools` não mudam e o prefixo fica
+      // no cache — a 2a rodada reavalia 2.288 tokens em vez de 18.354.
+      //
+      // Isto NÃO desfaz o conserto do 53.2: a recusa continua matando a cauda
+      // logo abaixo. O que muda é que o SUCESSO também tem continuação.
+      if (!parou) {
+        aplicados += desfechos.filter((d) => d && d.ok).length - aplicadosAntes;
+        aplicadosAntes = desfechos.filter((d) => d && d.ok).length;
+        // O ORÇAMENTO É DE DURAÇÃO DA VEZ, NÃO DE VONTADE.
+        //
+        // A distinção não é sutil e precisa ficar escrita: o teto de PROPOSTAS
+        // (quantas capacidades A Mente pode pedir de uma vez) foi proposto no
+        // 53.2, o mantenedor recusou com razão, e ele não volta — `_peneira` não
+        // corta por quantidade. Este teto é outra coisa: quantos passos uma
+        // única vez pode APLICAR antes de terminar. Sem ele, uma Mente que nunca
+        // se declare satisfeita segura o turno para sempre.
+        if (aplicados >= MAX_PASSOS_APLICADOS) {
+          log("ORÇAMENTO DE PASSOS ESGOTADO", `${aplicados} aplicados`);
+          if (t) t.falhaDeExtensao("laco:orcamento-esgotado", `${aplicados} passos`);
+          break;
+        }
+      }
       // Sem `continuar`, não há fio de conversa para devolver o desfecho — é o caso
       // do caminho de prosa e de qualquer Mente que só saiba propor uma vez. Aí a
       // recusa encerra a vez, como encerrava antes de existir a sessão.

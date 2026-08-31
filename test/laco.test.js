@@ -567,3 +567,110 @@ test("o registro guarda o que o personagem PRETENDIA no início do turno", async
   // comporta diferente quando TEM compromisso
   assert.deepStrictEqual(vistas[0], CENA.intentions);
 });
+
+// ===========================================================================
+// SPEC 060 — o turno continua no SUCESSO, e não só depois de um "não".
+//
+// Antes daqui, `_porPropostas` tinha `if (!parou) break;  // foi até o fim: nada
+// a repensar`: o passo que dava certo ENCERRAVA a vez, e A Mente nunca era
+// perguntada "e agora?". Um sussurro de dois passos rendia um.
+// ===========================================================================
+
+test("060: o SUCESSO continua — a Mente é perguntada de novo e o 2º passo acontece",
+async () => {
+  const c = coletor();
+  const mundo = mundoDe({
+    respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["pegou o frasco"] } },
+                { recusado: false, texto: "", narrativa: { aconteceu: ["entregou o frasco"] } }],
+    capacidades: ["take", "give"],
+  });
+  menteDe.recebeu = [];
+  const laco = new Laco({
+    mundo,
+    mente: menteDe({ propostas: [{ id: "1", capacidade: "take", alvos: { item: "frasco" } }],
+                     depois: [{ id: "2", capacidade: "give", alvos: { item: "frasco", to: "obadiah" } }] }),
+    extensoes: extVazio(), registro: null, emitir: c.emitir,
+  });
+  await laco.sussurrar("pegue o frasco e entregue");
+  assert.deepStrictEqual(mundo.chamadas.map((x) => x.nome), ["take", "give"],
+    "as duas foram ao mundo, na ordem");
+  assert.ok(menteDe.recebeu.length >= 1,
+    "o desfecho do 1º passo voltou à conversa — é o que faz o 2º nascer");
+  const narracoes = c.eventos.filter((e) => e.ev === "narracao_fim");
+  assert.strictEqual(narracoes.length, 1,
+    "a narração é UMA, sobre o arco inteiro — nunca uma por passo");
+});
+
+test("060: REGRESSÃO do 53.2 — a recusa continua matando a cauda", async () => {
+  const c = coletor();
+  const mundo = mundoDe({
+    respostas: [{ recusado: true, texto: "está de mãos ocupadas", narrativa: {} }],
+    capacidades: ["take", "give"],
+  });
+  menteDe.recebeu = [];
+  const laco = new Laco({
+    mundo,
+    // as DUAS na mesma proposta: a 2ª pressupõe a 1ª, que será recusada
+    mente: menteDe({ propostas: [
+      { id: "1", capacidade: "take", alvos: { item: "frasco" } },
+      { id: "2", capacidade: "give", alvos: { item: "frasco", to: "obadiah" } }] }),
+    extensoes: extVazio(), registro: null, emitir: c.emitir,
+  });
+  await laco.sussurrar("pegue e entregue");
+  assert.deepStrictEqual(mundo.chamadas.map((x) => x.nome), ["take"],
+    "a cauda NÃO foi ao mundo: o passo de trás pressupunha o da frente");
+  assert.ok(c.eventos.some((e) => e.ev === "recusa"),
+    "a recusa virou matéria de cena, não silêncio");
+});
+
+test("060: a repetição do que já foi despachado ENCERRA o turno", async () => {
+  const c = coletor();
+  const mundo = mundoDe({
+    respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["entregou"] } }],
+    capacidades: ["give"],
+  });
+  menteDe.recebeu = [];
+  const mesma = { id: "1", capacidade: "give", alvos: { item: "moeda", to: "obadiah" } };
+  const laco = new Laco({
+    mundo,
+    // ela propõe a MESMA coisa de novo na 2ª rodada — o `jaTentadas` barra,
+    // a lista esvazia e o `while` quebra. É sinal de parada, não erro.
+    mente: menteDe({ propostas: [mesma], depois: [{ ...mesma, id: "2" }] }),
+    extensoes: extVazio(), registro: null, emitir: c.emitir,
+  });
+  await laco.sussurrar("entregue a moeda");
+  assert.strictEqual(mundo.chamadas.length, 1,
+    "a repetição não foi ao mundo uma segunda vez");
+  assert.strictEqual(c.eventos.filter((e) => e.ev === "narracao_fim").length, 1);
+});
+
+test("060: o orçamento de PASSOS APLICADOS encerra a vez, e a narração acontece",
+async () => {
+  const c = coletor();
+  // uma Mente que nunca se declara satisfeita: propõe um passo NOVO a cada rodada
+  const respostas = [];
+  for (let i = 0; i < 20; i++) {
+    respostas.push({ recusado: false, texto: "", narrativa: { aconteceu: [`ato ${i}`] } });
+  }
+  const mundo = mundoDe({ respostas, capacidades: ["take"] });
+  let n = 0;
+  const menteInsaciavel = {
+    interpret: async () => {
+      const proximo = () => ({
+        pensamento: "penso",
+        propostas: [{ id: `p${n}`, capacidade: "take", alvos: { item: `coisa-${n++}` } }],
+        continuar: async () => proximo(),
+      });
+      return proximo();
+    },
+    narrate: async () => "prosa",
+    deriveWhisper: async () => null,
+  };
+  const laco = new Laco({ mundo, mente: menteInsaciavel, extensoes: extVazio(),
+                          registro: null, emitir: c.emitir });
+  await laco.sussurrar("faça coisas para sempre");
+  assert.ok(mundo.chamadas.length <= 7,
+    `o orçamento segurou a vez (foram ${mundo.chamadas.length} chamadas)`);
+  assert.strictEqual(c.eventos.filter((e) => e.ev === "narracao_fim").length, 1,
+    "mesmo estourando o orçamento, o turno narra");
+});

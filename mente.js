@@ -128,9 +128,10 @@ const Mente = (() => {
     _avisouSemTools = true;
     process.stderr.write(
       `\n⚠  O modelo não devolveu chamada de capacidade (${porque}).\n` +
-      `   Seguindo pelo caminho de prosa, que é mais frágil: o schema deixa de\n` +
-      `   ser imposto pelo runtime. Se isso se repetir, o modelo provavelmente\n` +
-      `   não suporta tool-calling — rode com --verificar para confirmar.\n\n`);
+      `   O turno termina sem decisão: a spec 045 aposentou o caminho de prosa, e\n` +
+      `   não existe segundo motor para onde cair (Princípio VIII). Se isso se\n` +
+      `   repetir, o modelo provavelmente não suporta tool-calling — rode com\n` +
+      `   --verificar para confirmar.\n\n`);
   }
 
   // === O DIALETO DE CADA PROVEDOR ===========================================
@@ -577,6 +578,36 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
 - Se nada couber exatamente, escolha a ferramenta MAIS PRÓXIMA do que ele quer e diga na prosa o que ele tenta. Quem decide se cabe é o mundo, não você — um "não" dele é jogo; ficar calado não é.
 - CONFIRME ANTES DE AGIR. Algumas ferramentas só PERGUNTAM (a sua memória, o momento do dia) — não mudam nada e não gastam a vez. Se o que ele pretende depende de uma CONDIÇÃO ("se aquele ali roubou", "quem é ladrão aqui") ou de um MOMENTO ("ao anoitecer", "no fim do dia"), pergunte primeiro e decida depois. Agir sobre palpite é como se acusa e se fere quem não devia. Nunca cite o nome de uma ferramenta na prosa.`;
 
+  // A CHAMADA QUE VEIO COMO TEXTO (spec 060).
+  //
+  // Reconhece pela FORMA, não por adivinhação: o conteúdo parseia como JSON (ou
+  // traz um objeto JSON embutido) e o nome que ele declara é de uma capacidade
+  // que a cena de fato oferece. Nome desconhecido não conta — seria confundir
+  // "falhou em emitir" com "inventou capacidade", que já tem tratamento próprio
+  // no `_peneira` do laço.
+  //
+  // Devolve o nome da capacidade, para o registro, ou `null`.
+  function _paradaFalsa(texto, tools) {
+    if (!texto || typeof texto !== "string") return null;
+    const nomes = new Set((tools || []).map((t) => t && t.name).filter(Boolean));
+    if (!nomes.size) return null;
+    const bruto = texto.trim();
+    const inicio = bruto.indexOf("{");
+    const fim = bruto.lastIndexOf("}");
+    if (inicio < 0 || fim <= inicio) return null;
+    let obj;
+    try {
+      obj = JSON.parse(bruto.slice(inicio, fim + 1));
+    } catch (_) {
+      return null;
+    }
+    if (!obj || typeof obj !== "object") return null;
+    const nome = obj.name || obj.nome
+                 || (obj.function && (obj.function.name || obj.function.nome));
+    return (typeof nome === "string" && nomes.has(nome)) ? nome : null;
+  }
+
+
   async function interpret(instruction, context, onAction, opts = {}) {
     const charId = (context.self && context.self.id) || context.character_id;
     // CAMINHO NOVO (spec 043): as capacidades vão como TOOLS NATIVAS. O schema é
@@ -715,8 +746,27 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
                 // sem tool_calls: ou o runtime não suporta, ou ela decidiu não agir.
                 // Spec 045: NÃO cai mais num segundo motor — o laço (`laco.js`)
                 // trata sessão nula como "nada aconteceu", com o recado honesto.
+                // A PARADA FALSA (spec 060). Nem todo silêncio é decisão.
+                //
+                // Medido: às vezes o modelo escreve a chamada como TEXTO no
+                // `content` — `{"name": "ask", "parameters": {...}}` — em vez de
+                // emitir tool call. Isso chega aqui exatamente como "ela não quis
+                // mais agir", e com o turno passando a continuar no sucesso (spec
+                // 060) a diferença deixou de ser acadêmica: um é o fim natural da
+                // vez, o outro é falha de emissão. Confundir os dois faria a
+                // próxima medição de campo mentir, que é o mesmo estrago que o
+                // item 52.5 registrou.
+                //
+                // NUNCA executar o que vier assim. Executar seria reabrir o
+                // caminho de proposta em prosa que a spec 045 aposentou de
+                // propósito — e por medição, não por gosto.
+                const falsa = _paradaFalsa(r && r.texto, tools);
+                if (falsa) {
+                  devlog("PARADA FALSA — tool call veio como TEXTO", falsa);
+                }
                 devlog("SEM TOOL CALLS — turno sem decisão", r && r.texto);
-                _avisaSemTools("nenhuma tool call na resposta");
+                _avisaSemTools(falsa ? `tool call em texto: ${falsa}`
+                                     : "nenhuma tool call na resposta");
                 return null;
               }
               const resultados = [];
@@ -924,6 +974,9 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     config, saveConfig, check, usarMundo, usarExtensoes, interpret,
     deriveWhisper, narrate, narrateObservation, log: devlog, DEFAULTS,
     custoDoTurno, zerarCusto,
+    // exposta só para teste: a spec 060 precisa provar que a parada FALSA
+    // é distinguida do fim legítimo da vez, e a função é pura.
+    _paradaFalsa,
   };
 })();
 

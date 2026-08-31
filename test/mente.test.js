@@ -172,3 +172,35 @@ test("param `array`: id único vira lista de um; lista já certa não é mexida"
                                 prosa: { acao: "cozinha", fala: "" } });
   assert.deepStrictEqual(ja.alvos.ingredientes, ["carne-a", "carne-b"]);
 });
+
+// ===========================================================================
+// SPEC 060 — a PARADA FALSA.
+//
+// Com o turno passando a continuar no sucesso, "sem tool call" virou o sinal de
+// que A Mente terminou. Só que às vezes ela NÃO terminou: o modelo escreveu a
+// chamada como TEXTO no `content` em vez de emitir tool call, e isso chega
+// exatamente igual. Confundir os dois faria a próxima medição de campo mentir —
+// o mesmo estrago que o item 52.5 registrou.
+// ===========================================================================
+
+test("060: chamada emitida como TEXTO é reconhecida como parada FALSA", () => {
+  const { _paradaFalsa } = require("../mente");
+  assert.strictEqual(typeof _paradaFalsa, "function",
+    "a função precisa estar exposta — teste que não testa nada é pior que teste ausente");
+  const tools = [{ name: "ask_directions" }, { name: "take" }];
+  assert.strictEqual(
+    _paradaFalsa('{"name": "ask_directions", "parameters": {"quem": "odila"}}', tools),
+    "ask_directions", "JSON puro com nome conhecido");
+  assert.strictEqual(
+    _paradaFalsa('Ele decide perguntar. {"name":"take","parameters":{}}', tools),
+    "take", "JSON embutido em prosa");
+  assert.strictEqual(
+    _paradaFalsa("Torvin fica onde está, pensando.", tools), null,
+    "prosa de verdade NÃO é parada falsa");
+  assert.strictEqual(
+    _paradaFalsa('{"name": "comprar", "parameters": {}}', tools), null,
+    "nome DESCONHECIDO não é parada falsa — é capacidade inventada, que o " +
+    "`_peneira` já trata; confundir as duas troca um defeito por outro");
+  assert.strictEqual(_paradaFalsa("", tools), null);
+  assert.strictEqual(_paradaFalsa(null, tools), null);
+});
