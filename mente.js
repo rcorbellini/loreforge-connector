@@ -19,6 +19,7 @@
 
 const configuracao = require("./config");
 const dialeto = require("./dialeto");
+const { criarResolvedor } = require("./resolucao");
 const { log: _logExterno } = require("./log");
 
 // Quantas voltas de RACIOCÍNIO uma vez pode ter — consultas e continuações somadas.
@@ -510,18 +511,21 @@ RESTRIÇÕES SEVERAS:
         local: context.location && context.location.name,
         descricao: context.location && context.location.narrative,
         pertence_a: _pertenceA(context.location && context.location.pertence_a),
+        // O ID SAI DAQUI (spec 060, US2): a Mente aponta por NOME e o conector
+        // resolve. Ela nunca vê um id — e por isso não tem como inventar um,
+        // que era a família de recusa mais comum do item 52.5.
         presentes: (context.characters_present || []).filter((c) => c.state !== "self").map((c) => ({
-          id: c.id, nome: c.name, fazendo: c.action, carrega: (c.carrying || []).map((it) => ({ id: it.id, nome: it.name })),
+          nome: c.name, fazendo: c.action, carrega: (c.carrying || []).map((it) => it.name),
         })),
         objetos_presentes: (context.objects_present || []).map((o) => ({
-          id: o.id, nome: o.name, interactions: o.interactions || null, contem: (o.contains || []).map((c) => ({ id: c.id, nome: c.name })),
+          nome: o.name, interactions: o.interactions || null, contem: (o.contains || []).map((c) => c.name),
         })),
-        itens_presentes: (context.items_present || []).map((it) => ({ id: it.id, nome: it.name, interactions: it.interactions || null })),
-        inventario: ((context.self && context.self.inventory) || []).map((it) => ({ id: it.id, nome: it.name })),
+        itens_presentes: (context.items_present || []).map((it) => ({ nome: it.name, interactions: it.interactions || null })),
+        inventario: ((context.self && context.self.inventory) || []).map((it) => it.name),
       },
       // Aplica a blindagem aqui:
       memorias: _limparMemorias(context.memories),
-      rotas_disponiveis: (context.routes || []).map((r) => ({ id: r.id, nome: r.name, para: r.destination_name })),
+      rotas_disponiveis: (context.routes || []).map((r) => ({ nome: r.name, para: r.destination_name })),
       // `comCapacidades` é FALSE só na chamada de `interpret` que já manda `tools`
       // nativas (spec 043) — lá, repetir a mesma informação em prosa é DUPLICAÇÃO,
       // não reforço. Medido ao vivo em 2026-08-17 (18 chamadas reais ao llama3.1:8b,
@@ -577,6 +581,90 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
 - Se a instrução violar a personalidade dele, faça o que ele de fato faria — e a prosa conta a recusa.
 - Se nada couber exatamente, escolha a ferramenta MAIS PRÓXIMA do que ele quer e diga na prosa o que ele tenta. Quem decide se cabe é o mundo, não você — um "não" dele é jogo; ficar calado não é.
 - CONFIRME ANTES DE AGIR. Algumas ferramentas só PERGUNTAM (a sua memória, o momento do dia) — não mudam nada e não gastam a vez. Se o que ele pretende depende de uma CONDIÇÃO ("se aquele ali roubou", "quem é ladrão aqui") ou de um MOMENTO ("ao anoitecer", "no fim do dia"), pergunte primeiro e decida depois. Agir sobre palpite é como se acusa e se fere quem não devia. Nunca cite o nome de uma ferramenta na prosa.`;
+
+  // O RESOLVEDOR (spec 060, US2), criado sob demanda e reusado.
+  //
+  // A camada semântica só existe se o jogador tiver apontado um modelo de
+  // embedding (`embeddingModel`, vazio por padrão). Sem ele o conector resolve
+  // pela literal e REJEITA o resto, dizendo isso — não é o fallback silencioso
+  // que o Princípio VIII proíbe, é uma camada a menos, declarada.
+  let _resolvedorCache = null;
+  let _resolvedorPara = null;
+  function _resolvedor() {
+    const cfg = config();
+    const modelo = (cfg && cfg.embeddingModel) || "";
+    if (_resolvedorCache && _resolvedorPara === modelo) return _resolvedorCache;
+    const embedder = modelo ? async (textos) => {
+      const r = await fetch(`${cfg.endpoint}/api/embed`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: modelo, input: textos }) });
+      if (!r.ok) throw new Error(`embed ${r.status}`);
+      return (await r.json()).embeddings;
+    } : null;
+    _resolvedorPara = modelo;
+    _resolvedorCache = criarResolvedor({ embedder });
+    return _resolvedorCache;
+  }
+
+  // OS ENUMS QUE FICAM (spec 060, research R6).
+  //
+  // O critério não é o tipo do dado, é a ORIGEM da informação:
+  //   · lista da CENA (itens, pessoas, objetos, rotas) -> SAI. A Mente já vê
+  //     tudo isso em prosa; o enum é a segunda cópia, e a cópia é que custa.
+  //   · subconjunto CALCULADO (quem está caído, o que dá para empunhar, que
+  //     trabalho está em processo) -> FICA. O contexto não diz isso de um jeito
+  //     que ela use: o enum é a única fonte, e ali ele INFORMA em vez de
+  //     restringir.
+  //   · vocabulário FECHADO (ativa/concluida/abandonada) -> FICA. Não é id.
+  //   · id de MEMÓRIA -> FICA. Não tem "nome" para ela apontar, e a description
+  //     já lista cada um com o resumo.
+  //   · lugar que ele SABE alcançar -> FICA. Deriva de memória de rota, e o
+  //     contexto não traz essa lista.
+  const _ENUM_QUE_FICA = new Set([
+    "heal:alvo", "butcher:alvo",                 // subconjunto calculado
+    "write:instrumento", "sing:instrumento",     // idem (o que dá para empunhar)
+    "craft:peca", "forge_weapon:peca", "forge_armor:peca", "cook:peca",
+    "brew:peca",                                 // trabalho em processo
+    "set_intention:status", "give:intention_id", "trade:intention_id",
+    "promise:intention_id",                      // vocabulário fechado / intenção
+    "travel_to:destino", "ask_about:sobre_lugar",// lugar que ele sabe alcançar
+    "learn_routes:rotas",                        // rotas do MUNDO, não da cena
+  ]);
+
+  // Devolve a tool sem os enums que são lista de cena. Não muta a original: o
+  // `mundo` continua com a face inteira, que é de onde a tabela de resolução vem.
+  function _semIdDeCena(tool) {
+    const esq = tool.inputSchema || tool.parameters;
+    if (!esq || !esq.properties) return tool;
+    const props = {};
+    let mexeu = false;
+    for (const [nome, v] of Object.entries(esq.properties)) {
+      if (!v || typeof v !== "object" || _ENUM_QUE_FICA.has(`${tool.name}:${nome}`)) {
+        props[nome] = v;
+        continue;
+      }
+      if (Array.isArray(v.enum)) {
+        const { enum: _fora, ...resto } = v;
+        props[nome] = { ...resto, description: _DICA_DE_ALVO };
+        mexeu = true;
+      } else if (v.items && Array.isArray(v.items.enum)) {
+        const { enum: _fora, ...restoItens } = v.items;
+        props[nome] = { ...v, items: { ...restoItens, description: _DICA_DE_ALVO } };
+        mexeu = true;
+      } else {
+        props[nome] = v;
+      }
+    }
+    if (!mexeu) return tool;
+    const novo = { ...tool };
+    const alvo = { ...esq, properties: props };
+    if (tool.inputSchema) novo.inputSchema = alvo; else novo.parameters = alvo;
+    return novo;
+  }
+
+  // A frase que substitui o enum. Curta de propósito: ela responde "como eu
+  // chamo?", que é uma das duas perguntas que a Mente faz — e nada além disso.
+  const _DICA_DE_ALVO = "o NOME daquilo, como aparece na cena";
 
   // A CHAMADA QUE VEIO COMO TEXTO (spec 060).
   //
@@ -642,7 +730,22 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
           const nomesDoMundo = new Set(doMundo.map((t) => t.name));
           const locais = (_ext ? _ext.toolsLocais() : [])
                            .filter((t) => !nomesDoMundo.has(t.name));
-          const tools = doMundo.concat(locais);
+          // O ID NÃO DESCE À MENTE (spec 060, US2).
+          //
+          // O enum dos parâmetros que são LISTA DE CENA sai do que vai ao modelo
+          // e fica na tabela de resolução do `mundo` — ela aponta por NOME, o
+          // conector converte. Três razões, todas medidas:
+          //   · o enum NÃO era imposto pelo runtime (um id fora dele saiu 4/5);
+          //   · ele PARALISAVA no ambíguo (três moedas iguais: mudo 5/5);
+          //   · e SUBSTITUÍA em silêncio no ausente (pediram destilador, o mundo
+          //     examinou o fogão 5/5) — ação errada com cara de sucesso.
+          // Sai também 35% do peso do bloco de capacidades, mas isso é
+          // consequência, não motivo.
+          //
+          // O que FICA está em `_ENUM_QUE_FICA`: onde o enum não é a lista da
+          // cena mas um subconjunto que só o mundo sabe calcular, ele é a ÚNICA
+          // fonte daquele fato. Tirá-lo perderia conhecimento, não peso.
+          const tools = doMundo.concat(locais).map(_semIdDeCena);
           const ehLocal = (nome) =>
             !nomesDoMundo.has(nome) && _ext && _ext.ehLocal(nome);
           // AS CONSULTAS DO MUNDO (spec 040), reconhecidas pela marca do PRÓPRIO
@@ -715,13 +818,48 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
             return Object.fromEntries(Object.entries(args).map(([k, v]) =>
               [k, (props[k] || {}).type === "array" ? _lista(v) : v]));
           };
-          const _mapear = (calls) => calls.map((c) => ({
-            id: c.id,               // é por ele que o resultado volta amarrado
-            capacidade: c.nome,
-            alvos: _conforme(c.nome, Object.fromEntries(
-              Object.entries(c.args || {}).filter(([k]) => k !== "prosa"))),
-            prosa: (c.args || {}).prosa || null,
-          }));
+          // A REFERÊNCIA VIRA ID AQUI (spec 060, US2). A Mente apontou por nome;
+          // o conector converte com a tabela que o mundo já lhe deu. O que NÃO
+          // resolve viaja como `naoResolvido` — e o laço não o manda ao mundo:
+          // falta o mínimo que a capacidade exige, e isso é um 400 deste lado.
+          const _resolverAlvos = async (nomeCap, alvos) => {
+            const out = {}, falhas = [];
+            for (const [param, valor] of Object.entries(alvos)) {
+              const cands = _mundo.candidatosDe
+                ? _mundo.candidatosDe(nomeCap, param) : null;
+              if (!cands || typeof valor !== "string") { out[param] = valor; continue; }
+              const r = await _resolvedor().resolver(valor, cands);
+              if (r.id) {
+                out[param] = r.id;
+                if (r.via && r.via !== "id-exato") {
+                  devlog(`ALVO RESOLVIDO — ${nomeCap}.${param}`,
+                         `"${valor}" -> ${r.id} (${r.via})`);
+                }
+              } else {
+                out[param] = valor;
+                falhas.push({ param, referencia: valor, porque: r.porque,
+                              entre: r.entre || null });
+              }
+            }
+            return { alvos: out, falhas };
+          };
+
+          const _mapear = async (calls) => {
+            const saida = [];
+            for (const c of calls) {
+              const crus = _conforme(c.nome, Object.fromEntries(
+                Object.entries(c.args || {}).filter(([k]) => k !== "prosa")));
+              const { alvos, falhas } = await _resolverAlvos(c.nome, crus);
+              saida.push({
+                id: c.id,             // é por ele que o resultado volta amarrado
+                capacidade: c.nome,
+                alvos,
+                prosa: (c.args || {}).prosa || null,
+                ...(falhas.length ? { naoResolvido: falhas } : {}),
+              });
+            }
+            return saida;
+          };
 
           async function pensar() {
             while (rodadas++ < MAX_RODADAS) {
@@ -740,7 +878,7 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
                   if (p1 && p1.acao) onAction(p1.acao);
                 }
                 return { pensamento: (r.texto || "").trim(),
-                         propostas: _mapear(propostas), continuar };
+                         propostas: await _mapear(propostas), continuar };
               }
               if (!consultas.length && !(pedidosLocais.length && _ext)) {
                 // sem tool_calls: ou o runtime não suporta, ou ela decidiu não agir.
@@ -977,6 +1115,8 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     // exposta só para teste: a spec 060 precisa provar que a parada FALSA
     // é distinguida do fim legítimo da vez, e a função é pura.
     _paradaFalsa,
+    // expostas para o teste da US2 provar que o id não vaza
+    _contextoPayload, _semIdDeCena,
   };
 })();
 

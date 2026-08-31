@@ -30,6 +30,14 @@ const DEFAULTS = {
   personagem: "",
   canal: 8899,
   log: true,
+  // O MODELO DE EMBEDDING é OPCIONAL (spec 060, US2), e vazio de propósito.
+  //
+  // Ele serve à camada SEMÂNTICA da resolução de alvo — a que recupera paráfrase
+  // ("a mulher que vende água" -> odila-aguadeira) quando a camada literal não
+  // casou. Sem ele o conector resolve menos e REJEITA mais, e diz isso: não é o
+  // fallback silencioso que o Princípio VIII proíbe, é uma camada a menos,
+  // declarada. Quem quiser: `ollama pull nomic-embed-text` e aponte aqui.
+  embeddingModel: "",
 };
 
 // O JWT do jogador pareado (spec 056) e credencial igual as outras: quem o
@@ -118,6 +126,7 @@ function paraPagina(cfg) {
     runtime: c.runtime, model: c.model, endpoint: c.endpoint,
     remoteModel: c.remoteModel,
     openrouterModel: c.openrouterModel, openrouterEndpoint: c.openrouterEndpoint,
+    embeddingModel: c.embeddingModel,
     temChaveAnthropic: !!c.apiKey,
     temChaveOpenrouter: !!c.openrouterKey,
     // pareamento (spec 056): so o email aparece — nunca o JWT.

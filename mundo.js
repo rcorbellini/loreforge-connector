@@ -15,6 +15,28 @@ const { log } = require("./log");
 
 const TIMEOUT = 180000;   // o juizo de uma capacidade arbitrada leva dezenas de s
 
+// Percorre os schemas da face e colhe, por capacidade e por parâmetro, a lista de
+// ids que o mundo declarou como válidos. É o que o `enum` sempre carregou — só
+// que agora ele fica AQUI em vez de descer ao modelo.
+function _tabelaDeCandidatos(tools) {
+  const tabela = {};
+  for (const t of tools || []) {
+    const props = ((t.inputSchema || t.parameters || {}).properties) || {};
+    const porParam = {};
+    for (const [nome, esq] of Object.entries(props)) {
+      if (!esq || typeof esq !== "object") continue;
+      // escalar com enum, ou array cujos ITENS têm enum (cook.ingredientes)
+      const lista = Array.isArray(esq.enum) ? esq.enum
+                  : (esq.items && Array.isArray(esq.items.enum)) ? esq.items.enum
+                  : null;
+      if (lista && lista.length) porParam[nome] = lista.slice();
+    }
+    if (Object.keys(porParam).length) tabela[t.name] = porParam;
+  }
+  return tabela;
+}
+
+
 class Mundo {
   constructor(base, personagem) {
     this.base = String(base || "").replace(/\/$/, "");
@@ -24,6 +46,8 @@ class Mundo {
     // argumento de capacidade e materia de julgamento, e isto nao e.
     this.turnoId = null;
     this.capacidadesDaCena = null;
+    this.candidatosDaCena = null;   // spec 060: a tabela de resolução
+    this._nomesDaCena = null;       // id -> nome, colhido do contexto
     // o JWT do jogador pareado (spec 056) — quando o server exige login, todo
     // pedido daqui sai com ele. `null` = mundo sem auth, ou ainda nao pareado.
     this.jwt = null;
@@ -109,8 +133,53 @@ class Mundo {
     // desculpa para mandar ao mundo um nome que ele mesmo poderia ter
     // desmentido. Ver `conhece`.
     this.capacidadesDaCena = new Set(tools.map((t) => t.name));
+    // A TABELA DE RESOLUÇÃO (spec 060, US2).
+    //
+    // Aqui os schemas eram DESCARTADOS — guardava-se só o `Set` de nomes. Mas é
+    // dentro deles que vem a lista de ids válidos por parâmetro, e é ela que
+    // permite à Mente apontar por NOME sem nunca ver um id: o conector converte.
+    // O dado já chegava à máquina do jogador; só estava sendo jogado fora.
+    this.candidatosDaCena = _tabelaDeCandidatos(tools);
     log("MCP tools/list", tools.map((t) => t.name).join(", "));
     return tools;
+  }
+
+  // Os candidatos de um parâmetro, já emparelhados com o NOME que a Mente vê.
+  // `null` quando o parâmetro não tem lista — e aí não há o que resolver: quem
+  // chama manda a referência como veio (é texto livre por desenho, como a prosa).
+  candidatosDe(capacidade, parametro) {
+    const porParam = this.candidatosDaCena && this.candidatosDaCena[capacidade];
+    const ids = porParam && porParam[parametro];
+    if (!ids || !ids.length) return null;
+    const nomes = this._nomesDaCena || {};
+    return ids.map((id) => ({ id, nome: nomes[id] || id }));
+  }
+
+  // O DICIONÁRIO id -> nome, colhido do contexto. Sem ele a tabela teria só ids,
+  // e resolver por nome seria impossível — é o contexto que sabe como cada coisa
+  // se chama. Chamado por quem lê o contexto, uma vez por cena.
+  registrarNomes(contexto) {
+    const nomes = {};
+    const guarda = (e) => { if (e && e.id) nomes[e.id] = e.name || e.nome || e.id; };
+    const c = contexto || {};
+    (c.characters_present || []).forEach((p) => {
+      guarda(p);
+      (p.carrying || []).forEach(guarda);
+    });
+    (c.items_present || []).forEach(guarda);
+    (c.objects_present || []).forEach((o) => {
+      guarda(o);
+      (o.contains || []).forEach(guarda);
+    });
+    ((c.self && c.self.inventory) || []).forEach(guarda);
+    (c.routes || []).forEach((r) => {
+      if (r && r.id) nomes[r.id] = r.name || r.nome || r.id;
+    });
+    if (c.location && c.location.id) {
+      nomes[c.location.id] = c.location.name || c.location.id;
+    }
+    this._nomesDaCena = nomes;
+    return nomes;
   }
 
   // Esta capacidade existe NESTA cena? `null` = ainda não perguntamos, e aí não

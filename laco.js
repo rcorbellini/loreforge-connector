@@ -32,6 +32,13 @@ const _chaveDe = (p) => `${p.capacidade}\u0000${JSON.stringify(p.alvos || {})}`;
 // A Mente não está sabendo parar, e isso se investiga, não se aperta.
 const MAX_PASSOS_APLICADOS = 6;
 
+// Quantas vezes o conector avisa A Mente de que a referência não resolveu, antes
+// de encerrar a vez (spec 060, US2). Necessário porque uma referência que não
+// resolve NÃO APLICA NADA — então o orçamento de passos acima nunca avançaria, e
+// uma Mente teimosa giraria para sempre de graça para o mundo e caro para o
+// modelo.
+const MAX_RECADOS_DE_REFERENCIA = 2;
+
 
 class Laco {
   constructor({ mundo, mente, extensoes, registro, emitir }) {
@@ -169,6 +176,8 @@ class Laco {
     // passos que de fato MUDARAM o mundo nesta vez, contra o orçamento abaixo
     let aplicados = 0;
     let aplicadosAntes = 0;
+    // quantas vezes já dissemos a ela que a referência não resolveu
+    let recadosDeReferencia = 0;
 
     // O PLANO MORRE COM O PASSO QUE FALHOU — e a Mente sabe disso NA MESMA CONVERSA.
     //
@@ -185,8 +194,36 @@ class Laco {
     // segue de onde parou, sabendo o que fez.
     let antes = contexto;              // a foto contra a qual o diff é tirado
     while (atual) {
-      let lista;
-      ({ lista, inventadas } = this._peneira(atual.propostas, t, jaTentadas));
+      let lista, naoResolvidas;
+      ({ lista, inventadas, naoResolvidas } =
+        this._peneira(atual.propostas, t, jaTentadas));
+
+      // A REJEIÇÃO VOLTA À CONVERSA (spec 060, US2). É o que faz o 400 ser
+      // CORREÇÃO em vez de turno perdido: A Mente lê que a referência não
+      // correspondeu a nada, e replaneja na MESMA vez. Sem a US1 isto não
+      // existiria — é por isso que ela é pré-requisito de verdade, não só
+      // prioridade anterior.
+      //
+      // O texto é para A MENTE, não para o jogador: diz o que ela apontou e o
+      // que existe. Não é frase de mundo, e por isso não vai à tela.
+      // E O RECADO TEM TETO. Sem ele, uma Mente que insista na mesma referência
+      // impossível gira para sempre: nada é aplicado, então o orçamento de
+      // PASSOS não avança e nunca a interromperia. Duas chances é o bastante
+      // para uma correção honesta; a terceira é teimosia, e a vez termina.
+      if (naoResolvidas && naoResolvidas.length && !lista.length
+          && recadosDeReferencia < MAX_RECADOS_DE_REFERENCIA
+          && typeof atual.continuar === "function") {
+        recadosDeReferencia++;
+        const recado = naoResolvidas.map((f) => {
+          if (f.porque === "ambiguo" && f.entre) {
+            return `"${f.referencia}" pode ser mais de uma coisa aqui — diga qual.`;
+          }
+          return `"${f.referencia}" não corresponde a nada que esteja ao alcance agora.`;
+        });
+        atual = await atual.continuar(naoResolvidas.map((f, i) => ({
+          id: `nao-resolvido-${i}`, conteudo: recado[i] })));
+        continue;
+      }
       if (!lista.length) break;
       const resultados = [];
       const parou = await this._executar(lista, atual, t, desfechos, vistos,
@@ -276,6 +313,7 @@ class Laco {
   //   · proposta repetida é a mesma proposta.
   _peneira(entrada, t, jaTentadas) {
     const inventadas = [];
+    const naoResolvidas = [];
     const tentadas = jaTentadas || new Set();
     const nesta = new Set();
     const lista = (entrada || []).filter((p) => {
@@ -289,12 +327,39 @@ class Laco {
         inventadas.push(p.capacidade);
         return false;
       }
+      // A REFERÊNCIA QUE NÃO RESOLVEU não vai ao mundo (spec 060, US2).
+      //
+      // Mesma regra que já vale um nível acima, para capacidade INVENTADA, e
+      // pelos mesmos três motivos escritos ali: o conector JÁ SABE o que existe
+      // na cena; referência que não corresponde a nada é falha DA MENTE, não
+      // recusa do mundo (ele nem chegou a julgar); e vocabulário de máquina na
+      // tela fere o isolamento narrativo.
+      //
+      // A capacidade exige um id, e ele não tem o mínimo para montar a chamada.
+      // É um 400 deste lado — não uma pergunta ao mundo. O que torna isso
+      // aceitável, e não perda de turno, é a US1: a rejeição volta à conversa e
+      // A Mente replaneja na MESMA vez.
+      if (Array.isArray(p.naoResolvido) && p.naoResolvido.length) {
+        naoResolvidas.push(...p.naoResolvido.map((f) => ({
+          capacidade: p.capacidade, ...f })));
+        return false;
+      }
       const chave = _chaveDe(p);
       if (tentadas.has(chave) || nesta.has(chave)) return false;
       nesta.add(chave);
       return true;
     });
 
+    if (naoResolvidas.length) {
+      // No registro e no log, onde serve para melhorar o resolvedor e o prompt.
+      // NUNCA na tela: o jogador não tem o que fazer com "a referência não casou
+      // com candidato nenhum" — isso é conversa entre o conector e a Mente.
+      log("A MENTE APONTOU O QUE NÃO EXISTE (não foi ao mundo)",
+          naoResolvidas.map((f) => `${f.capacidade}.${f.param}="${f.referencia}" (${f.porque})`)
+            .join("; "));
+      if (t) t.falhaDeExtensao("mente:referencia-nao-resolvida",
+        naoResolvidas.map((f) => `${f.capacidade}.${f.param}=${f.referencia}`).join(", "));
+    }
     if (inventadas.length) {
       // Fica no registro e no log, onde serve para melhorar o prompt. NUNCA na
       // tela: o jogador não tem o que fazer com o nome de uma engrenagem que a
@@ -302,7 +367,7 @@ class Laco {
       log("A MENTE INVENTOU CAPACIDADE (não foi ao mundo)", inventadas);
       if (t) t.falhaDeExtensao("mente:capacidade-inexistente", inventadas.join(", "));
     }
-    return { lista, inventadas };
+    return { lista, inventadas, naoResolvidas };
   }
 
   // Executa a sequência NA ORDEM e PARA no primeiro passo que o mundo recusa.

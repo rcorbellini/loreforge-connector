@@ -204,3 +204,67 @@ test("060: chamada emitida como TEXTO é reconhecida como parada FALSA", () => {
   assert.strictEqual(_paradaFalsa("", tools), null);
   assert.strictEqual(_paradaFalsa(null, tools), null);
 });
+
+
+// ===========================================================================
+// SPEC 060 / US2 — o id NÃO chega à Mente.
+//
+// Este é o teste que prova a etapa inteira. Se um id vazar para o payload, a
+// feature não existe: ela volta a copiar id em vez de apontar por nome, e a
+// família de recusa "alvo fantasma" volta junto.
+// ===========================================================================
+
+test("060/US2: nenhum id de cena aparece no payload que vai ao modelo", async () => {
+  const m = require("../mente");
+  const CONTEXTO = {
+    self: { id: "torvin-ferreiro", name: "Torvin", body: "Um ferreiro.",
+            inventory: [{ id: "bolsa-de-couro", name: "Bolsa de Couro" }] },
+    location: { id: "praca-do-mercado", name: "Praça do Mercado", narrative: "Uma praça." },
+    characters_present: [
+      { id: "obadiah-mascate", name: "Obadiah, o Mascate", action: "vende",
+        carrying: [{ id: "cravos-de-ferro", name: "Cravos de Ferro" }] },
+      { id: "torvin-ferreiro", name: "Torvin", state: "self" }],
+    items_present: [{ id: "frasco-de-oleo", name: "Frasco de Óleo" }],
+    objects_present: [{ id: "poco-da-praca", name: "Poço", contains: [] }],
+    routes: [{ id: "rua-do-portao", name: "Rua do Portão", destination_name: "Porto Negro" }],
+    memories: [],
+  };
+  const payload = JSON.stringify(await m._contextoPayload(CONTEXTO,
+    { comCapacidades: false }));
+
+  const IDS = ["obadiah-mascate", "frasco-de-oleo", "bolsa-de-couro",
+               "cravos-de-ferro", "poco-da-praca", "rua-do-portao"];
+  for (const id of IDS) {
+    assert.ok(!payload.includes(id), `o id "${id}" vazou para o payload da Mente`);
+  }
+  // e os NOMES continuam lá: é por eles que ela aponta
+  for (const nome of ["Obadiah, o Mascate", "Frasco de Óleo", "Bolsa de Couro",
+                      "Rua do Portão"]) {
+    assert.ok(payload.includes(nome), `o nome "${nome}" sumiu — ela ficou sem como apontar`);
+  }
+});
+
+test("060/US2: o enum de LISTA DE CENA sai das tools; o CALCULADO fica", () => {
+  const m = require("../mente");
+  if (typeof m._semIdDeCena !== "function") {
+    assert.fail("_semIdDeCena precisa estar exposta para este teste valer");
+  }
+  const take = m._semIdDeCena({ name: "take", inputSchema: { type: "object",
+    properties: { item: { type: "string", enum: ["frasco-de-oleo", "cantil"] } } } });
+  assert.ok(!take.inputSchema.properties.item.enum,
+    "lista de cena SAI: a Mente já vê isso em prosa, e o enum é a segunda cópia");
+  assert.ok(take.inputSchema.properties.item.description,
+    "e no lugar fica a dica de COMO chamar");
+
+  const heal = m._semIdDeCena({ name: "heal", inputSchema: { type: "object",
+    properties: { alvo: { type: "string", enum: ["fenn-dedos-leves"] } } } });
+  assert.deepStrictEqual(heal.inputSchema.properties.alvo.enum, ["fenn-dedos-leves"],
+    "subconjunto CALCULADO fica: quem está caído é a ÚNICA fonte, e o contexto " +
+    "não diz isso de um jeito que ela use — tirar perderia conhecimento, não peso");
+
+  const arr = m._semIdDeCena({ name: "cook", inputSchema: { type: "object",
+    properties: { ingredientes: { type: "array", items: { type: "string",
+      enum: ["carne", "sal"] } } } } });
+  assert.ok(!arr.inputSchema.properties.ingredientes.items.enum,
+    "enum dentro de array também sai");
+});

@@ -674,3 +674,78 @@ async () => {
   assert.strictEqual(c.eventos.filter((e) => e.ev === "narracao_fim").length, 1,
     "mesmo estourando o orçamento, o turno narra");
 });
+
+
+// ===========================================================================
+// SPEC 060 / US2 — a referência que não resolve NÃO vai ao mundo.
+// ===========================================================================
+
+test("060/US2: referência não resolvida não vai ao mundo, e volta à conversa",
+async () => {
+  const c = coletor();
+  const mundo = mundoDe({ respostas: [], capacidades: ["examine"] });
+  menteDe.recebeu = [];
+  const laco = new Laco({
+    mundo,
+    mente: menteDe({ propostas: [{
+      id: "1", capacidade: "examine", alvos: { alvo: "destilador" },
+      naoResolvido: [{ param: "alvo", referencia: "destilador", porque: "nada-casou" }],
+    }] }),
+    extensoes: extVazio(), registro: null, emitir: c.emitir,
+  });
+  await laco.sussurrar("examine o destilador");
+  assert.strictEqual(mundo.chamadas.length, 0,
+    "a capacidade NÃO foi chamada: falta o mínimo que ela exige");
+  assert.ok(menteDe.recebeu.some((r) => /destilador/.test(r.conteudo)),
+    "o recado voltou à conversa para ela replanejar na MESMA vez");
+});
+
+test("060/US2: a rejeição do conector NUNCA chega à tela do jogador", async () => {
+  const c = coletor();
+  const laco = new Laco({
+    mundo: mundoDe({ respostas: [], capacidades: ["examine"] }),
+    mente: menteDe({ propostas: [{
+      id: "1", capacidade: "examine", alvos: { alvo: "destilador" },
+      naoResolvido: [{ param: "alvo", referencia: "destilador", porque: "nada-casou" }],
+    }] }),
+    extensoes: extVazio(), registro: null, emitir: c.emitir,
+  });
+  await laco.sussurrar("examine o destilador");
+  const naTela = c.eventos.filter((e) => ["beat", "recusa", "narracao_fim"].includes(e.ev));
+  for (const e of naTela) {
+    assert.ok(!/destilador.*não corresponde|nada-casou|referencia/i.test(e.texto || ""),
+      `vocabulário de máquina vazou para a tela: ${JSON.stringify(e)}`);
+  }
+});
+
+test("060/US2: a Mente teimosa não gira para sempre", async () => {
+  const c = coletor();
+  const mundo = mundoDe({ respostas: [], capacidades: ["examine"] });
+  // ela insiste na MESMA referência impossível, rodada após rodada. Como nada é
+  // aplicado, o orçamento de PASSOS nunca avançaria — é o teto de recados que
+  // encerra a vez.
+  let voltas = 0;
+  const teimosa = {
+    interpret: async () => {
+      const p = () => {
+        voltas++;
+        return {
+          pensamento: "insisto",
+          propostas: [{ id: `p${voltas}`, capacidade: "examine",
+            alvos: { alvo: "destilador" },
+            naoResolvido: [{ param: "alvo", referencia: "destilador",
+                             porque: "nada-casou" }] }],
+          continuar: async () => p(),
+        };
+      };
+      return p();
+    },
+    narrate: async () => "prosa",
+    deriveWhisper: async () => null,
+  };
+  const laco = new Laco({ mundo, mente: teimosa, extensoes: extVazio(),
+                          registro: null, emitir: c.emitir });
+  await laco.sussurrar("examine o destilador");
+  assert.ok(voltas <= 4, `a vez terminou (foram ${voltas} voltas)`);
+  assert.strictEqual(mundo.chamadas.length, 0, "e nada foi ao mundo");
+});
