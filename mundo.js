@@ -70,9 +70,23 @@ class Mundo {
 
   // --- leitura ------------------------------------------------------------ //
 
-  contexto(personagem) {
+  async contexto(personagem) {
     const quem = personagem || this.personagem;
-    return this._json(`/api/context?character_id=${encodeURIComponent(quem)}`);
+    const ctx = await this._json(
+      `/api/context?character_id=${encodeURIComponent(quem)}`);
+    // A TABELA DE RESOLUÇÃO PRECISA DOS NOMES, e é aqui que eles chegam.
+    //
+    // A face traz os ids válidos por parâmetro; o CONTEXTO traz como cada coisa
+    // se chama. Sem casar os dois, a tabela fica só com ids e o resolvedor cai
+    // no fallback `nome: id` — e aí o nome CURTO casa por continência enquanto o
+    // nome COMPLETO não casa, que é o inverso do que se quer.
+    //
+    // Medido em jogo (20 turnos do Irmão Tobias, spec 060): "Nerissa" resolvia
+    // 9 vezes e "Nerissa, a Boticária" — o nome EXATO da cena — falhava 8, porque
+    // "nerissa boticaria" (o id) não contém nem está contido em "nerissa a
+    // boticaria". O ` a ` do meio quebrava a continência nos dois sentidos.
+    this.registrarNomes(ctx);
+    return ctx;
   }
 
   personagens() {
@@ -232,4 +246,6 @@ class Mundo {
   }
 }
 
-module.exports = { Mundo };
+// `_tabelaDeCandidatos` sai exposta para teste: é a peça que transforma a face
+// em tabela de resolução, e um defeito nela é invisível de fora.
+module.exports = { Mundo, _tabelaDeCandidatos };
