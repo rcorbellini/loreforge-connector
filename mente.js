@@ -606,7 +606,15 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     const linhas = [];
     linhas.push(`Ele está em ${c.local || "algum lugar"}.` +
                 (c.descricao ? ` ${c.descricao}` : ""));
-    if (c.pertence_a) linhas.push(`O lugar é de ${c.pertence_a}.`);
+    // `_pertenceA` devolve uma CADEIA aninhada ({nome, descricao, pertence_a}) —
+    // a hierarquia de lugares. Interpolar o objeto cru rendia "[object Object]",
+    // e foi assim que saiu no primeiro turno real. Aqui ela vira o caminho que
+    // uma pessoa diria: "dentro de Porto Negro, na Costa de Ferro".
+    const cadeia = [];
+    for (let n = c.pertence_a; n && n.nome && cadeia.length < 4; n = n.pertence_a) {
+      cadeia.push(n.nome);
+    }
+    if (cadeia.length) linhas.push(`Fica dentro de ${cadeia.join(", que fica em ")}.`);
     if (d.personalidade) linhas.push(`Quem ele é: ${d.personalidade}`);
     if (d.necessidade) {
       const n = Object.entries(d.necessidade)

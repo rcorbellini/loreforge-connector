@@ -333,3 +333,20 @@ test("060/US3: cena vazia não quebra e não mente", async () => {
   assert.ok(prosa.includes("Ele não carrega nada"));
   assert.ok(!prosa.includes("undefined"), prosa);
 });
+
+test("060/US3: a hierarquia de lugares vira caminho, não [object Object]", async () => {
+  // Bug REAL, pego no primeiro turno de jogo depois de aplicar a US3: o payload
+  // saiu com "O lugar é de [object Object]." porque `_pertenceA` devolve uma
+  // CADEIA aninhada, não uma string. Os testes com dublê não pegaram — a cena
+  // sintética não tinha `pertence_a`. É por isso que jogar de verdade faz parte.
+  const m = require("../mente");
+  const prosa = m._cenaEmProsa(await m._contextoPayload({
+    self: { name: "T", inventory: [] },
+    location: { name: "Boticário", narrative: "Uma loja.",
+      pertence_a: { name: "Porto Negro", pertence_a: { name: "Costa de Ferro" } } },
+    characters_present: [], items_present: [], objects_present: [], routes: [],
+    memories: [],
+  }, { comCapacidades: false }));
+  assert.ok(!prosa.includes("[object Object]"), prosa);
+  assert.ok(prosa.includes("Porto Negro") && prosa.includes("Costa de Ferro"), prosa);
+});
