@@ -355,8 +355,13 @@ class Laco {
       // NUNCA na tela: o jogador não tem o que fazer com "a referência não casou
       // com candidato nenhum" — isso é conversa entre o conector e a Mente.
       log("A MENTE APONTOU O QUE NÃO EXISTE (não foi ao mundo)",
-          naoResolvidas.map((f) => `${f.capacidade}.${f.param}="${f.referencia}" (${f.porque})`)
-            .join("; "));
+          naoResolvidas.map((f) => {
+            const contra = (f.candidatos || []).length
+              ? `\n      contra: ${f.candidatos.map((c) => `"${c}"`).join(", ")}` : "";
+            const entre = (f.entre || []).length
+              ? `\n      empatou entre: ${f.entre.join(", ")}` : "";
+            return `${f.capacidade}.${f.param}="${f.referencia}" (${f.porque})${entre}${contra}`;
+          }).join("\n  "));
       if (t) t.falhaDeExtensao("mente:referencia-nao-resolvida",
         naoResolvidas.map((f) => `${f.capacidade}.${f.param}=${f.referencia}`).join(", "));
     }

@@ -749,3 +749,20 @@ test("060/US2: a Mente teimosa não gira para sempre", async () => {
   assert.ok(voltas <= 4, `a vez terminou (foram ${voltas} voltas)`);
   assert.strictEqual(mundo.chamadas.length, 0, "e nada foi ao mundo");
 });
+
+test("060/US2: o não-match diz CONTRA O QUE comparou, não só o que foi pedido", () => {
+  // Nasceu de um custo real: ao achar o defeito do `registrarNomes`, a linha de
+  // log dizia "Nerissa, a Boticária (nada-casou)" e nada mais. Foi preciso
+  // reconstruir a tabela de candidatos à mão para ver que o candidato era o ID
+  // cru em vez do nome. Com os candidatos na linha, o diagnóstico é imediato.
+  const laco = Object.create(Laco.prototype);
+  laco.mundo = { conhece: () => true };
+  const { lista, naoResolvidas } = laco._peneira([{
+    id: "1", capacidade: "ask_directions", alvos: { quem: "Nerissa, a Boticária" },
+    naoResolvido: [{ param: "quem", referencia: "Nerissa, a Boticária",
+                     porque: "nada-casou", candidatos: ["nerissa-boticaria"] }],
+  }], null, new Set());
+  assert.strictEqual(lista.length, 0, "não vai ao mundo");
+  assert.deepStrictEqual(naoResolvidas[0].candidatos, ["nerissa-boticaria"],
+    "e o log tem contra o que comparou");
+});

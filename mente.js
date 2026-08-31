@@ -910,8 +910,16 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
                 }
               } else {
                 out[param] = valor;
+                // OS CANDIDATOS VIAJAM JUNTO. Sem eles, a linha de log diz o que
+                // ela pediu mas não CONTRA O QUE foi comparado — e aí diagnosticar
+                // exige reconstruir a tabela à mão. Foi o que custou caro ao achar
+                // o defeito do `registrarNomes`: "Nerissa" casava e "Nerissa, a
+                // Boticária" não, e a linha não mostrava que o candidato era o id
+                // cru em vez do nome. Teto de 8 para uma cena grande não virar
+                // parede de texto no log.
                 falhas.push({ param, referencia: valor, porque: r.porque,
-                              entre: r.entre || null });
+                              entre: r.entre || null,
+                              candidatos: cands.slice(0, 8).map((c) => c.nome) });
               }
             }
             return { alvos: out, falhas };
