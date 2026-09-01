@@ -46,6 +46,17 @@ test("o envelope carrega quem, quando, qual modelo, versão de prompt e custo", 
   assert.ok(typeof l.custo.duracao_ms === "number");
 });
 
+test("rotuloDoModelo: cada runtime nomeia o SEU modelo — nenhum cai no padrão do Ollama por engano", () => {
+  assert.strictEqual(registro.rotuloDoModelo({ runtime: "local", model: "llama3.1:8b" }),
+                     "ollama/llama3.1:8b");
+  assert.strictEqual(registro.rotuloDoModelo({ runtime: "remote", remoteModel: "claude-x" }),
+                     "anthropic/claude-x");
+  assert.strictEqual(registro.rotuloDoModelo({ runtime: "openrouter", openrouterModel: "or-x" }),
+                     "openrouter/or-x");
+  assert.strictEqual(registro.rotuloDoModelo({ runtime: "gemini", geminiModel: "gemini-2.5-flash" }),
+                     "gemini/gemini-2.5-flash");
+});
+
 test("a recusa entra no corpo COM o motivo, em linguagem de mundo", async () => {
   const mundo = mundoQueAceita();
   const t = registro.criar({ mundo, cfg: CFG, extensoes: EXT, mente: MENTE }).abrir();

@@ -143,6 +143,7 @@ function criar({ mundo, cfg, extensoes, mente }) {
 function rotuloDoModelo(cfg) {
   if (cfg.runtime === "remote") return `anthropic/${cfg.remoteModel}`;
   if (cfg.runtime === "openrouter") return `openrouter/${cfg.openrouterModel}`;
+  if (cfg.runtime === "gemini") return `gemini/${cfg.geminiModel}`;
   return `ollama/${cfg.model}`;
 }
 
