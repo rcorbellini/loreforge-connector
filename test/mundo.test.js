@@ -96,3 +96,70 @@ test("060/US2: parâmetro sem lista devolve null — não há o que resolver", (
   assert.strictEqual(m.candidatosDe("ask_directions", "prosa"), null);
   assert.strictEqual(m.candidatosDe("capacidade-que-nao-existe", "x"), null);
 });
+
+
+// ===========================================================================
+// SPEC 060 — QUEM ELE SABE NOMEAR, MAS NÃO ESTÁ AQUI.
+//
+// O caso real que criou isto: a Elga tem intenção ativa de ajudar a Ossa, e uma
+// lembrança de tê-la visto PARTIR. Ao tentar agir sobre ela, o conector não
+// conseguia sequer converter o nome em id — e a recusa saía como "isso não
+// corresponde a nada", que soa como falha de NOMEAR.
+//
+// O certo é o mundo dizer "ela não está aqui", que é FATO e diz o que fazer a
+// seguir. É o item 53.1: a memória estende o alcance, e quem recusa é a
+// execução, nunca um pré-filtro do cliente.
+// ===========================================================================
+
+const CTX_COM_AUSENTE = {
+  self: { id: "elga-taverneira", name: "Elga", inventory: [] },
+  location: { id: "taverna-do-gancho", name: "Taverna do Gancho" },
+  characters_present: [{ id: "bram-pescador", name: "Bram, o Pescador" }],
+  items_present: [], objects_present: [], routes: [],
+  conhecidos: { "ossa-cavadora": "Ossa, a Cavadora",
+                "forja-de-ferro": "Forja de Ferro" },
+};
+
+function mundoComAusentes() {
+  const m = Object.create(Mundo.prototype);
+  m.candidatosDaCena = { ask_directions: { quem: ["bram-pescador"] } };
+  m.registrarNomes(CTX_COM_AUSENTE);
+  return m;
+}
+
+test("060: `conhecidos` entra no dicionário de nomes, sem apagar a cena", () => {
+  const m = mundoComAusentes();
+  assert.strictEqual(m._nomesDaCena["bram-pescador"], "Bram, o Pescador");
+  assert.strictEqual(m._nomesDaCena["ossa-cavadora"], "Ossa, a Cavadora");
+  assert.ok(m.ehAusenteConhecido("ossa-cavadora"));
+  assert.ok(!m.ehAusenteConhecido("bram-pescador"), "quem ESTÁ aqui não é ausente");
+});
+
+test("060: o ausente NÃO entra na lista do parâmetro, mas entra na de resolução",
+() => {
+  const m = mundoComAusentes();
+  const soCena = m.candidatosDe("ask_directions", "quem");
+  assert.deepStrictEqual(soCena.map((c) => c.id), ["bram-pescador"],
+    "a lista do PARÂMETRO continua sendo só quem pode ser perguntado");
+  const maior = m.candidatosOuConhecidos("ask_directions", "quem");
+  assert.ok(maior.some((c) => c.id === "ossa-cavadora"),
+    "mas a de RESOLUÇÃO inclui quem ele sabe nomear");
+});
+
+test("060: o nome de quem SAIU resolve — e é o que faz a proposta chegar ao mundo",
+() => {
+  const m = mundoComAusentes();
+  const soCena = m.candidatosDe("ask_directions", "quem");
+  const maior = m.candidatosOuConhecidos("ask_directions", "quem");
+  assert.strictEqual(literal("Ossa, a Cavadora", soCena).id, null,
+    "contra a cena sozinha não resolve — era o comportamento que engolia a tentativa");
+  assert.strictEqual(literal("Ossa, a Cavadora", maior).id, "ossa-cavadora",
+    "contra o conjunto maior resolve, e o mundo é que vai recusar");
+});
+
+test("060: o que não existe em lugar NENHUM continua morrendo no conector", () => {
+  const m = mundoComAusentes();
+  const maior = m.candidatosOuConhecidos("ask_directions", "quem");
+  assert.strictEqual(literal("o destilador", maior).id, null,
+    "alargar a resolução não pode virar licença para inventar");
+});

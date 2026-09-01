@@ -48,6 +48,7 @@ class Mundo {
     this.capacidadesDaCena = null;
     this.candidatosDaCena = null;   // spec 060: a tabela de resolução
     this._nomesDaCena = null;       // id -> nome, colhido do contexto
+    this._ausentes = null;          // spec 060: quem ele sabe nomear e não está aqui
     // o JWT do jogador pareado (spec 056) — quando o server exige login, todo
     // pedido daqui sai com ele. `null` = mundo sem auth, ou ainda nao pareado.
     this.jwt = null;
@@ -192,8 +193,38 @@ class Mundo {
     if (c.location && c.location.id) {
       nomes[c.location.id] = c.location.name || c.location.id;
     }
+    // QUEM ELE SABE NOMEAR MAS NÃO ESTÁ AQUI (spec 060). Vem do `involved` das
+    // lembranças vivas, e é o que permite resolver "Ossa, a Cavadora" quando ela
+    // saiu da taverna. Ver `_ausentes` e o comentário em `_peneira` sobre por que
+    // essa proposta PRECISA chegar ao mundo em vez de morrer aqui.
+    const conhecidos = c.conhecidos || {};
+    this._ausentes = new Set(Object.keys(conhecidos));
+    for (const [id, nome] of Object.entries(conhecidos)) {
+      if (!nomes[id]) nomes[id] = nome;
+    }
     this._nomesDaCena = nomes;
     return nomes;
+  }
+
+  // Este id é de algo que ele SABE NOMEAR mas que não está na cena? É a pergunta
+  // que separa "a Mente inventou" de "a Mente lembrou" — e são casos com
+  // desfechos opostos: o primeiro morre aqui, o segundo vai ao mundo.
+  ehAusenteConhecido(id) {
+    return !!(this._ausentes && this._ausentes.has(id));
+  }
+
+  // Os candidatos de um parâmetro MAIS o que ele sabe nomear de fora da cena.
+  // Resolver contra este conjunto maior é o que faz a proposta CHEGAR ao mundo
+  // com um id de verdade, para ele recusar com a frase dele.
+  candidatosOuConhecidos(capacidade, parametro) {
+    const daCena = this.candidatosDe(capacidade, parametro) || [];
+    if (!daCena.length || !this._ausentes || !this._ausentes.size) return daCena;
+    const vistos = new Set(daCena.map((c) => c.id));
+    const fora = [];
+    for (const id of this._ausentes) {
+      if (!vistos.has(id)) fora.push({ id, nome: (this._nomesDaCena || {})[id] || id });
+    }
+    return daCena.concat(fora);
   }
 
   // Esta capacidade existe NESTA cena? `null` = ainda não perguntamos, e aí não

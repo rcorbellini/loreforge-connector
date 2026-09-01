@@ -898,8 +898,14 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
           const _resolverAlvos = async (nomeCap, alvos) => {
             const out = {}, falhas = [];
             for (const [param, valor] of Object.entries(alvos)) {
-              const cands = _mundo.candidatosDe
-                ? _mundo.candidatosDe(nomeCap, param) : null;
+              // RESOLVE CONTRA O CONJUNTO MAIOR: os candidatos do parâmetro MAIS
+              // quem ele sabe nomear de fora da cena (spec 060). Sem isso, uma
+              // referência legítima a alguém AUSENTE morria como "não corresponde
+              // a nada", que soa como falha de nomear — quando o certo é o mundo
+              // dizer "ela não está aqui", que é fato e diz o que fazer a seguir.
+              const cands = _mundo.candidatosOuConhecidos
+                ? _mundo.candidatosOuConhecidos(nomeCap, param)
+                : (_mundo.candidatosDe ? _mundo.candidatosDe(nomeCap, param) : null);
               if (!cands || typeof valor !== "string") { out[param] = valor; continue; }
               const r = await _resolvedor().resolver(valor, cands);
               if (r.id) {
