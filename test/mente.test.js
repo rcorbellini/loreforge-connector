@@ -350,3 +350,70 @@ test("060/US3: a hierarquia de lugares vira caminho, não [object Object]", asyn
   assert.ok(!prosa.includes("[object Object]"), prosa);
   assert.ok(prosa.includes("Porto Negro") && prosa.includes("Costa de Ferro"), prosa);
 });
+
+// ===========================================================================
+// SPEC 062, US4 — "isso é rota, não destino", fim-a-fim por `interpret()`.
+// ===========================================================================
+
+test("062/US4: travel_to para o nome de uma rota produz naoResolvido 'e-rota'",
+async () => {
+  const cfg = configuracao.carregar(true);
+  cfg.runtime = "local";
+  configuracao.gravar(cfg);
+
+  const TOOLS = [
+    { name: "travel_to", description: "Viaja.",
+      inputSchema: { type: "object",
+        properties: { destino: { type: "string" } }, required: ["destino"] } },
+    { name: "enter_route", description: "Entra numa rota.",
+      inputSchema: { type: "object",
+        properties: { route: { type: "string" } }, required: ["route"] } },
+    { name: "narrate", description: "Encerra.", inputSchema: { type: "object" } },
+  ];
+  // O par capacidade+param -> candidatos, exatamente como `mundo.js` monta a
+  // partir da face + `registrarNomes`: "Praça do Mercado" é um destino de
+  // verdade (não casa com "Beco das Sombras"); "beco-das-sombras" só existe
+  // como ROTA.
+  const CANDIDATOS = {
+    "travel_to.destino": [{ id: "praca-do-mercado", nome: "Praça do Mercado" }],
+    "enter_route.route": [{ id: "beco-das-sombras", nome: "Beco das Sombras" }],
+  };
+  const mundo = {
+    listarCapacidades: async () => TOOLS,
+    chamarCapacidade: async () => ({ texto: "", narrativa: {}, recusado: false }),
+    candidatosOuConhecidos: (cap, param) => CANDIDATOS[`${cap}.${param}`] || null,
+  };
+  Mente.usarMundo(mundo);
+  Mente.usarExtensoes({ toolsLocais: () => [], ehLocal: () => false,
+                        hook: async (_p, dado) => dado });
+
+  const original = globalThis.fetch;
+  globalThis.fetch = async (_url, opts) => {
+    const corpo = JSON.parse((opts && opts.body) || "{}");
+    return {
+      ok: true,
+      headers: { get: () => "application/json" },
+      json: async () => ({
+        message: { content: "", tool_calls: [{ function: {
+          name: "travel_to", arguments: { destino: "Beco das Sombras" } } }] },
+        prompt_eval_count: 10, eval_count: 5,
+      }),
+    };
+  };
+  let sessao;
+  try {
+    sessao = await Mente.interpret("vá pelo beco das sombras", CENA);
+  } finally {
+    globalThis.fetch = original;
+  }
+
+  assert.ok(sessao, "esperava uma sessão de volta");
+  const proposta = sessao.propostas.find((p) => p.capacidade === "travel_to");
+  assert.ok(proposta, "esperava a proposta de travel_to");
+  assert.ok(Array.isArray(proposta.naoResolvido) && proposta.naoResolvido.length,
+    "destino não resolvido devia gerar naoResolvido");
+  const falha = proposta.naoResolvido.find((f) => f.param === "destino");
+  assert.strictEqual(falha.porque, "e-rota",
+    "beco-das-sombras é rota, não destino — devia ser marcado como tal, " +
+    "não como 'nada-casou' genérico: " + JSON.stringify(proposta.naoResolvido));
+});

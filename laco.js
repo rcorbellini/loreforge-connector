@@ -214,9 +214,17 @@ class Laco {
           && recadosDeReferencia < MAX_RECADOS_DE_REFERENCIA
           && typeof atual.continuar === "function") {
         recadosDeReferencia++;
+        // O RAMO DE "ambiguo" SAIU DAQUI (spec 062, US1): o resolvedor nunca mais
+        // devolve empate sem escolher — quem casa com mais de um candidato agora
+        // resolve para UM, e é o Motor quem recusa (ou aceita) com a frase dele.
         const recado = naoResolvidas.map((f) => {
-          if (f.porque === "ambiguo" && f.entre) {
-            return `"${f.referencia}" pode ser mais de uma coisa aqui — diga qual.`;
+          // "ISSO É ROTA" (spec 062, US4): a referência não casou como DESTINO,
+          // mas casa como ROTA adjacente — dizer "não corresponde a nada" seria
+          // falso (está ao alcance, por outro verbo) e a Mente repetia sem saber
+          // por quê.
+          if (f.porque === "e-rota") {
+            return `"${f.referencia}" não é um destino de travel_to — é uma rota `
+                 + "daqui. Use enter_route.";
           }
           return `"${f.referencia}" não corresponde a nada que esteja ao alcance agora.`;
         });

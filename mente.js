@@ -19,7 +19,7 @@
 
 const configuracao = require("./config");
 const dialeto = require("./dialeto");
-const { criarResolvedor } = require("./resolucao");
+const { criarResolvedor, normalizar, literal } = require("./resolucao");
 const { log: _logExterno } = require("./log");
 
 // Quantas voltas de RACIOCÍNIO uma vez pode ter — consultas e continuações somadas.
@@ -858,6 +858,16 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
           let conversa = [{ role: "user", content: base }];
           let ultima = null;          // a última resposta dela, para o histórico
           let rodadas = 0;
+          // A MEMÓRIA DO DESEMPATE (spec 062, US1). Empatada uma referência, o
+          // resolvedor escolhe um id — mas não pode escolher o MESMO sempre: se a
+          // Mente insistir na mesma referência (o id escolhido foi recusado por
+          // outro motivo), repetir a escolha faria a retentativa cair filtrada
+          // por `tentadas` (laco.js) como proposta já-dispachada, e a vez
+          // morreria calada. Vive AQUI, não no laço: `_resolverAlvos` já está
+          // dentro do escopo que `continuar()` reentra sem sair (mesma vez,
+          // várias rodadas) — nenhum dado precisa atravessar arquivo (research
+          // R2). Nasce vazio a cada vez; nunca sobrevive para o turno seguinte.
+          const oferecidosPorChave = new Map();   // chave -> Set<id>
 
           // O CONTRATO DO MUNDO É O SCHEMA, e quem tem de honrá-lo é ESTE lado.
           //
@@ -907,15 +917,40 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
                 ? _mundo.candidatosOuConhecidos(nomeCap, param)
                 : (_mundo.candidatosDe ? _mundo.candidatosDe(nomeCap, param) : null);
               if (!cands || typeof valor !== "string") { out[param] = valor; continue; }
-              const r = await _resolvedor().resolver(valor, cands);
+              // A CHAVE DO DESEMPATE (spec 062, US1): mesma capacidade, mesmo
+              // parâmetro, mesma referência normalizada — é o que faz a segunda
+              // tentativa da MESMA pergunta receber um id diferente da primeira.
+              const chaveDesempate = `${nomeCap} ${param} ${normalizar(valor)}`;
+              const jaOferecidos = oferecidosPorChave.get(chaveDesempate);
+              const r = await _resolvedor().resolver(valor, cands, jaOferecidos);
               if (r.id) {
                 out[param] = r.id;
+                if (!oferecidosPorChave.has(chaveDesempate)) {
+                  oferecidosPorChave.set(chaveDesempate, new Set());
+                }
+                oferecidosPorChave.get(chaveDesempate).add(r.id);
                 if (r.via && r.via !== "id-exato") {
                   devlog(`ALVO RESOLVIDO — ${nomeCap}.${param}`,
                          `"${valor}" -> ${r.id} (${r.via})`);
                 }
               } else {
                 out[param] = valor;
+                // "ISSO É ROTA, NÃO DESTINO" (spec 062, US4). `travel_to.destino`
+                // só aceita LUGARES que ele sabe alcançar; um vizinho adjacente é
+                // ROTA (`enter_route`), outro enum. Quando a referência não casa
+                // em `destino` mas casa em `route`, o recado de hoje ("não
+                // corresponde a nada que esteja ao alcance agora") é FALSO — está
+                // ao alcance, só que por outro verbo — e a Mente repetia. Checa
+                // só neste caso específico: não é o resolvedor tentando de novo
+                // (não varia com `jaOferecidos`, é diagnóstico, não escolha).
+                let porqueFinal = r.porque;
+                if (nomeCap === "travel_to" && param === "destino"
+                    && r.porque === "nada-casou" && _mundo.candidatosOuConhecidos) {
+                  const candsRota = _mundo.candidatosOuConhecidos("enter_route", "route");
+                  if (candsRota && literal(valor, candsRota).id) {
+                    porqueFinal = "e-rota";
+                  }
+                }
                 // OS CANDIDATOS VIAJAM JUNTO. Sem eles, a linha de log diz o que
                 // ela pediu mas não CONTRA O QUE foi comparado — e aí diagnosticar
                 // exige reconstruir a tabela à mão. Foi o que custou caro ao achar
@@ -923,7 +958,7 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
                 // Boticária" não, e a linha não mostrava que o candidato era o id
                 // cru em vez do nome. Teto de 8 para uma cena grande não virar
                 // parede de texto no log.
-                falhas.push({ param, referencia: valor, porque: r.porque,
+                falhas.push({ param, referencia: valor, porque: porqueFinal,
                               entre: r.entre || null,
                               candidatos: cands.slice(0, 8).map((c) => c.nome) });
               }

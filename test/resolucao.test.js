@@ -43,14 +43,51 @@ test("060/US2: HOMÔNIMOS são abundância, não ambiguidade", () => {
   assert.strictEqual(literal("Moeda de Cobre", CENA).id, r.id, "e estável entre chamadas");
 });
 
-test("060/US2: empate entre coisas DIFERENTES não resolve", () => {
+test("062/US1: empate entre coisas DIFERENTES resolve — nunca mais 'ambiguo'", () => {
+  // Antes da spec 062, isto devolvia {id: null, porque: "ambiguo"} — e o recado
+  // que voltava à Mente ("diga qual") era uma pergunta sem resposta possível:
+  // ela não vê ids, e os dois candidatos têm nomes DIFERENTES que casaram com a
+  // mesma referência curta. Decisão do mantenedor: escolhe um e usa; se não for
+  // apto, o Motor valida e informa.
   const doisNomes = [{ id: "faca-a", nome: "Faca de Escamar" },
                      { id: "faca-b", nome: "Faca de Mercador" }];
   const r = literal("faca", doisNomes);
-  assert.strictEqual(r.id, null);
-  assert.strictEqual(r.porque, "ambiguo");
-  assert.deepStrictEqual(r.entre, ["faca-a", "faca-b"],
-    "e diz ENTRE QUAIS — é o que a Mente precisa para desambiguar na rodada seguinte");
+  assert.strictEqual(r.porque, undefined, "não é mais um 'não resolvido'");
+  assert.ok(r.id === "faca-a" || r.id === "faca-b");
+  assert.strictEqual(r.via, "desempate", "não é abundância: os nomes são diferentes");
+  assert.strictEqual(r.entre, 2);
+});
+
+test("062/US1: o desempate VARIA — o mesmo id não sai duas vezes seguidas", () => {
+  // Isto é o que impede a repetição de morrer calada: se a Mente insiste na
+  // mesma referência (o primeiro id foi recusado por outro motivo), a segunda
+  // tentativa não pode receber o MESMO id — ele já está em `tentadas` do laço,
+  // e a proposta seria filtrada em silêncio, sem nem o orçamento de passos
+  // avançar.
+  const doisNomes = [{ id: "faca-a", nome: "Faca de Escamar" },
+                     { id: "faca-b", nome: "Faca de Mercador" }];
+  const primeiro = literal("faca", doisNomes);
+  const jaOferecidos = new Set([primeiro.id]);
+  const segundo = literal("faca", doisNomes, jaOferecidos);
+  assert.notStrictEqual(segundo.id, primeiro.id, "o segundo id é o outro candidato");
+
+  // Esgotados os dois, cai no determinístico de sempre — não trava, não lança.
+  jaOferecidos.add(segundo.id);
+  const terceiro = literal("faca", doisNomes, jaOferecidos);
+  assert.ok(terceiro.id === "faca-a" || terceiro.id === "faca-b");
+});
+
+test("062/US1: a abundância (moedas de cobre) também varia com jaOferecidos", () => {
+  const vistos = new Set();
+  const ids = [];
+  for (let i = 0; i < 3; i++) {
+    const r = literal("Moeda de Cobre", CENA, vistos);
+    ids.push(r.id);
+    vistos.add(r.id);
+  }
+  assert.deepStrictEqual([...ids].sort(),
+    ["moeda-cobre-025", "moeda-cobre-026", "moeda-cobre-027"],
+    "as 3 tentativas percorrem os 3 ids antes de repetir");
 });
 
 test("060/US2: o que NÃO existe na cena não resolve — nunca vira outro alvo", () => {

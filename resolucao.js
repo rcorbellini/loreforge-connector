@@ -44,8 +44,31 @@ function normalizar(texto) {
 // (1) LITERAL — determinística, sem dependência, resolve o caso comum.
 // --------------------------------------------------------------------------- //
 
+// O DESEMPATE (spec 062, US1). Empate resolve, sempre — "se dá match e empatou,
+// pega um e usa; se não for apto, o Motor valida e informa" (decisão do
+// mantenedor). O que NÃO pode ser sempre o mesmo é QUAL se pega: se a Mente
+// insiste na mesma referência (porque o primeiro id escolhido foi recusado por
+// outro motivo), repetir a mesma escolha faria a retentativa cair filtrada por
+// `tentadas` (laco.js) como proposta já-dispachada, e a vez morreria do jeito
+// que motivou esta spec — só que em silêncio, sem nem o recado de "ambíguo".
+//
+// `jaOferecidos` (Set opcional de ids) é a memória de "já dei estes nesta
+// vez" — mora inteira em `mente.js:interpret()` (spec 062, research R2), não
+// aqui. Preferimos um id de fora do Set; esgotado, caímos no determinístico de
+// sempre (`sort()[0]`), e quem encerra a repetição a partir daí é o `tentadas`
+// do laço — não este resolvedor.
+function _desempatar(candidatosEmpatados, jaOferecidos) {
+  const livres = jaOferecidos
+    ? candidatosEmpatados.filter((c) => !jaOferecidos.has(c.id))
+    : candidatosEmpatados;
+  const pool = livres.length ? livres : candidatosEmpatados;
+  return pool.map((c) => c.id).sort()[0];
+}
+
 // `candidatos` = [{ id, nome }]. Devolve { id, via } ou { id: null, porque }.
-function literal(referencia, candidatos) {
+// `jaOferecidos` (spec 062, US1): Set opcional de ids já entregues nesta vez
+// para esta MESMA referência — ver `_desempatar` acima.
+function literal(referencia, candidatos, jaOferecidos) {
   const lista = (candidatos || []).filter((c) => c && c.id);
   if (!lista.length) return { id: null, porque: "sem-candidatos" };
 
@@ -67,19 +90,18 @@ function literal(referencia, candidatos) {
   if (casou.length === 1) return { id: casou[0].id, via: "literal" };
   if (!casou.length) return { id: null, porque: "nada-casou" };
 
-  // EMPATE ENTRE EQUIVALENTES NÃO É AMBIGUIDADE — É ABUNDÂNCIA.
+  // EMPATE, SEMPRE RESOLVE (spec 062, US1) — nunca mais `{porque: "ambiguo"}`.
   //
-  // Cinco `moeda-cobre-0XX` têm o MESMO nome, e "guarde uma moeda de cobre" tem
-  // resposta óbvia: qualquer uma. Recusar aqui seria repetir o defeito que o
-  // enum já causava (mudo 5/5). O critério não é a nota, é a NATUREZA do empate:
-  // duas moedas de cobre são intercambiáveis para qualquer efeito do jogo; uma
-  // moeda e uma corda não são.
+  // A NATUREZA do empate só decide o RÓTULO, não se resolve: cinco
+  // `moeda-cobre-0XX` de MESMO nome são intercambiáveis (abundância — "guarde
+  // uma moeda de cobre" tem resposta óbvia, qualquer uma); "Macieira da Praça"
+  // casando com a árvore E com cinco colheitas mal-nomeadas dela são coisas
+  // DIFERENTES que só parecem uma (desempate) — mas as duas escolhem pela
+  // MESMA função, porque as duas correm o MESMO risco de esgotar `tentadas`
+  // se a escolha nunca variar.
   const nomes = new Set(casou.map((c) => normalizar(c.nome)));
-  if (nomes.size === 1) {
-    const escolhido = casou.map((c) => c.id).sort()[0];   // determinístico
-    return { id: escolhido, via: "abundancia", entre: casou.length };
-  }
-  return { id: null, porque: "ambiguo", entre: casou.map((c) => c.id) };
+  const via = nomes.size === 1 ? "abundancia" : "desempate";
+  return { id: _desempatar(casou, jaOferecidos), via, entre: casou.length };
 }
 
 // --------------------------------------------------------------------------- //
@@ -155,8 +177,9 @@ function criarResolvedor({ embedder = null, margemMinima = MARGEM_MINIMA } = {})
   return {
     // Devolve { id, via } quando resolve, ou { id: null, porque } quando não.
     // Nunca lança: quem chama trata `id: null` como "não há chamada a fazer".
-    async resolver(referencia, candidatos) {
-      const lit = literal(referencia, candidatos);
+    // `jaOferecidos` (spec 062, US1): repassado à camada literal — ver `_desempatar`.
+    async resolver(referencia, candidatos, jaOferecidos) {
+      const lit = literal(referencia, candidatos, jaOferecidos);
       if (lit.id) return lit;
       if (lit.porque === "sem-candidatos" || lit.porque === "referencia-vazia") return lit;
       if (!embedder) return { ...lit, semSemantica: true };

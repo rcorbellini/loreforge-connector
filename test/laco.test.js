@@ -700,6 +700,29 @@ async () => {
     "o recado voltou à conversa para ela replanejar na MESMA vez");
 });
 
+test("062/US4: 'isso é rota' nomeia enter_route — não diz 'não corresponde a nada'",
+async () => {
+  const c = coletor();
+  const mundo = mundoDe({ respostas: [], capacidades: ["travel_to"] });
+  menteDe.recebeu = [];
+  const laco = new Laco({
+    mundo,
+    mente: menteDe({ propostas: [{
+      id: "1", capacidade: "travel_to", alvos: { destino: "Beco das Sombras" },
+      naoResolvido: [{ param: "destino", referencia: "Beco das Sombras",
+                       porque: "e-rota" }],
+    }] }),
+    extensoes: extVazio(), registro: null, emitir: c.emitir,
+  });
+  await laco.sussurrar("vá pelo beco das sombras");
+  assert.strictEqual(mundo.chamadas.length, 0);
+  const recado = menteDe.recebeu.find((r) => /Beco das Sombras/.test(r.conteudo));
+  assert.ok(recado, "o recado voltou à conversa");
+  assert.ok(/enter_route/.test(recado.conteudo), "nomeia o verbo certo");
+  assert.ok(!/não corresponde a nada/.test(recado.conteudo),
+    "não é mais a frase genérica — era falsa aqui");
+});
+
 test("060/US2: a rejeição do conector NUNCA chega à tela do jogador", async () => {
   const c = coletor();
   const laco = new Laco({
