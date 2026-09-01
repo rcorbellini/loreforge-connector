@@ -25,7 +25,9 @@ const DEFAULTS = {
   remoteModel: "claude-haiku-4-5-20251001",
   openrouterModel: "poolside/laguna-m.1:free",
   openrouterEndpoint: "https://openrouter.ai/api/v1",
-  geminiModel: "gemini-2.5-flash",
+  // 2.5-flash foi DESCONTINUADO pra chaves novas em 09/2026 (a API responde
+  // 404 recomendando a família 3.x) — medido ao vivo, não por aviso de doc.
+  geminiModel: "gemini-3.5-flash",
   // o conector, nao mais o navegador
   mundo: "http://0.0.0.0:8777",
   personagem: "",

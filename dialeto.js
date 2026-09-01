@@ -165,6 +165,13 @@ const anthropic = {
 // sintético (que ainda existe, para o laço poder falar de "a chamada tal")
 // nunca sai daqui: `montaHistorico` o usa só para achar o nome de cada chamada
 // e escrever ESSE no `functionResponse`.
+//
+// O `thoughtSignature` (medido ao vivo contra a família 3.x, 2026-09-01) É
+// OBRIGATÓRIO: sem ele, a SEGUNDA rodada de qualquer turno com tool-calling
+// devolve 400 ("Function call is missing a thought_signature"). Não é
+// metadado descartável — é estado do raciocínio do modelo, e cada
+// functionCall (e o texto, quando vem) tem o SEU próprio. Por isso ele
+// atravessa junto do `toolCall`/`texto` em vez de ficar só no `uso`.
 
 const gemini = {
   traduzTools(tools) {
@@ -178,12 +185,16 @@ const gemini = {
   leResposta(bruto) {
     const cand = (bruto.candidates && bruto.candidates[0]) || {};
     const partes = (cand.content && cand.content.parts) || [];
+    const textos = partes.filter((p) => typeof p.text === "string");
     return {
       toolCalls: partes.filter((p) => p.functionCall)
         .map((p, i) => ({ id: _idSintetico(i), nome: p.functionCall.name,
-                          args: p.functionCall.args || {} })),
-      texto: partes.filter((p) => typeof p.text === "string")
-        .map((p) => p.text).join(""),
+                          args: p.functionCall.args || {},
+                          firma: p.thoughtSignature || null })),
+      texto: textos.map((p) => p.text).join(""),
+      // a firma do ÚLTIMO bloco de texto — é o que `montaHistorico` reanexa
+      // se essa resposta tiver texto acompanhando as chamadas.
+      firmaTexto: textos.length ? (textos[textos.length - 1].thoughtSignature || null) : null,
       uso: { entrada: (bruto.usageMetadata || {}).promptTokenCount,
              saida: (bruto.usageMetadata || {}).candidatesTokenCount },
     };
@@ -192,9 +203,15 @@ const gemini = {
   montaHistorico(msgs, resp, resultados) {
     const nomePorId = new Map((resp.toolCalls || []).map((c) => [c.id, c.nome]));
     const partesModelo = [];
-    if (resp.texto) partesModelo.push({ text: resp.texto });
+    if (resp.texto) {
+      const parte = { text: resp.texto };
+      if (resp.firmaTexto) parte.thoughtSignature = resp.firmaTexto;
+      partesModelo.push(parte);
+    }
     for (const c of resp.toolCalls || []) {
-      partesModelo.push({ functionCall: { name: c.nome, args: c.args || {} } });
+      const parte = { functionCall: { name: c.nome, args: c.args || {} } };
+      if (c.firma) parte.thoughtSignature = c.firma;
+      partesModelo.push(parte);
     }
     return msgs.concat([
       { role: "model", parts: partesModelo },

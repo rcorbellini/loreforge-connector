@@ -145,6 +145,25 @@ test("Gemini: functionCall/functionResponse, e o vínculo é o NOME", () => {
   assert.match(res.parts[0].functionResponse.response.content, /noite/);
 });
 
+test("Gemini: a `thoughtSignature` de cada functionCall atravessa a leitura E a re-escrita — sem ela a 2ª rodada dá 400", () => {
+  const lido = de("gemini").leResposta({ candidates: [{ content: { parts: [
+    { functionCall: { name: "take", args: { item: "maçã" } }, thoughtSignature: "sig-1" }] } }] });
+  assert.strictEqual(lido.toolCalls[0].firma, "sig-1");
+
+  const msgs = de("gemini").montaHistorico([], lido, [{ id: lido.toolCalls[0].id, conteudo: "ok" }]);
+  assert.strictEqual(msgs[0].parts[0].functionCall.name, "take");
+  assert.strictEqual(msgs[0].parts[0].thoughtSignature, "sig-1",
+    "sem a firma de volta no papel, a família 3.x recusa a rodada seguinte com 400");
+});
+
+test("Gemini: sem `thoughtSignature` do provedor (modelo antigo), o campo simplesmente não aparece — nunca `undefined` escrito", () => {
+  const lido = de("gemini").leResposta({ candidates: [{ content: { parts: [
+    { functionCall: { name: "take", args: {} } }] } }] });
+  assert.strictEqual(lido.toolCalls[0].firma, null);
+  const msgs = de("gemini").montaHistorico([], lido, [{ id: lido.toolCalls[0].id, conteudo: "ok" }]);
+  assert.ok(!("thoughtSignature" in msgs[0].parts[0]));
+});
+
 test("VÁRIAS chamadas numa resposta: cada uma ganha o seu resultado", () => {
   const resp = { texto: "", toolCalls: [
     { id: "a", nome: "take", args: { item: "faca" } },
