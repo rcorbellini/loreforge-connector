@@ -18,6 +18,7 @@
 //   | Anthropic | bloco `tool_use` com `id`   | role:user + `tool_result` por id   |
 //   | OpenAI    | `tool_calls[].id`           | role:tool + `tool_call_id`         |
 //   | Ollama    | `tool_calls` SEM id         | role:tool, amarrado pela ORDEM     |
+//   | Gemini    | `functionCall` SEM id       | role:function, amarrado pelo NOME  |
 //
 // O Ollama não emite id. Então o formato interno SEMPRE tem um `id` — sintético
 // quando o provedor não dá —, e cada dialeto decide se o escreve de volta. Sem
@@ -157,8 +158,57 @@ const anthropic = {
   },
 };
 
+// --- Gemini: `functionCall`/`functionResponse`, e o vínculo é o NOME -------- //
+//
+// O Gemini não devolve id nenhum, como o Ollama — mas ao contrário dele, o que
+// ele reconhece de volta não é a ORDEM, é o NOME da função. Por isso o id
+// sintético (que ainda existe, para o laço poder falar de "a chamada tal")
+// nunca sai daqui: `montaHistorico` o usa só para achar o nome de cada chamada
+// e escrever ESSE no `functionResponse`.
+
+const gemini = {
+  traduzTools(tools) {
+    return [{
+      functionDeclarations: (tools || []).map((t) => ({
+        name: t.name, description: t.description, parameters: t.inputSchema,
+      })),
+    }];
+  },
+
+  leResposta(bruto) {
+    const cand = (bruto.candidates && bruto.candidates[0]) || {};
+    const partes = (cand.content && cand.content.parts) || [];
+    return {
+      toolCalls: partes.filter((p) => p.functionCall)
+        .map((p, i) => ({ id: _idSintetico(i), nome: p.functionCall.name,
+                          args: p.functionCall.args || {} })),
+      texto: partes.filter((p) => typeof p.text === "string")
+        .map((p) => p.text).join(""),
+      uso: { entrada: (bruto.usageMetadata || {}).promptTokenCount,
+             saida: (bruto.usageMetadata || {}).candidatesTokenCount },
+    };
+  },
+
+  montaHistorico(msgs, resp, resultados) {
+    const nomePorId = new Map((resp.toolCalls || []).map((c) => [c.id, c.nome]));
+    const partesModelo = [];
+    if (resp.texto) partesModelo.push({ text: resp.texto });
+    for (const c of resp.toolCalls || []) {
+      partesModelo.push({ functionCall: { name: c.nome, args: c.args || {} } });
+    }
+    return msgs.concat([
+      { role: "model", parts: partesModelo },
+      // sem `tool_call_id` nem ordem: o Gemini casa o resultado ao pedido pelo
+      // NOME da função, então é isso que `functionResponse.name` carrega.
+      { role: "function", parts: (resultados || []).map((r) => ({
+          functionResponse: { name: nomePorId.get(r.id) || "",
+                              response: { content: String(r.conteudo ?? "") } } })) },
+    ]);
+  },
+};
+
 const DIALETOS = { local: ollama, ollama, openrouter: openai, openai, remote: anthropic,
-                   anthropic };
+                   anthropic, gemini };
 
 function de(runtime) {
   const d = DIALETOS[runtime];

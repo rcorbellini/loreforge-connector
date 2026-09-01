@@ -30,6 +30,12 @@ test("o schema do MCP vira o formato de cada provedor, sem perder o enum", () =>
 
   // o Ollama fala o dialeto da OpenAI no pedido
   assert.deepStrictEqual(de("local").traduzTools(TOOLS), de("openai").traduzTools(TOOLS));
+
+  // o Gemini embrulha as declarações num único objeto `functionDeclarations`
+  const ge = de("gemini").traduzTools(TOOLS);
+  assert.strictEqual(ge.length, 1);
+  assert.strictEqual(ge[0].functionDeclarations[0].name, "take");
+  assert.deepStrictEqual(ge[0].functionDeclarations[0].parameters, TOOLS[0].inputSchema);
 });
 
 test("toda chamada lida TEM id — sintético quando o provedor não dá", () => {
@@ -55,6 +61,15 @@ test("toda chamada lida TEM id — sintético quando o provedor não dá", () =>
     { type: "tool_use", id: "toolu_1", name: "take", input: { item: "faca" } }] });
   assert.strictEqual(a.toolCalls[0].id, "toolu_1");
   assert.strictEqual(a.texto, "vou pegar");
+
+  // o Gemini também não dá id — como o Ollama, ganha um sintético
+  const g = de("gemini").leResposta({ candidates: [{ content: { parts: [
+    { text: "vou pegar" },
+    { functionCall: { name: "take", args: { item: "faca" } } }] } }] });
+  assert.strictEqual(g.toolCalls[0].nome, "take");
+  assert.deepStrictEqual(g.toolCalls[0].args, { item: "faca" });
+  assert.ok(g.toolCalls[0].id, "chamada do Gemini sem id: o resultado fica órfão");
+  assert.strictEqual(g.texto, "vou pegar");
 });
 
 test("args mal formados não derrubam a leitura — viram objeto vazio", () => {
@@ -115,6 +130,19 @@ test("Anthropic: sem texto, não vai bloco de texto vazio (a API recusa)", () =>
     [], { texto: "", toolCalls: [{ id: "i", nome: "x", args: {} }] },
     [{ id: "i", conteudo: "ok" }]);
   assert.deepStrictEqual(msgs[0].content.map((b) => b.type), ["tool_use"]);
+});
+
+test("Gemini: functionCall/functionResponse, e o vínculo é o NOME", () => {
+  const msgs = de("gemini").montaHistorico([{ role: "user", parts: [{ text: "u" }] }],
+                                           RESP, RESULT);
+  const ass = msgs[1], res = msgs[2];
+  assert.strictEqual(ass.role, "model");
+  assert.deepStrictEqual(ass.parts[1].functionCall,
+                         { name: "consultar_momento", args: {} });
+  // sem id nenhum no papel — quem casa o resultado é o `name`
+  assert.strictEqual(res.role, "function");
+  assert.strictEqual(res.parts[0].functionResponse.name, "consultar_momento");
+  assert.match(res.parts[0].functionResponse.response.content, /noite/);
 });
 
 test("VÁRIAS chamadas numa resposta: cada uma ganha o seu resultado", () => {

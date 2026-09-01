@@ -1,6 +1,6 @@
 // A MENTE — a inteligência do personagem, rodando no modelo trazido pelo player.
-// Três runtimes: Ollama local, Anthropic e OpenRouter, os três com tool-calling
-// nativo.
+// Quatro runtimes: Ollama local, Anthropic, OpenRouter e Gemini, os quatro com
+// tool-calling nativo.
 //
 // ESTE ARQUIVO SAIU DO NAVEGADOR (spec 044). Ele era `client/mente.js` e vivia
 // numa página servida pelo projeto; agora roda no processo do jogador, na
@@ -59,6 +59,10 @@ const Mente = (() => {
       if (!cfg.openrouterKey) return { ok: false, reason: "falta a chave." };
       const host = (cfg.openrouterEndpoint || DEFAULTS.openrouterEndpoint).replace(/^https?:\/\//, "").replace(/\/.*$/, "");
       return { ok: true, reason: `${host} · ${cfg.openrouterModel}` };
+    }
+    if (cfg.runtime === "gemini") {
+      if (!cfg.geminiKey) return { ok: false, reason: "falta a chave do Gemini." };
+      return { ok: true, reason: `Gemini · ${cfg.geminiModel || DEFAULTS.geminiModel}` };
     }
     try {
       const res = await fetch(cfg.endpoint.replace(/\/$/, "") + "/api/tags");
@@ -151,16 +155,20 @@ const Mente = (() => {
   async function callModel(system, user, opts = {}) {
     const cfg = config();
     const label = opts.label || "chamada ao modelo";
-    const alvo = cfg.runtime === "remote" ? cfg.remoteModel : cfg.runtime === "openrouter" ? cfg.openrouterModel : cfg.model;
-    
+    const alvo = cfg.runtime === "remote" ? cfg.remoteModel
+               : cfg.runtime === "openrouter" ? cfg.openrouterModel
+               : cfg.runtime === "gemini" ? (cfg.geminiModel || DEFAULTS.geminiModel)
+               : cfg.model;
+
     devlog(`ENVIADO À MENTE — ${label}`, `[runtime] ${cfg.runtime} (${alvo})\n\n[system]\n${system}\n\n[user]\n${user}`);
 
     // `opts.onToken` (spec 043) atravessa para o runtime, que streama se houver.
     // Sem callback, o caminho é byte-a-byte o de antes (um tiro, sem stream).
     const raw = cfg.runtime === "remote" ? await anthropic(cfg, system, user, opts)
               : cfg.runtime === "openrouter" ? await openrouter(cfg, system, user, opts)
+              : cfg.runtime === "gemini" ? await gemini(cfg, system, user, opts)
               : await ollama(cfg, system, user, opts);
-              
+
     devlog(`RETORNO DA MENTE — ${label}`, raw);
     return raw;
   }
@@ -340,6 +348,63 @@ const Mente = (() => {
     const msg = data.choices?.[0]?.message || {};
     if (tools && tools.length) return dialeto.de("openai").leResposta(data);
     return msg.content || "";
+  }
+
+  async function gemini(cfg, system, user, { temperature = 0.4, onToken, tools, conversa } = {}) {
+    if (!cfg.geminiKey) throw new Error("configure sua chave do Gemini no ⚙.");
+    const emit = tools && tools.length ? null : _safeToken(onToken);
+    // `opts.conversa` nasce no formato GENÉRICO do laço do turno ({role, content}
+    // — o mesmo que serve Anthropic e OpenRouter direto), e só passa a vir no
+    // formato do Gemini ({role, parts}) depois da primeira volta, quando é
+    // `dialeto.de("gemini").montaHistorico` quem a escreve. As duas formas
+    // precisam caber aqui: quem já tem `parts` passa como está; quem só tem
+    // `content` (a mensagem inicial) ganha o embrulho.
+    const contents = (conversa || [{ role: "user", content: user }]).map((m) => (
+      m.parts ? m : { role: m.role === "assistant" ? "model" : m.role,
+                      parts: [{ text: String(m.content ?? "") }] }));
+    const modelo = cfg.geminiModel || DEFAULTS.geminiModel;
+    const metodo = emit ? "streamGenerateContent" : "generateContent";
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:${metodo}`
+              + (emit ? "?alt=sse" : "");
+    let res;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        // a chave vai em CABEÇALHO, não na URL — uma URL com chave acaba em log
+        // de acesso e em histórico de terminal com uma facilidade que um
+        // cabeçalho não tem.
+        headers: { "Content-Type": "application/json", "x-goog-api-key": cfg.geminiKey },
+        body: JSON.stringify({
+          contents, systemInstruction: { parts: [{ text: system }] },
+          generationConfig: { temperature: Math.min(temperature, 2) },
+          ...(tools && tools.length
+              ? { tools: dialeto.de("gemini").traduzTools(tools) } : {}),
+        }),
+      });
+    } catch (_) { throw new Error("não foi possível falar com o Gemini."); }
+    if (!res.ok) {
+      let msg = `erro Gemini (${res.status}).`;
+      try { const err = await res.json(); if (err?.error?.message) msg = err.error.message; } catch (_) {}
+      throw new Error(msg);
+    }
+    if (emit) {
+      // SSE: cada evento é um `GenerateContentResponse` inteiro, com o pedaço de
+      // texto novo em `candidates[0].content.parts`.
+      let texto = "";
+      await _lines(res, (linha) => {
+        const ev = _sse(linha);
+        const partes = ev && ev.candidates && ev.candidates[0] && ev.candidates[0].content
+                      && ev.candidates[0].content.parts;
+        const delta = (partes || []).map((p) => p.text || "").join("");
+        if (delta) { texto += delta; emit(delta); }
+      });
+      return texto;
+    }
+    const data = await res.json();
+    _contabiliza(data?.usageMetadata?.promptTokenCount, data?.usageMetadata?.candidatesTokenCount);
+    if (tools && tools.length) return dialeto.de("gemini").leResposta(data);
+    const cand = (data.candidates && data.candidates[0]) || {};
+    return ((cand.content && cand.content.parts) || []).map((p) => p.text || "").join("");
   }
 
   // spec 043: `consulteRules()` MORREU. Eram 13 frases escritas à mão aqui dentro,

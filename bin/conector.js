@@ -54,8 +54,8 @@ O conector da Mente — Loreforge
   loreforge --personagens                          lista quem existe no mundo
 
 Opções de modelo (guardadas na sua máquina, nunca enviadas ao mundo):
-  --runtime local|remote|openrouter    --modelo <nome>
-  --endpoint <url>                     --chave <credencial>
+  --runtime local|remote|openrouter|gemini    --modelo <nome>
+  --endpoint <url>                            --chave <credencial>
 
 Configuração em: ${armazenamento.caminho()}
 `;
@@ -242,6 +242,7 @@ async function main() {
   if (args.canal) cfg.canal = Number(args.canal) || cfg.canal;
   if (args.chave) {
     if (cfg.runtime === "openrouter") cfg.openrouterKey = String(args.chave);
+    else if (cfg.runtime === "gemini") cfg.geminiKey = String(args.chave);
     else cfg.apiKey = String(args.chave);
   }
 

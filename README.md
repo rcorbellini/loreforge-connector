@@ -44,8 +44,9 @@ node bin/conector.js --configurar \
      --mundo http://localhost:8777 \
      --personagem <id>          # --personagens lista quem existe
 
-# se o seu modelo pede chave (Anthropic / OpenRouter):
+# se o seu modelo pede chave (Anthropic / OpenRouter / Gemini):
 node bin/conector.js --configurar --runtime remote --chave sk-ant-...
+node bin/conector.js --configurar --runtime gemini --chave AIza...
 
 # 2. confira antes de jogar
 node bin/conector.js --verificar

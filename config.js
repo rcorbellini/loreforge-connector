@@ -25,6 +25,7 @@ const DEFAULTS = {
   remoteModel: "claude-haiku-4-5-20251001",
   openrouterModel: "poolside/laguna-m.1:free",
   openrouterEndpoint: "https://openrouter.ai/api/v1",
+  geminiModel: "gemini-2.5-flash",
   // o conector, nao mais o navegador
   mundo: "http://0.0.0.0:8777",
   personagem: "",
@@ -43,7 +44,7 @@ const DEFAULTS = {
 // O JWT do jogador pareado (spec 056) e credencial igual as outras: quem o
 // possui age no mundo pela conta dele, sem expiracao (FR-002 da spec 056). Por
 // isso entra em SEGREDOS — mesma trava estrutural, nao so disciplina.
-const SEGREDOS = ["apiKey", "openrouterKey", "jwt"];
+const SEGREDOS = ["apiKey", "openrouterKey", "geminiKey", "jwt"];
 
 function _montar(bruto) {
   const cfg = {};
@@ -83,6 +84,7 @@ function gravar(cfg) {
 function credencialDe(cfg) {
   if (cfg.runtime === "remote") return cfg.apiKey;
   if (cfg.runtime === "openrouter") return cfg.openrouterKey;
+  if (cfg.runtime === "gemini") return cfg.geminiKey;
   return null;                       // Ollama local nao pede chave
 }
 
@@ -109,6 +111,11 @@ function faltando(cfg) {
                   diga: "a chave do OpenRouter",
                   como: "--chave <sua-chave>  (fica so na sua maquina)" });
   }
+  if (cfg.runtime === "gemini" && !cfg.geminiKey) {
+    faltas.push({ campo: "geminiKey",
+                  diga: "a chave do Gemini",
+                  como: "--chave <sua-chave>  (fica so na sua maquina)" });
+  }
   return faltas;
 }
 
@@ -126,9 +133,11 @@ function paraPagina(cfg) {
     runtime: c.runtime, model: c.model, endpoint: c.endpoint,
     remoteModel: c.remoteModel,
     openrouterModel: c.openrouterModel, openrouterEndpoint: c.openrouterEndpoint,
+    geminiModel: c.geminiModel,
     embeddingModel: c.embeddingModel,
     temChaveAnthropic: !!c.apiKey,
     temChaveOpenrouter: !!c.openrouterKey,
+    temChaveGemini: !!c.geminiKey,
     // pareamento (spec 056): so o email aparece — nunca o JWT.
     pareado: !!c.jwt,
     logadoComo: c.authEmail || null,
@@ -144,13 +153,16 @@ function aplicar(cfg, vindo) {
     if (typeof vindo[k] === "string" && vindo[k].trim()) cfg[k] = vindo[k].trim();
   };
   ["mundo", "personagem", "runtime", "model", "endpoint", "remoteModel",
-   "openrouterModel", "openrouterEndpoint"].forEach(texto);
+   "openrouterModel", "openrouterEndpoint", "geminiModel"].forEach(texto);
   if (Number(vindo.canal)) cfg.canal = Number(vindo.canal);
   if (typeof vindo.apiKey === "string" && vindo.apiKey.trim()) {
     cfg.apiKey = vindo.apiKey.trim();
   }
   if (typeof vindo.openrouterKey === "string" && vindo.openrouterKey.trim()) {
     cfg.openrouterKey = vindo.openrouterKey.trim();
+  }
+  if (typeof vindo.geminiKey === "string" && vindo.geminiKey.trim()) {
+    cfg.geminiKey = vindo.geminiKey.trim();
   }
   return cfg;
 }

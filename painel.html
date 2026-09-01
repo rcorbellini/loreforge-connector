@@ -137,6 +137,7 @@
       <label class="chaveia"><input type="radio" name="rt" value="local"> Ollama local</label>
       <label class="chaveia"><input type="radio" name="rt" value="remote"> Claude</label>
       <label class="chaveia"><input type="radio" name="rt" value="openrouter"> OpenRouter</label>
+      <label class="chaveia"><input type="radio" name="rt" value="gemini"> Gemini</label>
     </div>
     <div id="bloco-local" class="linha">
       <label>Endereço do Ollama <input id="endpoint" type="text" placeholder="http://localhost:11434"></label>
@@ -150,6 +151,10 @@
       <label>Endpoint <input id="openrouterEndpoint" type="text"></label>
       <label>Modelo <input id="openrouterModel" type="text"></label>
       <label>Chave <input id="openrouterKey" type="password" placeholder="deixe vazio para manter" autocomplete="off"></label>
+    </div>
+    <div id="bloco-gemini" class="linha" hidden>
+      <label>Modelo Gemini <input id="geminiModel" type="text" placeholder="gemini-2.5-flash"></label>
+      <label>Chave do Gemini <input id="geminiKey" type="password" placeholder="deixe vazio para manter" autocomplete="off"></label>
     </div>
     <p class="nota">A chave fica em <code id="arquivo"></code>, só nesta máquina, e
        <strong>nunca é devolvida por esta página</strong> — nem para preencher o
@@ -294,10 +299,13 @@ function pintar() {
   $("remoteModel").value = c.remoteModel || "";
   $("openrouterEndpoint").value = c.openrouterEndpoint || "";
   $("openrouterModel").value = c.openrouterModel || "";
+  $("geminiModel").value = c.geminiModel || "";
   $("apiKey").placeholder = c.temChaveAnthropic
     ? "há uma chave gravada — deixe vazio para mantê-la" : "sk-ant-…";
   $("openrouterKey").placeholder = c.temChaveOpenrouter
     ? "há uma chave gravada — deixe vazio para mantê-la" : "sk-or-…";
+  $("geminiKey").placeholder = c.temChaveGemini
+    ? "há uma chave gravada — deixe vazio para mantê-la" : "AIza…";
   blocos();
 
   $("autonomia").checked = dados.autonomia.ligada && !dados.autonomia.pausado;
@@ -388,6 +396,7 @@ function blocos() {
   $("bloco-local").hidden = v !== "local";
   $("bloco-remote").hidden = v !== "remote";
   $("bloco-or").hidden = v !== "openrouter";
+  $("bloco-gemini").hidden = v !== "gemini";
 }
 
 function recado(txt, cor) {
@@ -449,10 +458,12 @@ $("salvar").onclick = async () => {
       remoteModel: $("remoteModel").value,
       openrouterEndpoint: $("openrouterEndpoint").value,
       openrouterModel: $("openrouterModel").value,
+      geminiModel: $("geminiModel").value,
       autonomia: $("autonomia").checked,
     };
     if ($("apiKey").value.trim()) corpo.apiKey = $("apiKey").value.trim();
     if ($("openrouterKey").value.trim()) corpo.openrouterKey = $("openrouterKey").value.trim();
+    if ($("geminiKey").value.trim()) corpo.geminiKey = $("geminiKey").value.trim();
 
     const r = await fetch("/api/config", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -460,7 +471,7 @@ $("salvar").onclick = async () => {
     });
     const saida = await r.json();
     if (saida.erro) throw new Error(saida.erro);
-    $("apiKey").value = ""; $("openrouterKey").value = "";
+    $("apiKey").value = ""; $("openrouterKey").value = ""; $("geminiKey").value = "";
     if (saida.adiado) {
       // NÃO repinta: com um turno correndo, a configuração VIVA ainda é a
       // antiga, e repintar com ela jogaria fora o que a pessoa acabou de
