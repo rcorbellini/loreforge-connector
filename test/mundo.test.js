@@ -163,3 +163,20 @@ test("060: o que não existe em lugar NENHUM continua morrendo no conector", () 
   assert.strictEqual(literal("o destilador", maior).id, null,
     "alargar a resolução não pode virar licença para inventar");
 });
+
+// Regressão: `candidatosOuConhecidos` convertia o `null` de `candidatosDe`
+// (parâmetro sem enum — texto livre por desenho, como `set_intention.content`)
+// em `[]` (via `|| []`), e `[]` é truthy — `_resolverAlvos` (mente.js) só pula
+// a resolução quando recebe `null`/`undefined`, então um array vazio o fazia
+// tentar casar TEXTO LIVRE contra ZERO candidatos: falha garantida, sempre,
+// mesmo quando o dicionário de "conhecidos ausentes" tinha gente nele. Foi o
+// que travou `set_intention.content` em produção por dois dias (81 falhas no
+// devlog, nenhuma intenção formada em nenhum personagem do mundo).
+test("060/US2: candidatosOuConhecidos TAMBÉM devolve null quando não há lista"
+     + " — mesmo com conhecidos ausentes no dicionário", () => {
+  const m = mundoComAusentes();
+  assert.strictEqual(m.candidatosOuConhecidos("set_intention", "content"), null,
+    "content é texto livre por desenho — nunca teve enum, nunca deveria ter lista");
+  assert.ok(Array.isArray(m.candidatosOuConhecidos("ask_directions", "quem")),
+    "um parâmetro que TEM enum continua devolvendo a lista normalmente");
+});

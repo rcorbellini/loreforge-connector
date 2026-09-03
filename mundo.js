@@ -217,8 +217,18 @@ class Mundo {
   // Resolver contra este conjunto maior é o que faz a proposta CHEGAR ao mundo
   // com um id de verdade, para ele recusar com a frase dele.
   candidatosOuConhecidos(capacidade, parametro) {
-    const daCena = this.candidatosDe(capacidade, parametro) || [];
-    if (!daCena.length || !this._ausentes || !this._ausentes.size) return daCena;
+    // `null` de `candidatosDe` significa "esta tool não pede id aqui, é texto
+    // livre por desenho" (set_intention.content, promise.expectativa...) — e
+    // tem de PERMANECER `null`, nunca virar `[]`. Um array vazio parece "há
+    // lista, mas está vazia" pra quem chama, e isso faz `_resolverAlvos`
+    // tentar casar a frase inteira contra zero candidatos: falha garantida,
+    // sempre, pra todo parâmetro que nunca teve enum. Foi o que travou
+    // `set_intention` em produção por dois dias (81 falhas no devlog) antes
+    // de ninguém nunca conseguir formar um compromisso.
+    const daCena = this.candidatosDe(capacidade, parametro);
+    if (!daCena || !daCena.length || !this._ausentes || !this._ausentes.size) {
+      return daCena;
+    }
     const vistos = new Set(daCena.map((c) => c.id));
     const fora = [];
     for (const id of this._ausentes) {
