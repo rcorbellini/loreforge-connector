@@ -564,7 +564,47 @@ RESTRIÇÕES SEVERAS:
     };
   }
 
+  // O TRECHO SOCIAL (spec 066) — o CONTRATO 2, e ele é só nosso.
+  //
+  // O servidor entrega o fato NA ENTIDADE (`bond` e `sentiment` em cada presente) e não
+  // se preocupa com como uma LLM lê. Quem decide a redação é o conector, e é por isso
+  // que um jogador pode trocá-lo inteiro sem que o mundo mude.
+  //
+  // DUAS REGRAS, e as duas são MEDIDAS, não intuídas:
+  //
+  //  1. O AFETO VEM ANTES DO VÍNCULO na entrada de cada pessoa. Medido em 8 rodadas
+  //     contra o llama3.1:8b: nesta ordem o vínculo sobrevive 6-8/8; na ordem inversa,
+  //     0-1/8. **O MECANISMO NÃO ESTÁ IDENTIFICADO** — nove variantes foram testadas,
+  //     duas vencem e são estruturalmente opostas, e três explicações foram falsificadas
+  //     pela variante seguinte. A regra é empírica. Quem for mexer aqui: rode
+  //     `server/tests/exploracao/sondagem_slot1_frase.py` ANTES, e não confie em
+  //     explicação, porque não há uma. (E a métrica é um proxy: mede se o modelo ECOA a
+  //     palavra, não se ele DECIDE com ela.)
+  //
+  //  2. NENHUM POSSESSIVO AMBÍGUO para o personagem. "seu" em português é *dele/dela*
+  //     OU *de você*, e num objeto que descreve outra pessoa a leitura natural inverte o
+  //     eixo em silêncio — devolvendo justamente o que o outro sente, que é segredo do
+  //     mundo e nunca desce. Por isso "Você guarda mágoa dela", nunca "seu afeto".
+  //
+  // Fato e crença se distinguem pela GRAMÁTICA, não por chave: aposto para o vínculo
+  // ("Hulda, irmã"), verbo psicológico para o afeto ("Você guarda mágoa dela").
+  function _trechoSocial(presentes) {
+    const frases = [];
+    for (const c of presentes) {
+      const nome = c.name;
+      if (!nome) continue;
+      // quem não qualifica não entra: o trecho ENCOLHE com a multidão em vez de crescer
+      if (!c.sentiment && !c.bond) continue;
+      if (c.sentiment) frases.push(`Você ${c.sentiment} de ${nome}.`);
+      if (c.bond) frases.push(`${nome}, ${c.bond}.`);
+    }
+    if (!frases.length) return null;   // ausente, nunca vazio
+    return "Quem lhe diz alguma coisa aqui: " + frases.join(" ");
+  }
+
   async function _contextoPayload(context, { comCapacidades = true } = {}) {
+    const _outros = (context.characters_present || []).filter((c) => c.state !== "self");
+    const _social = _trechoSocial(_outros);
     return {
       personalidade: context.self && context.self.body,
       // O QUE ELE SENTE (item 51, fatia 1). Vem em RÓTULO do mundo — nunca número,
@@ -576,16 +616,36 @@ RESTRIÇÕES SEVERAS:
         local: context.location && context.location.name,
         descricao: context.location && context.location.narrative,
         pertence_a: _pertenceA(context.location && context.location.pertence_a),
+        // spec 066: o vínculo com o LUGAR, onde o lugar já está. Omitido quando não há.
+        ...(context.location && context.location.bond
+            ? { vinculo_com_o_local: context.location.bond } : {}),
+        // spec 066: o TRECHO SOCIAL vem ANTES de `presentes` — a ordem das chaves no
+        // JSON é preservada, e o formato foi medido com o trecho antes da lista.
+        // Omitido por inteiro quando ninguém qualifica: nunca desce vazio.
+        ...(_social ? { contexto_social: _social } : {}),
         // O ID SAI DAQUI (spec 060, US2): a Mente aponta por NOME e o conector
         // resolve. Ela nunca vê um id — e por isso não tem como inventar um,
         // que era a família de recusa mais comum do item 52.5.
-        presentes: (context.characters_present || []).filter((c) => c.state !== "self").map((c) => ({
+        //
+        // spec 066: a lista fica LIMPA — vínculo e afeto vivem no trecho social acima,
+        // não repetidos aqui. Duplicar informação no mesmo prompt já custou acerto neste
+        // projeto (o bloco `capacidades`, 2026-08-17: 4 de 9 chamadas saíam sem
+        // tool_call). Não se repete o erro.
+        presentes: _outros.map((c) => ({
           nome: c.name, fazendo: c.action, carrega: (c.carrying || []).map((it) => it.name),
         })),
         objetos_presentes: (context.objects_present || []).map((o) => ({
           nome: o.name, interactions: o.interactions || null, contem: (o.contains || []).map((c) => c.name),
         })),
-        itens_presentes: (context.items_present || []).map((it) => ({ nome: it.name, interactions: it.interactions || null })),
+        // spec 066: o vínculo com o ITEM viaja com o item — o servidor já o entrega ali.
+        // A REDAÇÃO dele para A Mente NÃO foi medida (só o caso pessoa-pessoa passou pela
+        // sondagem), então ele desce como campo, sem prosa composta: entregar o dado é
+        // honesto, inventar redação não medida não é.
+        itens_presentes: (context.items_present || []).map((it) => ({
+          nome: it.name,
+          interactions: it.interactions || null,
+          ...(it.bond ? { vinculo: it.bond } : {}),
+        })),
         inventario: ((context.self && context.self.inventory) || []).map((it) => it.name),
       },
       // Aplica a blindagem aqui:
@@ -691,9 +751,22 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
         ? `, carregando ${(p.carrega || []).join(", ")}` : "";
       return `${p.nome}${p.fazendo ? ` (${p.fazendo})` : ""}${carrega}`;
     });
+    // spec 066: O TRECHO SOCIAL vem ANTES da lista de presentes — o formato foi medido
+    // assim, e a ordem é parte do que se mediu. Ver `_trechoSocial` para as duas regras
+    // (afeto antes do vínculo; nenhum possessivo ambíguo) e para a ressalva de que o
+    // mecanismo por trás delas NÃO está identificado.
+    if (c.contexto_social) linhas.push(c.contexto_social);
     linhas.push(presentes.length
       ? `Estão aqui: ${presentes.join("; ")}.` : "Não há mais ninguém aqui.");
-    const itens = (c.itens_presentes || []).map((i) => i.nome);
+    // spec 066: o vínculo com o LUGAR entra junto de onde o lugar já é dito.
+    if (c.vinculo_com_o_local) {
+      linhas.push(`${c.local || "Este lugar"}, ${c.vinculo_com_o_local}.`);
+    }
+    // spec 066: o vínculo com ITEM viaja com o item. A redação para item NÃO passou por
+    // sondagem (só o caso pessoa-pessoa passou) — por isso é aposto simples, a forma
+    // mais próxima da que se mediu, sem inventar construção nova.
+    const itens = (c.itens_presentes || []).map((i) =>
+      i.vinculo ? `${i.nome} (${i.vinculo})` : i.nome);
     if (itens.length) linhas.push(`No chão: ${itens.join(", ")}.`);
     const objs = (c.objetos_presentes || []).map((o) => {
       const dentro = (o.contem || []).length ? ` (com ${(o.contem || []).join(", ")})` : "";
