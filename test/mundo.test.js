@@ -116,7 +116,7 @@ const CTX_COM_AUSENTE = {
   location: { id: "taverna-do-gancho", name: "Taverna do Gancho" },
   characters_present: [{ id: "bram-pescador", name: "Bram, o Pescador" }],
   items_present: [], objects_present: [], routes: [],
-  conhecidos: { "ossa-cavadora": "Ossa, a Cavadora",
+  known: { "ossa-cavadora": "Ossa, a Cavadora",
                 "forja-de-ferro": "Forja de Ferro" },
 };
 
@@ -127,7 +127,7 @@ function mundoComAusentes() {
   return m;
 }
 
-test("060: `conhecidos` entra no dicionário de nomes, sem apagar a cena", () => {
+test("060: `known` entra no dicionário de nomes, sem apagar a cena", () => {
   const m = mundoComAusentes();
   assert.strictEqual(m._nomesDaCena["bram-pescador"], "Bram, o Pescador");
   assert.strictEqual(m._nomesDaCena["ossa-cavadora"], "Ossa, a Cavadora");
@@ -169,11 +169,11 @@ test("060: o que não existe em lugar NENHUM continua morrendo no conector", () 
 // em `[]` (via `|| []`), e `[]` é truthy — `_resolverAlvos` (mente.js) só pula
 // a resolução quando recebe `null`/`undefined`, então um array vazio o fazia
 // tentar casar TEXTO LIVRE contra ZERO candidatos: falha garantida, sempre,
-// mesmo quando o dicionário de "conhecidos ausentes" tinha gente nele. Foi o
+// mesmo quando o dicionário de "known ausentes" tinha gente nele. Foi o
 // que travou `set_intention.content` em produção por dois dias (81 falhas no
 // devlog, nenhuma intenção formada em nenhum personagem do mundo).
 test("060/US2: candidatosOuConhecidos TAMBÉM devolve null quando não há lista"
-     + " — mesmo com conhecidos ausentes no dicionário", () => {
+     + " — mesmo com known ausentes no dicionário", () => {
   const m = mundoComAusentes();
   assert.strictEqual(m.candidatosOuConhecidos("set_intention", "content"), null,
     "content é texto livre por desenho — nunca teve enum, nunca deveria ter lista");

@@ -560,7 +560,7 @@ RESTRIÇÕES SEVERAS:
     return {
       nome: node.name,
       descricao: node.narrative,
-      pertence_a: _pertenceA(node.pertence_a),
+      belongs_to: _pertenceA(node.belongs_to),
     };
   }
 
@@ -615,7 +615,7 @@ RESTRIÇÕES SEVERAS:
       contexto: {
         local: context.location && context.location.name,
         descricao: context.location && context.location.narrative,
-        pertence_a: _pertenceA(context.location && context.location.pertence_a),
+        belongs_to: _pertenceA(context.location && context.location.belongs_to),
         // spec 066: o vínculo com o LUGAR, onde o lugar já está. Omitido quando não há.
         ...(context.location && context.location.bond
             ? { vinculo_com_o_local: context.location.bond } : {}),
@@ -731,12 +731,12 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     const linhas = [];
     linhas.push(`Ele está em ${c.local || "algum lugar"}.` +
                 (c.descricao ? ` ${c.descricao}` : ""));
-    // `_pertenceA` devolve uma CADEIA aninhada ({nome, descricao, pertence_a}) —
+    // `_pertenceA` devolve uma CADEIA aninhada ({nome, descricao, belongs_to}) —
     // a hierarquia de lugares. Interpolar o objeto cru rendia "[object Object]",
     // e foi assim que saiu no primeiro turno real. Aqui ela vira o caminho que
     // uma pessoa diria: "dentro de Porto Negro, na Costa de Ferro".
     const cadeia = [];
-    for (let n = c.pertence_a; n && n.nome && cadeia.length < 4; n = n.pertence_a) {
+    for (let n = c.belongs_to; n && n.nome && cadeia.length < 4; n = n.belongs_to) {
       cadeia.push(n.nome);
     }
     if (cadeia.length) linhas.push(`Fica dentro de ${cadeia.join(", que fica em ")}.`);
@@ -1297,7 +1297,7 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
       // (`survival_level`) que nunca existiu.
       necessidade: (context.self && context.self.necessidade) || null,
       local: context.location && context.location.name,
-      pertence_a: _pertenceA(context.location && context.location.pertence_a),
+      belongs_to: _pertenceA(context.location && context.location.belongs_to),
       presentes: (context.characters_present || []).filter((c) => c.state !== "self").map((c) => ({ nome: c.name, fazendo: c.action })),
       // Aplica a blindagem nas memórias descritivas da narração:
       memorias: _limparMemorias(context.memories),

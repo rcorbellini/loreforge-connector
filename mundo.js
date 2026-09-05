@@ -197,9 +197,9 @@ class Mundo {
     // lembranças vivas, e é o que permite resolver "Ossa, a Cavadora" quando ela
     // saiu da taverna. Ver `_ausentes` e o comentário em `_peneira` sobre por que
     // essa proposta PRECISA chegar ao mundo em vez de morrer aqui.
-    const conhecidos = c.conhecidos || {};
-    this._ausentes = new Set(Object.keys(conhecidos));
-    for (const [id, nome] of Object.entries(conhecidos)) {
+    const known = c.known || {};
+    this._ausentes = new Set(Object.keys(known));
+    for (const [id, nome] of Object.entries(known)) {
       if (!nomes[id]) nomes[id] = nome;
     }
     this._nomesDaCena = nomes;
