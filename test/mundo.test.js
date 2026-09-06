@@ -121,9 +121,9 @@ const CTX_COM_AUSENTE = {
     items: [], objects: [], exits: [],
   },
 };
-// spec 067: `known` virou LISTA de {id, name} e mora em `self` — antes era um mapa
+// spec 067: `known_elsewhere` — lista de {id, name} em `self`. Antes era um mapa
 // com o id de CHAVE, que é impossível de tipar para quem escreve um conector.
-CTX_COM_AUSENTE.self.known = [
+CTX_COM_AUSENTE.self.known_elsewhere = [
   { id: "ossa-cavadora", name: "Ossa, a Cavadora" },
   { id: "forja-de-ferro", name: "Forja de Ferro" },
 ];

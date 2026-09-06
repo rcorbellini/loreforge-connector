@@ -197,10 +197,13 @@ class Mundo {
     // lembranças vivas, e é o que permite resolver "Ossa, a Cavadora" quando ela
     // saiu da taverna. Ver `_ausentes` e o comentário em `_peneira` sobre por que
     // essa proposta PRECISA chegar ao mundo em vez de morrer aqui.
-    // spec 067: `known` virou LISTA de {id, name} e mora em `self`. Antes era um mapa
-    // com o id de CHAVE — um objeto cujas chaves variam com o conteúdo, impossível de
-    // tipar para quem escreve um conector.
-    const known = ((c.self && c.self.known) || []);
+    // spec 067: virou LISTA de {id, name} e mora em `self`. Antes era um mapa com o id
+    // de CHAVE — um objeto cujas chaves variam com o conteúdo, impossível de tipar.
+    //
+    // E o nome ficou explícito: `known` sozinho não dizia O QUÊ nem ONDE. São as
+    // entidades que ele SABE NOMEAR e que NÃO estão na cena — o que permite propor
+    // sobre quem se lembra e deixar o mundo recusar com frase de mundo.
+    const known = ((c.self && c.self.known_elsewhere) || []);
     this._ausentes = new Set(known.map((k) => k.id).filter(Boolean));
     for (const { id, name } of known) {
       if (id && !nomes[id]) nomes[id] = name || id;
