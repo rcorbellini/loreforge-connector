@@ -22,7 +22,7 @@ const { Laco, diffTextual, sanitizeMovement } = require("../laco");
 const extensoes = require("../extensoes");
 
 const CENA = { self: { id: "fulano", name: "Fulano" },
-               characters_present: [], items_present: [], routes: [] };
+               scene: { place: {}, characters: [], items: [], objects: [], exits: [] } };
 
 function extVazio() {
   const raiz = fs.mkdtempSync(path.join(os.tmpdir(), "ext-"));
@@ -281,8 +281,8 @@ test("modelo fora do ar interrompe o turno e NÃO substitui por outro", async ()
 
 test("o diff conta quem chegou, quem saiu e o que apareceu no chão", () => {
   const eventos = diffTextual(
-    { characters_present: [{ name: "Verro" }], items_present: [] },
-    { characters_present: [{ name: "Odila" }], items_present: [{ name: "corda" }] });
+    { scene: { characters: [{ name: "Verro" }], items: [] } },
+    { scene: { characters: [{ name: "Odila" }], items: [{ name: "corda" }] } });
   assert.deepStrictEqual(eventos, [
     "Odila chegou ao local.", "Verro saiu do local.",
     "Um(a) corda apareceu no chão.",
@@ -468,10 +468,10 @@ test("o que mudou AO REDOR viaja no desfecho que volta à Mente", async () => {
   const c = coletor();
   delete menteDe.recebeu;
   // a cena MUDA entre a proposta e o replanejamento: alguém chega
-  const cena1 = { characters_present: [{ name: "Elga" }], items_present: [],
-                  routes: [], capacidades: [] };
-  const cena2 = { characters_present: [{ name: "Elga" }, { name: "Torvin" }],
-                  items_present: [], routes: [], capacidades: [] };
+  const cena1 = { scene: { characters: [{ name: "Elga" }], items: [], exits: [] },
+                  capacidades: [] };
+  const cena2 = { scene: { characters: [{ name: "Elga" }, { name: "Torvin" }],
+                          items: [], exits: [] }, capacidades: [] };
   let vez = 0;
   const mundo = {
     chamadas: [], turnoId: null,

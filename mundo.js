@@ -177,30 +177,33 @@ class Mundo {
     const nomes = {};
     const guarda = (e) => { if (e && e.id) nomes[e.id] = e.name || e.nome || e.id; };
     const c = contexto || {};
-    (c.characters_present || []).forEach((p) => {
+    ((c.scene && c.scene.characters) || []).forEach((p) => {
       guarda(p);
       (p.carrying || []).forEach(guarda);
     });
-    (c.items_present || []).forEach(guarda);
-    (c.objects_present || []).forEach((o) => {
+    ((c.scene && c.scene.items) || []).forEach(guarda);
+    ((c.scene && c.scene.objects) || []).forEach((o) => {
       guarda(o);
       (o.contains || []).forEach(guarda);
     });
     ((c.self && c.self.inventory) || []).forEach(guarda);
-    (c.routes || []).forEach((r) => {
+    ((c.scene && c.scene.exits) || []).forEach((r) => {
       if (r && r.id) nomes[r.id] = r.name || r.nome || r.id;
     });
-    if (c.location && c.location.id) {
-      nomes[c.location.id] = c.location.name || c.location.id;
+    if (c.scene && c.scene.place && c.scene.place.id) {
+      nomes[c.scene.place.id] = c.scene.place.name || c.scene.place.id;
     }
     // QUEM ELE SABE NOMEAR MAS NÃO ESTÁ AQUI (spec 060). Vem do `involved` das
     // lembranças vivas, e é o que permite resolver "Ossa, a Cavadora" quando ela
     // saiu da taverna. Ver `_ausentes` e o comentário em `_peneira` sobre por que
     // essa proposta PRECISA chegar ao mundo em vez de morrer aqui.
-    const known = c.known || {};
-    this._ausentes = new Set(Object.keys(known));
-    for (const [id, nome] of Object.entries(known)) {
-      if (!nomes[id]) nomes[id] = nome;
+    // spec 067: `known` virou LISTA de {id, name} e mora em `self`. Antes era um mapa
+    // com o id de CHAVE — um objeto cujas chaves variam com o conteúdo, impossível de
+    // tipar para quem escreve um conector.
+    const known = ((c.self && c.self.known) || []);
+    this._ausentes = new Set(known.map((k) => k.id).filter(Boolean));
+    for (const { id, name } of known) {
+      if (id && !nomes[id]) nomes[id] = name || id;
     }
     this._nomesDaCena = nomes;
     return nomes;

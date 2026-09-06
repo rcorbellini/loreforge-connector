@@ -46,16 +46,21 @@ const Mente = require("../mente");
 
 function cena(presentes, extra = {}) {
   return {
-    self: { id: "bram", name: "Bram", inventory: [] },
-    location: { id: "praca", name: "Praça", narrative: "Bancas.", ...(extra.location || {}) },
-    memories: [], routes: [], items_present: extra.items_present || [],
-    objects_present: [], intentions: [], capacidades: [],
-    characters_present: [{ id: "bram", name: "Bram", state: "self" }, ...presentes],
+    self: { id: "bram", name: "Bram", inventory: [], memories: [],
+            intentions: [], known: [], transit: null },
+    capacidades: [],
+    scene: {
+      place: { id: "praca", name: "Praça", prose: "Bancas.", belongs_to: null,
+               ...(extra.place || {}) },
+      characters: [{ id: "bram", name: "Bram", state: "self" }, ...presentes],
+      items: extra.items || [],
+      objects: [], exits: [],
+    },
   };
 }
 
 const HULDA = { id: "hulda", name: "Hulda", state: "idle",
-                bond: "irmã", sentiment: "guarda mágoa" };
+                relation: "irmã", sentiment: "guarda mágoa" };
 
 async function ctxDe(c) {
   return (await Mente._contextoPayload(c, { comCapacidades: false })).contexto;
@@ -85,7 +90,7 @@ test("os DOIS EIXOS convivem — o irmão que se odeia", async () => {
 
 test("só vínculo, ou só afeto, produzem texto gramatical", async () => {
   const soVinculo = (await ctxDe(cena([
-    { id: "renn", name: "Renn", state: "idle", bond: "primo" },
+    { id: "renn", name: "Renn", state: "idle", relation: "primo" },
   ]))).contexto_social;
   assert.match(soVinculo, /Renn, primo\./);
 
@@ -97,7 +102,7 @@ test("só vínculo, ou só afeto, produzem texto gramatical", async () => {
 
 test("quem não qualifica NÃO entra, e o trecho some quando ninguém qualifica", async () => {
   const com = await ctxDe(cena([
-    { id: "renn", name: "Renn", state: "idle", bond: "primo" },
+    { id: "renn", name: "Renn", state: "idle", relation: "primo" },
     { id: "ossian", name: "Ossian", state: "idle" },
   ]));
   assert.ok(!com.contexto_social.includes("Ossian"),
@@ -112,7 +117,7 @@ test("a lista `presentes` fica LIMPA — sem repetir vínculo nem afeto", async 
   const ctx = await ctxDe(cena([HULDA]));
   const hulda = ctx.presentes.find((p) => p.nome === "Hulda");
   assert.ok(hulda, "Hulda deveria estar na lista");
-  assert.strictEqual(hulda.bond, undefined, "vínculo não se repete na lista");
+  assert.strictEqual(hulda.relation, undefined, "vínculo não se repete na lista");
   assert.strictEqual(hulda.sentiment, undefined, "afeto não se repete na lista");
 });
 
@@ -124,8 +129,8 @@ test("o trecho social vem ANTES de `presentes` na ordem das chaves", async () =>
 
 test("o vínculo com LUGAR e com ITEM desce, onde a entidade já está", async () => {
   const ctx = await ctxDe(cena([], {
-    location: { bond: "terra natal" },
-    items_present: [{ id: "bigorna", name: "bigorna", bond: "herança do pai" }],
+    place: { relation: "terra natal" },
+    items: [{ id: "bigorna", name: "bigorna", relation: "herança do pai" }],
   }));
   assert.strictEqual(ctx.vinculo_com_o_local, "terra natal");
   assert.strictEqual(ctx.itens_presentes[0].vinculo, "herança do pai");
@@ -155,8 +160,8 @@ test("o trecho social CHEGA na prosa do sussurro, antes de 'Estão aqui'", async
 
 test("o vínculo com lugar e item chega na prosa", async () => {
   const payload = await Mente._contextoPayload(cena([], {
-    location: { bond: "terra natal" },
-    items_present: [{ id: "bigorna", name: "bigorna", bond: "herança do pai" }],
+    place: { relation: "terra natal" },
+    items: [{ id: "bigorna", name: "bigorna", relation: "herança do pai" }],
   }), { comCapacidades: false });
   const prosa = Mente._cenaEmProsa(payload);
   assert.match(prosa, /Praça, terra natal\./);

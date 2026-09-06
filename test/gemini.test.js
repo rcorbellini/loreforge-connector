@@ -30,8 +30,12 @@ process.env.LOREFORGE_LOG = "0";
 const configuracao = require("../config");
 const Mente = require("../mente");
 
-const CENA = { self: { id: "fulano", name: "Fulano" }, memories: [],
-               characters_present: [], items_present: [], routes: [] };
+const CENA = {
+  self: { id: "fulano", name: "Fulano", memories: [], intentions: [],
+          inventory: [], known: [], transit: null },
+  scene: { place: { id: "x", name: "X", prose: null, belongs_to: null },
+           characters: [], items: [], objects: [], exits: [] },
+};
 
 function mundoFalso(tools) {
   return {

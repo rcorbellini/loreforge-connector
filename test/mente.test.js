@@ -28,8 +28,12 @@ process.env.LOREFORGE_LOG = "0";
 const configuracao = require("../config");
 const Mente = require("../mente");
 
-const CENA = { self: { id: "fulano", name: "Fulano" }, memories: [],
-               characters_present: [], items_present: [], routes: [] };
+const CENA = {
+  self: { id: "fulano", name: "Fulano", memories: [], intentions: [],
+          inventory: [], known: [], transit: null },
+  scene: { place: { id: "x", name: "X", prose: null, belongs_to: null },
+           characters: [], items: [], objects: [], exits: [] },
+};
 
 function mundoFalso(tools) {
   return {
@@ -217,17 +221,20 @@ test("060: chamada emitida como TEXTO é reconhecida como parada FALSA", () => {
 test("060/US2: nenhum id de cena aparece no payload que vai ao modelo", async () => {
   const m = require("../mente");
   const CONTEXTO = {
-    self: { id: "torvin-ferreiro", name: "Torvin", body: "Um ferreiro.",
-            inventory: [{ id: "bolsa-de-couro", name: "Bolsa de Couro" }] },
-    location: { id: "praca-do-mercado", name: "Praça do Mercado", narrative: "Uma praça." },
-    characters_present: [
-      { id: "obadiah-mascate", name: "Obadiah, o Mascate", action: "vende",
-        carrying: [{ id: "cravos-de-ferro", name: "Cravos de Ferro" }] },
-      { id: "torvin-ferreiro", name: "Torvin", state: "self" }],
-    items_present: [{ id: "frasco-de-oleo", name: "Frasco de Óleo" }],
-    objects_present: [{ id: "poco-da-praca", name: "Poço", contains: [] }],
-    routes: [{ id: "rua-do-portao", name: "Rua do Portão", destination_name: "Porto Negro" }],
-    memories: [],
+    self: { id: "torvin-ferreiro", name: "Torvin", prose: "Um ferreiro.",
+            inventory: [{ id: "bolsa-de-couro", name: "Bolsa de Couro" }],
+            memories: [], intentions: [], known: [], transit: null },
+    scene: {
+      place: { id: "praca-do-mercado", name: "Praça do Mercado", prose: "Uma praça." },
+      characters: [
+        { id: "obadiah-mascate", name: "Obadiah, o Mascate", action: "vende",
+          carrying: [{ id: "cravos-de-ferro", name: "Cravos de Ferro" }] },
+        { id: "torvin-ferreiro", name: "Torvin", state: "self" }],
+      items: [{ id: "frasco-de-oleo", name: "Frasco de Óleo" }],
+      objects: [{ id: "poco-da-praca", name: "Poço", contains: [] }],
+      exits: [{ id: "rua-do-portao", name: "Rua do Portão",
+                destination_name: "Porto Negro" }],
+    },
   };
   const payload = JSON.stringify(await m._contextoPayload(CONTEXTO,
     { comCapacidades: false }));
@@ -281,20 +288,23 @@ test("060/US2: o enum de LISTA DE CENA sai das tools; o CALCULADO fica", () => {
 test("060/US3: a prosa leva TODOS os nomes da cena e NENHUM id", async () => {
   const m = require("../mente");
   const CTX = {
-    self: { id: "torvin-ferreiro", name: "Torvin", body: "Um ferreiro calado.",
-            necessidade: { fome: "com fome" },
-            inventory: [{ id: "bolsa-de-couro", name: "Bolsa de Couro" }] },
-    location: { id: "praca-do-mercado", name: "Praça do Mercado",
-                narrative: "Barracas e gente." },
-    characters_present: [
-      { id: "obadiah-mascate", name: "Obadiah, o Mascate", action: "vende",
-        carrying: [{ id: "cravos-de-ferro", name: "Cravos de Ferro" }] },
-      { id: "torvin-ferreiro", name: "Torvin", state: "self" }],
-    items_present: [{ id: "frasco-de-oleo", name: "Frasco de Óleo" }],
-    objects_present: [{ id: "poco-da-praca", name: "Poço", contains: [] }],
-    routes: [{ id: "rua-do-portao", name: "Rua do Portão",
-               destination_name: "Porto Negro" }],
-    memories: [{ content: "Prometi cravos a Obadiah.", timestamp_start: 1 }],
+    self: { id: "torvin-ferreiro", name: "Torvin", prose: "Um ferreiro calado.",
+            needs: { hunger: "com fome" },
+            inventory: [{ id: "bolsa-de-couro", name: "Bolsa de Couro" }],
+            memories: [{ content: "Prometi cravos a Obadiah.", timestamp_start: 1 }],
+            intentions: [], known: [], transit: null },
+    scene: {
+      place: { id: "praca-do-mercado", name: "Praça do Mercado",
+               prose: "Barracas e gente." },
+      characters: [
+        { id: "obadiah-mascate", name: "Obadiah, o Mascate", action: "vende",
+          carrying: [{ id: "cravos-de-ferro", name: "Cravos de Ferro" }] },
+        { id: "torvin-ferreiro", name: "Torvin", state: "self" }],
+      items: [{ id: "frasco-de-oleo", name: "Frasco de Óleo" }],
+      objects: [{ id: "poco-da-praca", name: "Poço", contains: [] }],
+      exits: [{ id: "rua-do-portao", name: "Rua do Portão",
+                destination_name: "Porto Negro" }],
+    },
   };
   const prosa = m._cenaEmProsa(await m._contextoPayload(CTX, { comCapacidades: false }));
 
@@ -315,9 +325,9 @@ test("060/US3: a MEMÓRIA chega à prosa — o campo é `o_que`, não `content`"
   // memória sumiria da cena EM SILÊNCIO — e memória é o eixo do jogo.
   const m = require("../mente");
   const prosa = m._cenaEmProsa(await m._contextoPayload({
-    self: { name: "T", inventory: [] }, location: { name: "Praça" },
-    characters_present: [], items_present: [], objects_present: [], routes: [],
-    memories: [{ content: "Prometi cravos a Obadiah.", timestamp_start: 1 }],
+    self: { name: "T", inventory: [], memories: [{ content: "Prometi cravos a Obadiah.", timestamp_start: 1 }] },
+    scene: { place: { name: "Praça" }, characters: [],
+             items: [], objects: [], exits: [] },
   }, { comCapacidades: false }));
   assert.ok(/Ele lembra:.*Prometi cravos/.test(prosa), prosa);
 });
@@ -325,9 +335,9 @@ test("060/US3: a MEMÓRIA chega à prosa — o campo é `o_que`, não `content`"
 test("060/US3: cena vazia não quebra e não mente", async () => {
   const m = require("../mente");
   const prosa = m._cenaEmProsa(await m._contextoPayload({
-    self: { name: "T", inventory: [] }, location: { name: "Ermo" },
-    characters_present: [], items_present: [], objects_present: [], routes: [],
-    memories: [],
+    self: { name: "T", inventory: [], memories: [] },
+    scene: { place: { name: "Ermo" }, characters: [],
+             items: [], objects: [], exits: [] },
   }, { comCapacidades: false }));
   assert.ok(prosa.includes("Não há mais ninguém aqui"));
   assert.ok(prosa.includes("Ele não carrega nada"));
@@ -341,11 +351,12 @@ test("060/US3: a hierarquia de lugares vira caminho, não [object Object]", asyn
   // sintética não tinha `belongs_to`. É por isso que jogar de verdade faz parte.
   const m = require("../mente");
   const prosa = m._cenaEmProsa(await m._contextoPayload({
-    self: { name: "T", inventory: [] },
-    location: { name: "Boticário", narrative: "Uma loja.",
-      belongs_to: { name: "Porto Negro", belongs_to: { name: "Costa de Ferro" } } },
-    characters_present: [], items_present: [], objects_present: [], routes: [],
-    memories: [],
+    self: { name: "T", inventory: [], memories: [] },
+    scene: {
+      place: { name: "Boticário", prose: "Uma loja.",
+        belongs_to: { name: "Porto Negro", belongs_to: { name: "Costa de Ferro" } } },
+      characters: [], items: [], objects: [], exits: [],
+    },
   }, { comCapacidades: false }));
   assert.ok(!prosa.includes("[object Object]"), prosa);
   assert.ok(prosa.includes("Porto Negro") && prosa.includes("Costa de Ferro"), prosa);

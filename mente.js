@@ -559,7 +559,7 @@ RESTRIÇÕES SEVERAS:
     if (!node) return null;
     return {
       nome: node.name,
-      descricao: node.narrative,
+      descricao: node.prose,
       belongs_to: _pertenceA(node.belongs_to),
     };
   }
@@ -588,37 +588,54 @@ RESTRIÇÕES SEVERAS:
   //
   // Fato e crença se distinguem pela GRAMÁTICA, não por chave: aposto para o vínculo
   // ("Hulda, irmã"), verbo psicológico para o afeto ("Você guarda mágoa dela").
+  // O rótulo NEUTRO do afeto. A spec 067 fez o contrato ficar COMPLETO — `sentiment`
+  // desce SEMPRE, inclusive neutro — e empurrou este custo para cá, que é o lugar
+  // certo: o servidor entrega o mundo inteiro, o conector decide o que a LLM lê.
+  //
+  // Sem este filtro a prosa saía agramatical em toda a praça: "Você sem história que
+  // pese num sentido ou noutro de Bento." — treze vezes, uma por estranho.
+  //
+  // Comparar com a string não é parsear prosa: o vocabulário de `sentiment` é parte
+  // PUBLICADA do contrato (`docs/contrato-do-contexto.md`), como um enum seria.
+  const AFETO_NEUTRO = "sem história que pese num sentido ou noutro";
+
   function _trechoSocial(presentes) {
     const frases = [];
     for (const c of presentes) {
       const nome = c.name;
       if (!nome) continue;
+      const afeto = (c.sentiment && c.sentiment !== AFETO_NEUTRO) ? c.sentiment : null;
       // quem não qualifica não entra: o trecho ENCOLHE com a multidão em vez de crescer
-      if (!c.sentiment && !c.bond) continue;
-      if (c.sentiment) frases.push(`Você ${c.sentiment} de ${nome}.`);
-      if (c.bond) frases.push(`${nome}, ${c.bond}.`);
+      if (!afeto && !c.relation) continue;
+      if (afeto) frases.push(`Você ${afeto} de ${nome}.`);
+      if (c.relation) frases.push(`${nome}, ${c.relation}.`);
     }
     if (!frases.length) return null;   // ausente, nunca vazio
     return "Quem lhe diz alguma coisa aqui: " + frases.join(" ");
   }
 
   async function _contextoPayload(context, { comCapacidades = true } = {}) {
-    const _outros = (context.characters_present || []).filter((c) => c.state !== "self");
+    // O conector LÊ um contrato que ele não controla (spec 067: `self` / `scene`), e
+    // um jogador pode trocar este arquivo inteiro. Acesso defensivo aqui não é
+    // compatibilidade retroativa — é não explodir a face por um nó ausente.
+    const _self = context.self || {};
+    const _scene = context.scene || {};
+    const _place = _scene.place || {};
+    const _outros = (_scene.characters || []).filter((c) => c.state !== "self");
     const _social = _trechoSocial(_outros);
     return {
-      personalidade: context.self && context.self.body,
+      personalidade: _self.prose,
       // O QUE ELE SENTE (item 51, fatia 1). Vem em RÓTULO do mundo — nunca número,
       // que é segredo dele. Sem isto o personagem não tinha como SABER que estava
       // com fome: o payload não trazia status nenhum, e a única porta era um campo
       // (`survival_level`) que nunca existiu.
-      necessidade: (context.self && context.self.necessidade) || null,
+      necessidade: _self.needs || null,
       contexto: {
-        local: context.location && context.location.name,
-        descricao: context.location && context.location.narrative,
-        belongs_to: _pertenceA(context.location && context.location.belongs_to),
+        local: _place.name,
+        descricao: _place.prose,
+        belongs_to: _pertenceA(_place.belongs_to),
         // spec 066: o vínculo com o LUGAR, onde o lugar já está. Omitido quando não há.
-        ...(context.location && context.location.bond
-            ? { vinculo_com_o_local: context.location.bond } : {}),
+        ...(_place.relation ? { vinculo_com_o_local: _place.relation } : {}),
         // spec 066: o TRECHO SOCIAL vem ANTES de `presentes` — a ordem das chaves no
         // JSON é preservada, e o formato foi medido com o trecho antes da lista.
         // Omitido por inteiro quando ninguém qualifica: nunca desce vazio.
@@ -634,23 +651,23 @@ RESTRIÇÕES SEVERAS:
         presentes: _outros.map((c) => ({
           nome: c.name, fazendo: c.action, carrega: (c.carrying || []).map((it) => it.name),
         })),
-        objetos_presentes: (context.objects_present || []).map((o) => ({
+        objetos_presentes: (_scene.objects || []).map((o) => ({
           nome: o.name, interactions: o.interactions || null, contem: (o.contains || []).map((c) => c.name),
         })),
         // spec 066: o vínculo com o ITEM viaja com o item — o servidor já o entrega ali.
         // A REDAÇÃO dele para A Mente NÃO foi medida (só o caso pessoa-pessoa passou pela
         // sondagem), então ele desce como campo, sem prosa composta: entregar o dado é
         // honesto, inventar redação não medida não é.
-        itens_presentes: (context.items_present || []).map((it) => ({
+        itens_presentes: (_scene.items || []).map((it) => ({
           nome: it.name,
           interactions: it.interactions || null,
-          ...(it.bond ? { vinculo: it.bond } : {}),
+          ...(it.relation ? { vinculo: it.relation } : {}),
         })),
-        inventario: ((context.self && context.self.inventory) || []).map((it) => it.name),
+        inventario: (_self.inventory || []).map((it) => it.name),
       },
       // Aplica a blindagem aqui:
-      memorias: _limparMemorias(context.memories),
-      rotas_disponiveis: (context.routes || []).map((r) => ({ nome: r.name, para: r.destination_name })),
+      memorias: _limparMemorias(_self.memories),
+      rotas_disponiveis: (_scene.exits || []).map((r) => ({ nome: r.name, para: r.destination_name })),
       // `comCapacidades` é FALSE só na chamada de `interpret` que já manda `tools`
       // nativas (spec 043) — lá, repetir a mesma informação em prosa é DUPLICAÇÃO,
       // não reforço. Medido ao vivo em 2026-08-17 (18 chamadas reais ao llama3.1:8b,
@@ -1214,7 +1231,7 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
   }
 
   async function deriveWhisper(context) {
-    const intencoesAtivas = context.intentions || [];
+    const intencoesAtivas = (context.self || {}).intentions || [];
 
     // A BIFURCAÇÃO DO TICK (spec 033): sem compromisso, o personagem para e faz um.
     // Ver `REFLECT_COMMAND` — inclusive por que ele não chama modelo aqui.
@@ -1237,7 +1254,7 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
       // status de sobrevivência em 0, ele está focado em resolver problemas
       // imediatos, como encontrar comida"). A necessidade agora vem em RÓTULO,
       // pelo `_contextoPayload`, e a seção 2 do prompt raciocina sobre ela.
-      itens_que_possuo: ((context.self && context.self.inventory) || []).map((it) => ({ id: it.id, nome: it.name }))
+      itens_que_possuo: (_self.inventory || []).map((it) => ({ id: it.id, nome: it.name }))
     };
     
     const raw = await callModel(
@@ -1290,17 +1307,17 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
         // Limpa também as memórias vivas redundantes do reconhecimento
         lembra: r.grau === "nitido" ? _limparTextos(r.memorias_vivas) : null,
       })) : null,
-      personalidade: context.self && context.self.body,
+      personalidade: (context.self || {}).prose,
       // O QUE ELE SENTE (item 51, fatia 1). Vem em RÓTULO do mundo — nunca número,
       // que é segredo dele. Sem isto o personagem não tinha como SABER que estava
       // com fome: o payload não trazia status nenhum, e a única porta era um campo
       // (`survival_level`) que nunca existiu.
-      necessidade: (context.self && context.self.necessidade) || null,
-      local: context.location && context.location.name,
-      belongs_to: _pertenceA(context.location && context.location.belongs_to),
-      presentes: (context.characters_present || []).filter((c) => c.state !== "self").map((c) => ({ nome: c.name, fazendo: c.action })),
+      necessidade: _self.needs || null,
+      local: ((context.scene || {}).place || {}).name,
+      belongs_to: _pertenceA(((context.scene || {}).place || {}).belongs_to),
+      presentes: (((context.scene || {}).characters) || []).filter((c) => c.state !== "self").map((c) => ({ nome: c.name, fazendo: c.action })),
       // Aplica a blindagem nas memórias descritivas da narração:
-      memorias: _limparMemorias(context.memories),
+      memorias: _limparMemorias(_self.memories),
     };
     return (
       await callModel(

@@ -684,15 +684,15 @@ function diffTextual(velho, novo) {
   if (!velho || !novo) return eventos;
 
   const nomes = (lista) => (lista || []).map((x) => x.name);
-  const antes = nomes(velho.characters_present);
-  const agora = nomes(novo.characters_present);
+  const antes = nomes(velho.scene && velho.scene.characters);
+  const agora = nomes(novo.scene && novo.scene.characters);
   agora.filter((n) => !antes.includes(n))
        .forEach((c) => eventos.push(`${c} chegou ao local.`));
   antes.filter((n) => !agora.includes(n))
        .forEach((c) => eventos.push(`${c} saiu do local.`));
 
-  const itensAntes = nomes(velho.items_present);
-  const itensAgora = nomes(novo.items_present);
+  const itensAntes = nomes(velho.scene && velho.scene.items);
+  const itensAgora = nomes(novo.scene && novo.scene.items);
   itensAgora.filter((n) => !itensAntes.includes(n))
             .forEach((i) => eventos.push(`Um(a) ${i} apareceu no chão.`));
   itensAntes.filter((n) => !itensAgora.includes(n))

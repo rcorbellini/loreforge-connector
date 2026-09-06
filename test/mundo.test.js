@@ -29,12 +29,14 @@ const CONTEXTO = {
   self: { id: "irmao-tobias", name: "Irmão Tobias",
           inventory: [{ id: "raiz-torta", name: "Raiz Torta" },
                       { id: "fuligem", name: "Fuligem" }] },
-  location: { id: "boticario-da-raiz-torta", name: "Boticário da Raiz Torta" },
-  characters_present: [
-    { id: "nerissa-boticaria", name: "Nerissa, a Boticária",
-      carrying: [{ id: "bolsa-de-ervas", name: "Bolsa de Ervas" }] }],
-  items_present: [{ id: "frasco-de-tintura-vermelha", name: "Frasco de Tintura Vermelha" }],
-  objects_present: [], routes: [],
+  scene: {
+    place: { id: "boticario-da-raiz-torta", name: "Boticário da Raiz Torta" },
+    characters: [
+      { id: "nerissa-boticaria", name: "Nerissa, a Boticária",
+        carrying: [{ id: "bolsa-de-ervas", name: "Bolsa de Ervas" }] }],
+    items: [{ id: "frasco-de-tintura-vermelha", name: "Frasco de Tintura Vermelha" }],
+    objects: [], exits: [],
+  },
 };
 
 function mundoFake() {
@@ -113,12 +115,18 @@ test("060/US2: parâmetro sem lista devolve null — não há o que resolver", (
 
 const CTX_COM_AUSENTE = {
   self: { id: "elga-taverneira", name: "Elga", inventory: [] },
-  location: { id: "taverna-do-gancho", name: "Taverna do Gancho" },
-  characters_present: [{ id: "bram-pescador", name: "Bram, o Pescador" }],
-  items_present: [], objects_present: [], routes: [],
-  known: { "ossa-cavadora": "Ossa, a Cavadora",
-                "forja-de-ferro": "Forja de Ferro" },
+  scene: {
+    place: { id: "taverna-do-gancho", name: "Taverna do Gancho" },
+    characters: [{ id: "bram-pescador", name: "Bram, o Pescador" }],
+    items: [], objects: [], exits: [],
+  },
 };
+// spec 067: `known` virou LISTA de {id, name} e mora em `self` — antes era um mapa
+// com o id de CHAVE, que é impossível de tipar para quem escreve um conector.
+CTX_COM_AUSENTE.self.known = [
+  { id: "ossa-cavadora", name: "Ossa, a Cavadora" },
+  { id: "forja-de-ferro", name: "Forja de Ferro" },
+];
 
 function mundoComAusentes() {
   const m = Object.create(Mundo.prototype);
