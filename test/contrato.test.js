@@ -35,10 +35,19 @@ process.env.LOREFORGE_LOG = "0";
 const configuracao = require("../config");
 const Mente = require("../mente");
 
-// A RAIZ do contrato (spec 067): "Nada mais fica na raiz." Se o server um dia
-// acrescentar um terceiro nó, é esta lista que se atualiza — e o teste estático abaixo
-// passa a cobrar o conector por ele.
-const RAIZ_DO_CONTRATO = ["scene", "self"];
+// A RAIZ do que o CONECTOR recebe — e ela não é a mesma coisa que a raiz do
+// `get_context`. Distinção que custou uma conclusão errada, então fica escrita:
+//
+//   `motor.get_context()`  ->  { self, scene }              (a spec 067: "nada mais
+//                                                             fica na raiz")
+//   `GET /api/context`     ->  { self, scene, capacidades }  (app.py:1143 acrescenta
+//                                                             `face.build(ctx)`)
+//
+// O conector consome o ENDPOINT, não a função. Então `capacidades` é chave legítima
+// aqui, e é por ela que a face da cena — nome, o que faz, alvos possíveis e parâmetros
+// exigidos de cada capacidade — chega ao `AUTONOMY_SYSTEM`, que não tem `tools`
+// nativas e depende desse bloco em prosa.
+const RAIZ_DO_CONTRATO = ["capacidades", "scene", "self"];
 
 // Fixture COPIADA da forma real de `get_context` (capturada do `draven-vigia` em
 // 2026-09-07), não inventada à mão: é a forma real que faz o teste valer. Todo campo
@@ -176,26 +185,18 @@ const FONTES = ["mente.js", "laco.js", "mundo.js"]
 
 // CHAVES MORTAS CONHECIDAS — dívida nomeada, não exceção silenciosa.
 //
-// Este teste nasceu achando cinco leituras de raiz inexistente. Duas (`intentions`)
-// eram defeito claro e foram consertadas na hora. As outras três continuam aqui, de
-// propósito, porque consertá-las é decisão de desenho e não de digitação — e uma lista
-// explícita as mantém VISÍVEIS em vez de deixá-las passar num filtro genérico.
-//
 // A asserção é de IGUALDADE: uma deriva nova quebra o teste, e consertar uma destas
 // também — obrigando a atualizar a lista em vez de deixá-la envelhecer.
+//
+// CORREÇÃO (2026-09-07, no mesmo dia): a primeira versão desta lista acusava também
+// `capacidades` (mente.js:688, laco.js:538), com a conclusão de que "o prompt de
+// autonomia lista ZERO capacidades". ERRADO, e o erro foi meu: eu procurei quem
+// atribuía a chave nos arquivos do CONECTOR, não achei, e concluí que ninguém
+// atribuía. Quem atribui é o server, na camada HTTP (`app.py:1143`), depois do
+// `get_context`. Conferido no payload real: as capacidades descem completas, com
+// descrição, `alvos_possiveis` e `exige`. Fica registrado porque a lição é do tipo que
+// se repete — ausência de escrita em UM repositório não é ausência no sistema.
 const MORTAS_CONHECIDAS = {
-  "mente.js: capacidades": (
-    "O `AUTONOMY_SYSTEM` monta o bloco `capacidades` em prosa a partir daqui, e o "
-    + "comentário em mente.js:684 diz que ali ele é a ÚNICA fonte do que o personagem "
-    + "pode fazer (não há `tools` nativas nesse caminho). Mas NADA jamais atribui "
-    + "`context.capacidades`: `mundo.contexto()` devolve o `/api/context` cru, e o "
-    + "server nunca teve essa chave. Ou seja, o prompt de autonomia lista ZERO "
-    + "capacidades. Consertar é ligar `mundo.listarCapacidades()` aqui — o que MUDA o "
-    + "que o modelo vê, e por isso pede medição antes (regra da spec 058)."),
-  "laco.js: capacidades": (
-    "Mesma raiz: `_porQueNada` só dá o recado específico quando a cena tem de 1 a 3 "
-    + "capacidades, e como a lista é sempre vazia esse ramo nunca dispara — o jogador "
-    + "recebe sempre a mensagem genérica. Sai junto com a de cima."),
   "mente.js: character_id": (
     "Fallback defensivo em `interpret`: `(context.self && context.self.id) || "
     + "context.character_id`. O lado esquerdo é o contrato e sempre vence; o direito é "
