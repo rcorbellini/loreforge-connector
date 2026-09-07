@@ -629,7 +629,10 @@ RESTRIÇÕES SEVERAS:
       // que é segredo dele. Sem isto o personagem não tinha como SABER que estava
       // com fome: o payload não trazia status nenhum, e a única porta era um campo
       // (`survival_level`) que nunca existiu.
-      necessidade: _self.needs || null,
+      // rótulo em PORTUGUÊS também no JSON: o `AUTONOMY_SYSTEM` manda "Leia a
+      // `necessidade`", e o que ele encontrava era `hunger`/`thirst`. Ver
+      // `_necessidadeEmPortugues`.
+      necessidade: _necessidadeComRotulo(_self.needs),
       contexto: {
         local: _place.name,
         descricao: _place.prose,
@@ -743,6 +746,38 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
   // propósito: lá o bloco `capacidades` em prosa é a ÚNICA fonte do que existe
   // (não há `tools` nativas), e trocar o formato sem medir aquele caminho seria
   // exatamente o que a regra da 058 proíbe.
+  // O RÓTULO DA NECESSIDADE VAI EM PORTUGUÊS PARA A MENTE — e esta função existe
+  // porque a fronteira aqui é a do projeto inteiro: o CONTRATO é API e fala inglês
+  // (`hunger`/`thirst`/`fatigue`/`sleep`, spec 067, e está certo); a PROSA é para um
+  // modelo que raciocina em português, e montá-la é trabalho do conector.
+  //
+  // Antes da 067 as chaves já eram português e a linha saía sozinha certa. Depois dela
+  // o `_cenaEmProsa` passou a interpolar a chave CRUA, e a Mente lia
+  // "Como ele está: hunger: com fome, thirst: sem sede" — rótulo em inglês colado num
+  // valor em português. O item 30 mediu que o NOME é o que o modelo lê para decidir
+  // (`sleep` 6/10 contra `wake_up` 10/10 com a MESMA descrição), então nome meia-boca
+  // não é cosmético aqui.
+  //
+  // Chave desconhecida passa direto, sem tradução: um campo novo no contrato aparece
+  // na prosa em vez de sumir em silêncio, que é o modo de falha que já custou caro.
+  const _ROTULO_NECESSIDADE = { hunger: "fome", thirst: "sede",
+                                fatigue: "cansaço", sleep: "sono" };
+
+  function _necessidadeEmPortugues(needs) {
+    return Object.entries(needs || {})
+      // `sleep` é `null` para quem está acordado (o server devolve o rótulo só quando
+      // dorme) — filtrar o vazio é o certo, e não é o que escondia o campo.
+      .filter(([, v]) => v)
+      .map(([k, v]) => [_ROTULO_NECESSIDADE[k] || k, v]);
+  }
+
+  // A mesma tradução, na forma de OBJETO — para os payloads que ainda viajam em JSON
+  // (autonomia e narração). `null` quando não há nada a dizer, como antes.
+  function _necessidadeComRotulo(needs) {
+    const pares = _necessidadeEmPortugues(needs);
+    return pares.length ? Object.fromEntries(pares) : null;
+  }
+
   function _cenaEmProsa(d) {
     const c = d.contexto || {};
     const linhas = [];
@@ -759,8 +794,8 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     if (cadeia.length) linhas.push(`Fica dentro de ${cadeia.join(", que fica em ")}.`);
     if (d.personalidade) linhas.push(`Quem ele é: ${d.personalidade}`);
     if (d.necessidade) {
-      const n = Object.entries(d.necessidade)
-        .filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(", ");
+      const n = _necessidadeEmPortugues(d.necessidade)
+        .map(([k, v]) => `${k}: ${v}`).join(", ");
       if (n) linhas.push(`Como ele está: ${n}.`);
     }
     const presentes = (c.presentes || []).map((p) => {
@@ -1319,7 +1354,10 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
       // que é segredo dele. Sem isto o personagem não tinha como SABER que estava
       // com fome: o payload não trazia status nenhum, e a única porta era um campo
       // (`survival_level`) que nunca existiu.
-      necessidade: _self.needs || null,
+      // rótulo em PORTUGUÊS também no JSON: o `AUTONOMY_SYSTEM` manda "Leia a
+      // `necessidade`", e o que ele encontrava era `hunger`/`thirst`. Ver
+      // `_necessidadeEmPortugues`.
+      necessidade: _necessidadeComRotulo(_self.needs),
       local: _place.name,
       belongs_to: _pertenceA(_place.belongs_to),
       presentes: (_scene.characters || []).filter((c) => c.state !== "self").map((c) => ({ nome: c.name, fazendo: c.action })),

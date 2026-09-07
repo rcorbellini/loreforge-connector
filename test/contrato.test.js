@@ -157,6 +157,34 @@ test("narrate monta o payload sem estourar", async () => {
   }
 });
 
+test("a necessidade chega à Mente com rótulo em PORTUGUÊS", async () => {
+  // A 067 renomeou as chaves de `needs` para inglês — e fez certo, o contrato é API.
+  // Mas o `_cenaEmProsa` interpolava a chave CRUA, e a Mente lia "Como ele está:
+  // hunger: com fome, thirst: sem sede" — rótulo em inglês colado em valor português.
+  // Traduzir é trabalho do CONECTOR, que é quem monta a prosa para o modelo.
+  configuracao.carregar(true);
+  const espia = fetchFalso("{}");
+  const vistos = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (u, o) => {
+    const corpo = JSON.parse((o && o.body) || "{}");
+    (corpo.messages || []).forEach((m) => vistos.push(String(m.content || "")));
+    return originalFetch(u, o);
+  };
+  try {
+    await Mente.narrate("algo", copia(), [], [], [], [], [], [], null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    espia.restaurar();
+  }
+  const tudo = vistos.join("\n");
+  assert.match(tudo, /fome/, "o rótulo de fome não chegou em português");
+  assert.doesNotMatch(tudo, /\bhunger\b/,
+    "a chave crua do contrato vazou para o prompt — traduza em `_necessidadeEmPortugues`");
+  assert.doesNotMatch(tudo, /\bthirst\b|\bfatigue\b/,
+    "outra chave crua de `needs` vazou para o prompt");
+});
+
 test("os consumidores aguentam um contexto MÍNIMO sem quebrar", async () => {
   // O contrato é lido, não controlado: um jogador pode apontar o conector para outro
   // server. Faltar um nó não pode virar exceção — é o que o acesso defensivo promete.
