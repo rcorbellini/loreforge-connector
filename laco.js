@@ -104,7 +104,10 @@ class Laco {
       if (t) this.mundo.turnoId = t.id;
       try {
         const contexto = await this.mundo.contexto();
-        if (t) t.pretendia(contexto.intentions);
+        // spec 067: o compromisso mora em `self`, nunca na raiz. Lendo a raiz,
+        // o registro gravava `intencoes: []` em TODO turno — inclusive nos do
+        // Draven, que tinha um compromisso ativo o tempo inteiro.
+        if (t) t.pretendia((contexto.self || {}).intentions);
         // SUSSURRO MANUAL não tem racional de autonomia — quem decidiu foi o jogador.
         // (Uma substituição minha larga pôs `decidido.racional` aqui, variável que só
         // existe no tick autônomo: era `ReferenceError` em toda ação manual, e o
@@ -630,7 +633,10 @@ class Laco {
       if (t) this.mundo.turnoId = t.id;
       try {
         const contexto = await this.mundo.contexto();
-        if (t) t.pretendia(contexto.intentions);
+        // spec 067: o compromisso mora em `self`, nunca na raiz. Lendo a raiz,
+        // o registro gravava `intencoes: []` em TODO turno — inclusive nos do
+        // Draven, que tinha um compromisso ativo o tempo inteiro.
+        if (t) t.pretendia((contexto.self || {}).intentions);
         // QUEM DORME FUNDO NÃO DECIDE. Na vida real ninguém fica avaliando de
         // minuto em minuto se já está na hora de levantar: dorme até se recuperar
         // ou ser acordado. A Mente nem é acionada — e é aqui, ANTES do

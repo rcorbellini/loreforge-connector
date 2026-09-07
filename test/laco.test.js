@@ -548,9 +548,18 @@ test("o registro guarda o que o personagem PRETENDIA no início do turno", async
       falhaDeExtensao() {}, descartar() {}, fechar: async () => {},
     }),
   };
-  const CENA = { characters_present: [], items_present: [], routes: [],
-                 capacidades: [],
-                 intentions: [{ id: "int-1", status: "ativa", content: "achar Hulda" }] };
+  // A FIXTURE ESTAVA DOIS CONTRATOS ATRASADA, e por isso este teste ficou VERDE
+  // enquanto a produção gravava `intencoes: []` em todo turno. Ela usava
+  // `characters_present`/`items_present`/`routes` na raiz — nomes que o contrato
+  // (`docs/contrato-do-contexto.md`) lista como ERRADOS — e `intentions` na raiz, que
+  // a spec 067 moveu para dentro de `self`. Como o laço lia a raiz e a fixture
+  // escrevia na raiz, os dois erros se cancelavam aqui dentro e só apareciam no jogo.
+  const CENA = {
+    self: { id: "fulano", name: "Fulano",
+            intentions: [{ id: "int-1", status: "ativa", content: "achar Hulda" }] },
+    scene: { place: { id: "x", name: "X" },
+             characters: [], items: [], objects: [], exits: [] },
+  };
   const laco = new Laco({
     mundo: { chamadas: [], turnoId: null, conhece: () => null,
              contexto: async () => CENA,
@@ -564,8 +573,11 @@ test("o registro guarda o que o personagem PRETENDIA no início do turno", async
   await laco.sussurrar("pegue a faca");
 
   // é a FOTO do início do turno: sem ela não há como perguntar se o personagem se
-  // comporta diferente quando TEM compromisso
-  assert.deepStrictEqual(vistas[0], CENA.intentions);
+  // comporta diferente quando TEM compromisso. Repare que a asserção lê de
+  // `self.intentions` — se um dia voltar a ler a raiz, ela falha, e é essa falha que
+  // teria evitado 321 turnos com `intencoes: []` no registro do Draven.
+  assert.deepStrictEqual(vistas[0], CENA.self.intentions);
+  assert.strictEqual(vistas[0].length, 1, "o compromisso ativo não foi fotografado");
 });
 
 // ===========================================================================

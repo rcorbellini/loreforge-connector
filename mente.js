@@ -1231,7 +1231,10 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
   }
 
   async function deriveWhisper(context) {
-    const intencoesAtivas = (context.self || {}).intentions || [];
+    // Mesmo acesso defensivo do `_contextoPayload`: o contrato (spec 067) é lido, não
+    // controlado, e `_self` é LOCAL de cada função — ele não existe no escopo do módulo.
+    const _self = context.self || {};
+    const intencoesAtivas = _self.intentions || [];
 
     // A BIFURCAÇÃO DO TICK (spec 033): sem compromisso, o personagem para e faz um.
     // Ver `REFLECT_COMMAND` — inclusive por que ele não chama modelo aqui.
@@ -1281,9 +1284,13 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
   async function narrate(narrativeHint, context, failedEffects, viradas, aconteceu, informes, reconhecimentos, eventosParalelos, material, onToken) {
     const failures = (failedEffects || []).filter(Boolean);
     const twists = (viradas || []).map((v) => v.o_que).filter(Boolean);
-    
+    // Ver `deriveWhisper`: `_self`/`_scene` são locais por função, nunca do módulo.
+    const _self = context.self || {};
+    const _scene = context.scene || {};
+    const _place = _scene.place || {};
+
     const payload = {
-      personagem: context.self && context.self.name,
+      personagem: _self.name,
       acontecido: narrativeHint,
       mudou_no_mundo: (aconteceu || []).length ? aconteceu : null,
       nao_aconteceu: failures.length ? failures : null,
@@ -1307,15 +1314,15 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
         // Limpa também as memórias vivas redundantes do reconhecimento
         lembra: r.grau === "nitido" ? _limparTextos(r.memorias_vivas) : null,
       })) : null,
-      personalidade: (context.self || {}).prose,
+      personalidade: _self.prose,
       // O QUE ELE SENTE (item 51, fatia 1). Vem em RÓTULO do mundo — nunca número,
       // que é segredo dele. Sem isto o personagem não tinha como SABER que estava
       // com fome: o payload não trazia status nenhum, e a única porta era um campo
       // (`survival_level`) que nunca existiu.
       necessidade: _self.needs || null,
-      local: ((context.scene || {}).place || {}).name,
-      belongs_to: _pertenceA(((context.scene || {}).place || {}).belongs_to),
-      presentes: (((context.scene || {}).characters) || []).filter((c) => c.state !== "self").map((c) => ({ nome: c.name, fazendo: c.action })),
+      local: _place.name,
+      belongs_to: _pertenceA(_place.belongs_to),
+      presentes: (_scene.characters || []).filter((c) => c.state !== "self").map((c) => ({ nome: c.name, fazendo: c.action })),
       // Aplica a blindagem nas memórias descritivas da narração:
       memorias: _limparMemorias(_self.memories),
     };
