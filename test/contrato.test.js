@@ -203,6 +203,46 @@ const MORTAS_CONHECIDAS = {
     + "resto de um formato anterior. Inofensivo, mas é código morto."),
 };
 
+// OS CAMPOS DE SEGUNDO NÍVEL. Copiados da saída real de `get_context`
+// (`draven-vigia`, 2026-09-07) — a mesma lista que o teste da tela usa.
+//
+// ESTA LISTA NASCEU DE UMA FALHA DESTE ARQUIVO. A primeira versão checava só a RAIZ, e
+// a raiz estava limpa — mas a guarda de sono profundo em `laco.js` lia
+// `contexto.self.sono_profundo`, o nome PRÉ-067 do campo que virou `is_deep_asleep`.
+// Um nível abaixo do que eu olhava, e o mesmo mecanismo: `undefined` é falso, a guarda
+// deixou de existir sem avisar, e o personagem passou a pagar uma chamada de modelo por
+// tick para tentar acordar de um sono do qual o Motor não deixa acordar.
+const CAMPOS = {
+  self: ["attributes", "id", "intentions", "inventory", "is_busy", "is_deep_asleep",
+         "is_resting", "known_elsewhere", "memories", "name", "needs", "physics",
+         "prose", "skills", "status", "transit"],
+  scene: ["characters", "exits", "items", "objects", "place"],
+};
+
+test("o que os consumidores leem de `self`/`scene` existe mesmo no contrato", () => {
+  const violacoes = [];
+  for (const arquivo of FONTES) {
+    fs.readFileSync(arquivo, "utf8").split("\n").forEach((linha, i) => {
+      if (/^\s*(\/\/|\*)/.test(linha)) return;
+      // pega tanto `contexto.self.x` quanto o `_self.x` local de cada função
+      const padroes = [/\.(self|scene)\.([a-z_][a-z0-9_]*)/gi,
+                       /[^\w.](_self|_scene)\.([a-z_][a-z0-9_]*)/g];
+      for (const p of padroes) {
+        for (const m of linha.matchAll(p)) {
+          const no = m[1].replace(/^_/, "");
+          if (!CAMPOS[no].includes(m[2])) {
+            violacoes.push(`${path.basename(arquivo)}:${i + 1} lê ${no}.${m[2]}`);
+          }
+        }
+      }
+    });
+  }
+  assert.deepStrictEqual(violacoes, [],
+    "campo que `get_context` não devolve. É a falha SILENCIOSA: em JavaScript isso é\n"
+    + "`undefined`, então uma guarda vira sempre-falso e um payload vira sempre-vazio,\n"
+    + "sem uma linha de erro em lugar nenhum:\n  " + violacoes.join("\n  "));
+});
+
 test("nenhum consumidor lê chave fora da raiz do contrato", () => {
   const achadas = new Set();
   for (const arquivo of FONTES) {

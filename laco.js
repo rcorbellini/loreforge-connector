@@ -649,7 +649,14 @@ class Laco {
         // Isto é GATE DE CLIENT, ou seja, UX. A autoridade continua no Motor, que
         // recusa `wake_up` em sono profundo por conta própria — este atalho só
         // evita pagar por uma resposta cujo desfecho o servidor já conhece.
-        if (contexto && contexto.self && contexto.self.sono_profundo) {
+        // O CAMPO É `is_deep_asleep`, e ele existe PARA ISTO — o comentário do server
+        // (percepcao/consultas.py:872) diz com todas as letras: "o sinal que o CONECTOR
+        // lê para não acionar A Mente em sono profundo". A 067 o renomeou de
+        // `sono_profundo` (booleano em inglês, prefixo `is_`, como o contrato manda) e
+        // esta linha ficou para trás. Undefined é falso, então a guarda parou de existir
+        // em silêncio: medido no Draven, 194 de 281 escolhas viraram `wake_up` recusado,
+        // cada uma pagando uma chamada de modelo de ~30 s para o Motor dizer não.
+        if (contexto && contexto.self && contexto.self.is_deep_asleep) {
           // Mesma saída do "nada a fazer agora" logo abaixo: turno descartado,
           // sem emitir `decidiu` — uma fala vazia viraria bolha vazia na tela.
           if (t) t.descartar();
