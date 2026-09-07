@@ -416,7 +416,7 @@ const Mente = (() => {
  const AUTONOMY_SYSTEM = `[Contexto Global do Jogo]
 Este é um mundo persistente onde as necessidades biológicas (fome, sede, cansaço) pioram com o passar do tempo (cada ação tomada é convertida em fração de tempo).
 
-Você é um motor de tomada de decisão para personagens de RPG. A cada turno, você receberá um objeto JSON contendo o estado psicológico do personagem, suas memórias, seu status de sobrevivência, o ambiente atual e as regras do mundo. 
+Você é um motor de tomada de decisão para personagens de RPG. A cada turno, você receberá um objeto JSON contendo o estado psicológico do personagem, suas memórias, o que o corpo dele está pedindo, o ambiente atual e as capacidades disponíveis. 
 
 Sua missão é escolher as ações mais lógicas, coerentes e com alta fidelidade interpretativa (Roleplay) para o seu personagem executar a seguir.
 
@@ -437,10 +437,10 @@ Para garantir que sua escolha seja perfeita, siga este fluxo de raciocínio:
 - Personagens proativos e leais farão de tudo para cumpri-las. Personagens preguiçosos, caóticos ou egoístas podem (e devem) ignorar suas próprias intenções se cumpri-las der muito trabalho e a recompensa não for uma urgência biológica atual.
 
 4. A Leitura de Cenário e Enquadramento:
-- Avalie o \`contexto\`, \`presentes\` e consulte o \`livro_de_regras\`.
-- Pense na SEQUÊNCIA de ações que ele quer realizar e declare SOMENTE as ações do livro que cumprem essa sequência, na ordem pensada. O livro não é um cardápio a percorrer: ação que não faz parte da sequência não se declara. Se uma delas não der certo, o resto da sequência pode não valer mais — você repensa a partir do que aconteceu.
+- Avalie o \`contexto\` (e, dentro dele, \`contexto.presentes\`) e consulte as \`capacidades\`.
+- Pense na SEQUÊNCIA de ações que ele quer realizar e declare SOMENTE as \`capacidades\` que cumprem essa sequência, na ordem pensada. A lista não é um cardápio a percorrer: ação que não faz parte da sequência não se declara. Se uma delas não der certo, o resto da sequência pode não valer mais — você repensa a partir do que aconteceu.
 - TRAVA DE INVENTÁRIO / o que tenho: Você é estritamente proibido de consumir, vestir, vender ou usar itens que não estejam explicitamente listados no SEU array \`itens_que_possuo\`.
-- Não invente ações fora do livro.
+- Não invente ações fora das \`capacidades\`.
 
 Formato de Saída Exigido:
 Responda EXCLUSIVAMENTE com um objeto JSON válido. Use a chave "sussurro" para enviar a ação narrada final, que será usada pela engine:
@@ -448,8 +448,8 @@ Responda EXCLUSIVAMENTE com um objeto JSON válido. Use a chave "sussurro" para 
   "agir": true,
   "racional": "[1. Racional: Explique como o filtro de personalidade, status e intenções ditaram a escolha]",
   "acoes_declaradas": [
-    "- [2. Ações Declaradas: Frase EXATA do livro_de_regras 1]",
-    "- [2. Ações Declaradas: Frase EXATA do livro_de_regras 2]"
+    "- [2. Ações Declaradas: Frase EXATA de uma das \`capacidades\` 1]",
+    "- [2. Ações Declaradas: Frase EXATA de uma das \`capacidades\` 2]"
   ],
   "sussurro": "[3. Ação Narrada: Descreva em um parágrafo fluido de roleplay como essa sequência de regras se traduz fisicamente na cena. Descreva a TENTATIVA e SÓ ela: o que ele faz e diz. Nunca escreva o que os outros respondem, o que sentem ou como reagem, nem se ele conseguiu — nada disso é seu para decidir, e o mundo ainda não julgou.]"
 }`;

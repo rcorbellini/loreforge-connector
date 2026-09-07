@@ -157,6 +157,55 @@ test("narrate monta o payload sem estourar", async () => {
   }
 });
 
+test("o AUTONOMY_SYSTEM só cobra chaves que o payload realmente manda", async () => {
+  // O prompt de autonomia manda a Mente ler campos POR NOME ("consulte as `capacidades`",
+  // "Leia a `necessidade`"), e o código diz, num comentário, que o payload "é
+  // incrementado para expor as chaves exatas que o prompt cobra". Só que ninguém
+  // conferia, e em 2026-09-07 duas não casavam:
+  //
+  //   - `livro_de_regras` — o prompt mandava consultar o livro; a lista chega como
+  //     `capacidades`. Resíduo do portal da spec 036, aposentado pela 043.
+  //   - "seu status de sobrevivência" — anunciado na abertura, mas `status_sobrevivencia`
+  //     foi REMOVIDO do payload (era constante zero e o modelo lia o zero como urgência).
+  //
+  // Pedir por um nome que não chega é pior que não pedir: o modelo procura, não acha, e
+  // preenche o buraco com o que inventar.
+  configuracao.carregar(true);
+  const espia = fetchFalso("{}");
+  let corpo = null;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (u, o) => {
+    if (!corpo) corpo = JSON.parse((o && o.body) || "{}");
+    return originalFetch(u, o);
+  };
+  try {
+    // com compromisso ativo, para cair no ramo que monta o payload de autonomia
+    await Mente.deriveWhisper(copia({ intentions: COMPROMISSO }));
+  } finally {
+    globalThis.fetch = originalFetch;
+    espia.restaurar();
+  }
+  assert.ok(corpo, "não capturei o pedido de autonomia");
+  const sys = (corpo.messages.find((m) => m.role === "system") || {}).content || "";
+  const usr = (corpo.messages.find((m) => m.role === "user") || {}).content || "";
+  const payload = JSON.parse(usr.slice(usr.indexOf("{")));
+
+  // toda `chave` em crase no system tem de existir no payload (aceita um nível: `a.b`)
+  const citadas = [...new Set((sys.match(/`([a-z_.]+)`/g) || [])
+    .map((s) => s.replace(/`/g, "")))];
+  const semDono = citadas.filter((k) => {
+    const [a, b] = k.split(".");
+    if (!(a in payload)) return true;
+    return b ? !(b in (payload[a] || {})) : false;
+  });
+  assert.deepStrictEqual(semDono, [],
+    "o prompt de autonomia cobra chave que o payload não manda: " + semDono.join(", "));
+  assert.doesNotMatch(sys, /status de sobreviv/i,
+    "o prompt voltou a anunciar `status_sobrevivencia`, que não existe no payload");
+  assert.doesNotMatch(sys, /livro_de_regras/,
+    "o prompt voltou a chamar as `capacidades` de `livro_de_regras`");
+});
+
 test("a necessidade chega à Mente com rótulo em PORTUGUÊS", async () => {
   // A 067 renomeou as chaves de `needs` para inglês — e fez certo, o contrato é API.
   // Mas o `_cenaEmProsa` interpolava a chave CRUA, e a Mente lia "Como ele está:
@@ -277,7 +326,12 @@ test("nenhum consumidor lê chave fora da raiz do contrato", () => {
     const linhas = fs.readFileSync(arquivo, "utf8").split("\n");
     linhas.forEach((linha, i) => {
       if (/^\s*(\/\/|\*)/.test(linha)) return;   // comentário não é código
-      for (const m of linha.matchAll(/\b(?:context|contexto)\.([a-z_][a-z0-9_]*)/gi)) {
+      // TEXTO DE PROMPT NÃO É ACESSO. Os system prompts nomeiam chaves do payload
+      // entre crases escapadas (\\`contexto.presentes\\`) — isso é o prompt DIZENDO à
+      // Mente onde olhar, não o conector lendo. Sem esta linha, alinhar o prompt com o
+      // payload fazia este teste acusar a própria correção.
+      const codigo = linha.replace(/\\`[^`]*\\`/g, "");
+      for (const m of codigo.matchAll(/\b(?:context|contexto)\.([a-z_][a-z0-9_]*)/gi)) {
         if (!RAIZ_DO_CONTRATO.includes(m[1])) {
           achadas.add(`${path.basename(arquivo)}: ${m[1]}`);
         }
