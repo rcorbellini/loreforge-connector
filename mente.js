@@ -665,6 +665,19 @@ RESTRIÇÕES SEVERAS:
           nome: it.name,
           interactions: it.interactions || null,
           ...(it.relation ? { vinculo: it.relation } : {}),
+          // spec 070: o TRABALHO PARADO. O contrato entrega `started_by` (o id de quem
+          // começou) e `work_in_progress` (a capacidade que retoma); quem compara com a
+          // vez e escreve a frase é este lado — a divisão da spec 067.
+          //
+          // O ID MORRE AQUI: para a prosa vai um booleano e um NOME, porque nenhum id de
+          // cena pode chegar ao modelo (spec 060, US2 — e foi medido que ele atrapalha).
+          ...(it.work_in_progress ? { retoma_com: it.work_in_progress } : {}),
+          ...(it.started_by
+            ? (it.started_by === _self.id
+                ? { comecado_por_mim: true }
+                : { comecado_por: _nomeNaCena(_scene, it.started_by) })
+            : {}),
+          ...(it.urgency ? { urgencia: it.urgency } : {}),
         })),
         inventario: (_self.inventory || []).map((it) => it.name),
       },
@@ -763,6 +776,18 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
   const _ROTULO_NECESSIDADE = { hunger: "fome", thirst: "sede",
                                 fatigue: "cansaço", sleep: "sono" };
 
+
+  // id -> nome, olhando só a cena. Devolve `null` (e não o id) quando não acha: um id
+  // cru na prosa é justamente o que a spec 060 tirou do prompt depois de medir que
+  // atrapalha. Sem nome, a peça vira "em processo" e ninguém mente sobre a autoria.
+  function _nomeNaCena(scene, id) {
+    const c = ((scene || {}).characters || []).find((x) => x.id === id);
+    // QUEM COMEÇOU PODE TER IDO EMBORA — e foi o que aconteceu no caso real: o Draven
+    // largou o alaúde na taverna e viajou. Sem nome, dizer "de outra pessoa" é o que se
+    // sabe honestamente; cuspir o id seria mentir num formato feio.
+    return (c && c.name) || "outra pessoa";
+  }
+
   function _necessidadeEmPortugues(needs) {
     return Object.entries(needs || {})
       // `sleep` é `null` para quem está acordado (o server devolve o rótulo só quando
@@ -817,8 +842,31 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     // spec 066: o vínculo com ITEM viaja com o item. A redação para item NÃO passou por
     // sondagem (só o caso pessoa-pessoa passou) — por isso é aposto simples, a forma
     // mais próxima da que se mediu, sem inventar construção nova.
-    const itens = (c.itens_presentes || []).map((i) =>
-      i.vinculo ? `${i.nome} (${i.vinculo})` : i.nome);
+    // O TRABALHO PARADO SAI DA LISTA (spec 070). Como um nome numa lista, a peça em
+    // processo é ignorada: MEDIDO em 2026-09-08, com sussurro diretivo para retomar o
+    // conserto, `craft` saía 6/10 — e em 3 dessas 10 a Mente tentava VIAJAR, porque nada
+    // dizia que a peça estava ali e era dela. Com a frase abaixo: 10/10, por 38 tokens.
+    //
+    // Só o trabalho DELE ganha linha própria. O de outro fica na lista com o aposto de
+    // quem começou — é cena ("a peça da Elga está no meio"), não chamado à ação.
+    const meus = (c.itens_presentes || []).filter((i) => i.retoma_com && i.comecado_por_mim);
+    const outros = (c.itens_presentes || []).filter((i) => !meus.includes(i));
+    for (const i of meus) {
+      linhas.push(`Trabalho seu, parado: ${i.nome}. Está aqui, e é com \`${i.retoma_com}\``
+        + ` que se retoma.` + (i.urgencia ? ` ${i.urgencia}` : ""));
+    }
+    const itens = outros.map((i) => {
+      const notas = [];
+      if (i.vinculo) notas.push(i.vinculo);
+      if (i.retoma_com && i.comecado_por) {
+        notas.push(`trabalho de ${i.comecado_por}, no meio`);
+      } else if (i.retoma_com && !/em processo|pela metade/i.test(i.nome)) {
+        // O NOME DA PEÇA JÁ COSTUMA DIZER. `criar_peca` batiza "Remendão (em processo)",
+        // e acrescentar o aposto rendia "Remendão (em processo) (em processo)".
+        notas.push("em processo");
+      }
+      return notas.length ? `${i.nome} (${notas.join("; ")})` : i.nome;
+    });
     if (itens.length) linhas.push(`No chão: ${itens.join(", ")}.`);
     const objs = (c.objetos_presentes || []).map((o) => {
       const dentro = (o.contem || []).length ? ` (com ${(o.contem || []).join(", ")})` : "";

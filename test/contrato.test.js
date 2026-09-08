@@ -261,6 +261,84 @@ test("resposta de autonomia com FORMA inesperada não derruba o turno", async ()
   }
 });
 
+// --------------------------------------------------------------------------- //
+// spec 070 — o TRABALHO PARADO na prosa
+// --------------------------------------------------------------------------- //
+
+const COM_PECA = (started_by) => {
+  const c = copia();
+  c.scene.items = [{
+    id: "peca-1", name: "Remendão (em processo)", prose: null,
+    work_in_progress: "craft", started_by,
+    urgency: "a cola ainda está fresca; secando, a junta não pega mais",
+    relation: null, sentiment: "neutro",
+  }];
+  c.scene.characters = [{ id: "elga", name: "Elga, a Taverneira", prose: null,
+                          state: "presente", action: "serve", relation: null,
+                          sentiment: "neutro" }];
+  return c;
+};
+
+// A CENA EM PROSA sai pelo `interpret` (o caminho do sussurro), não pelo `deriveWhisper`
+// — a autonomia continua em JSON de propósito (ver o comentário de `_cenaEmProsa`).
+// Errar isso foi o primeiro defeito deste teste, e o comentário fica para o próximo.
+async function prosaDe(contexto) {
+  Mente.usarMundo({
+    listarCapacidades: async () => [
+      { name: "craft", description: "Cria ou continua algo.",
+        inputSchema: { type: "object", properties: {} } },
+    ],
+    chamarCapacidade: async () => ({ recusado: false, texto: "", narrativa: {} }),
+  });
+  Mente.usarExtensoes({ toolsLocais: () => [], ehLocal: () => false,
+                        hook: async (_p, d) => d });
+  const vistos = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (_u, o) => {
+    const corpo = JSON.parse((o && o.body) || "{}");
+    (corpo.messages || []).forEach((m) => vistos.push(String(m.content || "")));
+    return { ok: true, headers: { get: () => "application/json" },
+             json: async () => ({ message: { content: "", tool_calls: [] },
+                                  prompt_eval_count: 1, eval_count: 1 }) };
+  };
+  try {
+    await Mente.interpret("olhe em volta", contexto, () => {}, {});
+  } finally { globalThis.fetch = original; }
+  return vistos.join("\n");
+}
+
+test("070: o trabalho DELE ganha linha própria, com o verbo de retomada", async () => {
+  // MEDIDO em 2026-09-08: como um nome numa lista, a peça é ignorada — `craft` saía
+  // 6/10 sob ordem direta, e em 3 das 10 a Mente tentava VIAJAR, porque nada dizia que
+  // a peça estava ali e era dela. Com esta linha: 10/10, ao custo de 38 tokens.
+  configuracao.carregar(true);
+  const prosa = await prosaDe(COM_PECA("fulano"));   // `fulano` é o id do próprio
+  assert.match(prosa, /Trabalho seu, parado: Remendão/,
+    "a peça do próprio personagem não ganhou linha própria");
+  assert.match(prosa, /craft/, "a prosa não diz com que verbo se retoma");
+  assert.match(prosa, /cola ainda está fresca/, "a urgência não chegou à Mente");
+});
+
+test("070: o trabalho de OUTRO é cena, não chamado à ação", async () => {
+  configuracao.carregar(true);
+  const prosa = await prosaDe(COM_PECA("elga"));
+  assert.doesNotMatch(prosa, /Trabalho seu/,
+    "a peça de outra pessoa foi anunciada como sendo dele");
+  assert.match(prosa, /trabalho de Elga, a Taverneira, no meio/,
+    "a autoria alheia não virou aposto na lista");
+});
+
+test("070: sem `started_by`, a peça é só 'em processo' — e nenhum id vaza", async () => {
+  // O contrato devolve `started_by: null` para quem não viu começar (o gate de R5).
+  // Nesse caso a prosa não pode inventar autoria nem, pior, cuspir o id cru: a spec 060
+  // mediu que id de cena no prompt atrapalha, e tirou todos.
+  configuracao.carregar(true);
+  const prosa = await prosaDe(COM_PECA(null));
+  assert.match(prosa, /Remendão \(em processo\)/);
+  assert.doesNotMatch(prosa, /Trabalho seu/);
+  assert.doesNotMatch(prosa, /peca-1/, "um id de cena vazou para o prompt");
+});
+
 test("os consumidores aguentam um contexto MÍNIMO sem quebrar", async () => {
   // O contrato é lido, não controlado: um jogador pode apontar o conector para outro
   // server. Faltar um nó não pode virar exceção — é o que o acesso defensivo promete.
