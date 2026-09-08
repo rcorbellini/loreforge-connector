@@ -234,6 +234,33 @@ test("a necessidade chega à Mente com rótulo em PORTUGUÊS", async () => {
     "outra chave crua de `needs` vazou para o prompt");
 });
 
+test("resposta de autonomia com FORMA inesperada não derruba o turno", async () => {
+  // O prompt de autonomia pede `acoes_declaradas` como ARRAY. O modelo às vezes manda
+  // string — e a linha de auditoria fazia `.join` sem checar, matando o turno inteiro
+  // por causa de um log. Medido no Draven: 3 de 265 turnos (~1%).
+  //
+  // O que vem do modelo é DADO, não promessa de forma. Este teste cobre as três formas
+  // que já apareceram, e a de array, que é a esperada.
+  configuracao.carregar(true);
+  for (const acoes of ['"uma string só"', '["a","b"]', "null", "42"]) {
+    const original = globalThis.fetch;
+    globalThis.fetch = async () => ({
+      ok: true, headers: { get: () => "application/json" },
+      json: async () => ({
+        message: { content: `{"agir":true,"racional":"porque sim",`
+          + `"acoes_declaradas":${acoes},"sussurro":"ele age"}`, tool_calls: [] },
+        prompt_eval_count: 10, eval_count: 5,
+      }),
+    });
+    try {
+      const d = await Mente.deriveWhisper(copia({ intentions: COMPROMISSO }));
+      assert.ok(d, `acoes_declaradas=${acoes} não devolveu decisão`);
+    } finally {
+      globalThis.fetch = original;
+    }
+  }
+});
+
 test("os consumidores aguentam um contexto MÍNIMO sem quebrar", async () => {
   // O contrato é lido, não controlado: um jogador pode apontar o conector para outro
   // server. Faltar um nó não pode virar exceção — é o que o acesso defensivo promete.

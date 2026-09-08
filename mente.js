@@ -1302,9 +1302,21 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     );
     const parsed = parseAutonomyJson(raw);
     
-    // Opcional: Se quiser que o "racional" e "acoes_declaradas" apareçam no console do desenvolvedor para auditoria:
+    // AUDITORIA — e ela NÃO pode derrubar o turno.
+    //
+    // Isto era `parsed.acoes_declaradas?.join(', ')`. O `?.` protege contra ausente e
+    // não contra FORMA: o prompt pede um array, o modelo às vezes devolve string, e aí
+    // `.join` não existe. Medido no Draven: 3 turnos perdidos em 265 (~1%), cada um
+    // morto INTEIRO por uma linha de log — a exceção sobe pelo `deriveWhisper` e o laço
+    // a registra como falha.
+    //
+    // A regra é a mesma do resto do conector ao ler o contrato: o que vem de fora é
+    // dado, não promessa de forma. Aqui vale em dobro, porque a fonte é o modelo.
     if (parsed.agir && parsed.racional) {
-        devlog("RACIONAL AUTÔNOMO", `Racional: ${parsed.racional}\nAções: ${parsed.acoes_declaradas?.join(', ')}`);
+      const acoes = Array.isArray(parsed.acoes_declaradas)
+        ? parsed.acoes_declaradas.join(", ")
+        : (parsed.acoes_declaradas == null ? "" : String(parsed.acoes_declaradas));
+      devlog("RACIONAL AUTÔNOMO", `Racional: ${parsed.racional}\nAções: ${acoes}`);
     }
 
     return parsed.agir
