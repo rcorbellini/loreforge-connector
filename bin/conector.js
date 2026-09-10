@@ -404,6 +404,35 @@ async function main() {
     sala.acrescentarMembro({ sub: "local", nome: "local" });
   }
 
+  // QUAL MENTE ESTA MESA USA — e as telas precisam saber.
+  //
+  // Todos à mesa dividem O MESMO modelo: o do anfitrião, na conta do anfitrião. O
+  // Princípio VIII diz que a variação entre modelos é feature intencional e muda a
+  // riqueza da narrativa (nunca a arbitragem, que é do Árbitro) — então de qual Mente se
+  // trata é informação de MESA, da mesma família que as cadeiras disponíveis: quem vai
+  // sentar quer saber antes, não depois.
+  //
+  // O RÓTULO é barato (sai da configuração). O ESTADO custa uma ida ao runtime, então é
+  // cacheado: `/estado` é chamado a cada listagem de salas, e sondar o Ollama a cada uma
+  // seria bater nele à toa. 30 s é curto para quem acabou de consertar o modelo e longo
+  // para não virar enxurrada.
+  //
+  // NADA DE CREDENCIAL AQUI: só o nome do runtime e do modelo. A chave nunca sai deste
+  // processo, e é o que a cisão inteira existe para garantir.
+  let _modeloCache = null;
+  function modeloDaMesa() {
+    const rotulo = registro.rotuloDoModelo(cfg);
+    if (!_modeloCache || Date.now() - _modeloCache.em > 30000) {
+      const antes = _modeloCache;
+      _modeloCache = { em: Date.now(), ok: antes ? antes.ok : null,
+                       porque: antes ? antes.porque : "verificando…" };
+      Mente.check()
+        .then((m) => { _modeloCache = { em: Date.now(), ok: m.ok, porque: m.reason }; })
+        .catch((e) => { _modeloCache = { em: Date.now(), ok: false, porque: e.message }; });
+    }
+    return { rotulo, ok: _modeloCache.ok, porque: _modeloCache.porque };
+  }
+
   const fila = new Fila({ sala, emitir });
   if (!args["sem-autonomia"]) fila.iniciar();
 
@@ -554,7 +583,8 @@ async function main() {
                                                 expor: !!args.expor, painel,
                                                 permitirConfigRemota:
                                                   !!args["config-remota"],
-                                                mundo, configuracao, authAtivo });
+                                                mundo, configuracao, authAtivo,
+                                                modelo: modeloDaMesa });
     paraOCanal = c.emitir;
     if (args.expor) {
       process.stdout.write(

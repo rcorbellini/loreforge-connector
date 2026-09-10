@@ -30,7 +30,10 @@ const pareamento = require("./pareamento");
 
 function servir({ porta, sala, fila, cfg, expor, painel,
                   permitirConfigRemota, mundo, configuracao, authAtivo,
-                  onPareado }) {
+                  onPareado, modelo }) {
+  // Qual Mente esta mesa usa. Injetada porque só quem montou o processo conhece a
+  // configuração e o runtime ao mesmo tempo — o canal é transporte, não dono de nada.
+  const modeloDaMesa = typeof modelo === "function" ? modelo : () => null;
   // CADA OUVINTE CARREGA DE QUEM ELE É (spec 072). Era um `Set` de `res`; virou um `Set`
   // de `{res, sub}`, com o `sub` colhido no `/eventos` — que JÁ autentica. Nenhuma
   // autenticação nova nasce aqui: o que nasce é a memória de quem está do outro lado.
@@ -229,6 +232,7 @@ function servir({ porta, sala, fila, cfg, expor, painel,
       if (!v.ok) return responder(res, v.status, { erro: v.erro });
       return responder(res, 200, { ...sala.paraTela(), ...fila.estado(),
                                    mundo: cfg.mundoPublico || cfg.mundo,
+                                   modelo: modeloDaMesa(),
                                    voce: v.sub });
     }
 
@@ -242,6 +246,7 @@ function servir({ porta, sala, fila, cfg, expor, painel,
         // Um convidado noutra máquina não alcança o `localhost` do anfitrião; quem sabe
         // o endereço público é quem hospeda, e é ele que o publica aqui.
         mundo: cfg.mundoPublico || cfg.mundo,
+        modelo: modeloDaMesa(),
         temAnfitriao: !!sala.anfitriao, authAtivo: !!authAtivo,
         membros: sala.membros.size, assentos: sala.assentos.size,
       });
