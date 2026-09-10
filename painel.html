@@ -148,6 +148,12 @@
        tela de salas. O código vale por 10 minutos, serve <strong>uma vez</strong> e morre
        se o conector reiniciar.</p>
 
+    <label style="margin-top:1rem">Nome da mesa
+      <input id="nomeSala" type="text" maxlength="60" placeholder="Taverna do Porto">
+    </label>
+    <p class="nota" style="margin-top:-6px">É <strong>este</strong> nome que todos veem —
+       quem hospeda batiza a mesa. As telas não guardam nome próprio: elas leem o daqui.</p>
+
     <div class="linha" style="margin-top:1rem">
       <label>Cadeiras na mesa
         <input id="maxAssentos" type="number" min="1" placeholder="sem limite">
@@ -423,13 +429,14 @@ function pintarMesa() {
   if (!mesa) { alvo.textContent = "—"; return; }
   // os campos só são repintados quando não estão sendo digitados, senão o valor pula
   // debaixo do dedo de quem está editando
-  for (const [id, v] of [["maxAssentos", mesa.maxAssentos],
+  for (const [id, v] of [["nomeSala", mesa.nome],
+                         ["maxAssentos", mesa.maxAssentos],
                          ["maxPorJogador", mesa.maxPorJogador],
                          ["tetoCustoTokens", mesa.tetoCustoTokens]]) {
     if (document.activeElement !== $(id)) $(id).value = v || "";
   }
-  for (const id of ["gerar-codigo", "salvar-mesa", "maxAssentos", "maxPorJogador",
-                    "tetoCustoTokens"]) {
+  for (const id of ["gerar-codigo", "salvar-mesa", "nomeSala", "maxAssentos",
+                    "maxPorJogador", "tetoCustoTokens"]) {
     $(id).disabled = !dados.podeEscrever;
   }
   if (!mesa.membros.length) {
@@ -549,6 +556,7 @@ $("salvar-mesa").onclick = async () => {
   const r = await fetch("/sala/config", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
+      nome: $("nomeSala").value,
       maxAssentos: $("maxAssentos").value,
       maxPorJogador: $("maxPorJogador").value,
       tetoCustoTokens: $("tetoCustoTokens").value }) });
