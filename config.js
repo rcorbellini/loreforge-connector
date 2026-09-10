@@ -30,6 +30,15 @@ const DEFAULTS = {
   geminiModel: "gemini-3.5-flash",
   // o conector, nao mais o navegador
   mundo: "http://0.0.0.0:8777",
+  // O ENDERECO DO MUNDO **PARA AS TELAS** (spec 072).
+  //
+  // Nao e o mesmo campo, e confundi-los quebra a sala inteira: `mundo` e por onde ESTE
+  // PROCESSO alcanca o server (tipicamente `localhost:8777`), e o navegador de um
+  // convidado, noutra maquina, nao alcanca localhost nenhum. Este e o endereco que o
+  // conector PUBLICA para as telas — o tunel, ou o IP na LAN.
+  //
+  // Vazio = usa `mundo`, que e o certo para quem joga na propria maquina.
+  mundoPublico: "",
   // `personagem` SAIU daqui (spec 072). O conector nao serve mais UM personagem: ele
   // serve uma SALA, e quem entra nela sao os assentos. O que resta de `--personagem` e
   // uma semente opcional na linha de comando.
@@ -196,7 +205,7 @@ function paraPagina(cfg) {
   const c = cfg || carregar();
   const sala = c.sala || null;
   return {
-    mundo: c.mundo, canal: c.canal,
+    mundo: c.mundo, mundoPublico: c.mundoPublico || "", canal: c.canal,
     runtime: c.runtime, model: c.model, endpoint: c.endpoint,
     remoteModel: c.remoteModel,
     openrouterModel: c.openrouterModel, openrouterEndpoint: c.openrouterEndpoint,
@@ -234,6 +243,12 @@ function aplicar(cfg, vindo) {
   // personagem entra e sai da sala.
   ["mundo", "runtime", "model", "endpoint", "remoteModel",
    "openrouterModel", "openrouterEndpoint", "geminiModel"].forEach(texto);
+  // `mundoPublico` e a EXCECAO da regra "vazio mantem": aqui vazio significa "volte a
+  // usar o endereco interno", e sem isso nao haveria como desfazer um endereco publico
+  // errado pela pagina — so editando o arquivo a mao.
+  if (typeof vindo.mundoPublico === "string") {
+    cfg.mundoPublico = vindo.mundoPublico.trim();
+  }
   if (Number(vindo.canal)) cfg.canal = Number(vindo.canal);
   if (typeof vindo.apiKey === "string" && vindo.apiKey.trim()) {
     cfg.apiKey = vindo.apiKey.trim();

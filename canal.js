@@ -228,6 +228,7 @@ function servir({ porta, sala, fila, cfg, expor, painel,
       const v = await gMembro(req, url);
       if (!v.ok) return responder(res, v.status, { erro: v.erro });
       return responder(res, 200, { ...sala.paraTela(), ...fila.estado(),
+                                   mundo: cfg.mundoPublico || cfg.mundo,
                                    voce: v.sub });
     }
 
@@ -236,7 +237,11 @@ function servir({ porta, sala, fila, cfg, expor, painel,
     // vazia esperando o primeiro". Só o mínimo, e nada de roster.
     if (req.method === "GET" && url.pathname === "/estado") {
       return responder(res, 200, {
-        ok: true, sala: sala.nome, mundo: cfg.mundo,
+        ok: true, sala: sala.nome,
+        // O ENDEREÇO DO MUNDO QUE A TELA DEVE USAR — não o que este processo usa.
+        // Um convidado noutra máquina não alcança o `localhost` do anfitrião; quem sabe
+        // o endereço público é quem hospeda, e é ele que o publica aqui.
+        mundo: cfg.mundoPublico || cfg.mundo,
         temAnfitriao: !!sala.anfitriao, authAtivo: !!authAtivo,
         membros: sala.membros.size, assentos: sala.assentos.size,
       });
@@ -448,6 +453,12 @@ function servir({ porta, sala, fila, cfg, expor, painel,
       if (typeof corpo.nome === "string" && corpo.nome.trim()) {
         sala.nome = corpo.nome.trim().slice(0, 60);
       }
+      // O endereço público do mundo é do MESMO formulário: quem batiza a mesa é quem
+      // sabe por onde ela é alcançável de fora.
+      if (typeof corpo.mundoPublico === "string") {
+        cfg.mundoPublico = corpo.mundoPublico.trim();
+        configuracao.gravar(cfg);
+      }
       // ZERO OU VAZIO = SEM LIMITE, e é preciso poder voltar a isso: um teto que só sobe
       // é uma armadilha para quem experimentou um número pequeno.
       const numero = (v) => {
@@ -463,7 +474,8 @@ function servir({ porta, sala, fila, cfg, expor, painel,
       }
       salvarSala();
       sala.emitir("sala", sala.paraTela());
-      return responder(res, 200, { ok: true, ...sala.paraTela() });
+      return responder(res, 200, { ok: true, ...sala.paraTela(),
+                                   mundoPublico: cfg.mundoPublico || "" });
     }
 
     if (req.method === "POST" && url.pathname === "/sala/expulsar") {

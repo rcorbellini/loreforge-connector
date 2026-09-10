@@ -121,9 +121,19 @@
 
   <section>
     <h2>O mundo</h2>
-    <label>Endereço do mundo
+    <label>Endereço do mundo — <strong>por onde ESTE conector fala com ele</strong>
       <input id="mundo" type="text" placeholder="http://localhost:8777">
     </label>
+    <label>Endereço do mundo — <strong>por onde as TELAS falam com ele</strong>
+      <input id="mundoPublico" type="text" placeholder="(vazio = o mesmo de cima)">
+    </label>
+    <p class="nota">Os dois campos existem porque as duas pontas são diferentes, e
+       confundi-las quebra a mesa: este processo alcança o mundo em
+       <code>localhost</code>, e o navegador de um convidado, noutra máquina,
+       <strong>não alcança localhost nenhum</strong>. Aqui vai o endereço público — o
+       túnel, ou o IP na sua rede. Vazio serve para quem joga sozinho, na própria máquina.</p>
+    <p class="nota">É <strong>daqui</strong> que as telas descobrem o mundo: elas não
+       guardam mais endereço nenhum além do desta sala.</p>
   </section>
 
   <!-- A MESA (spec 072). Este conector deixou de servir UM personagem: ele é uma SALA.
@@ -315,6 +325,9 @@ function pintar() {
         `${dados.pendente.length} ajuste(s) esperando o turno acabar</span>` : "");
 
   $("mundo").value = c.mundo || "";
+  if (document.activeElement !== $("mundoPublico")) {
+    $("mundoPublico").value = c.mundoPublico || "";
+  }
   $("arquivo").textContent = c.arquivo || "";
   pintarMesa();
 
@@ -632,6 +645,7 @@ $("salvar").onclick = async () => {
     const rt = document.querySelector('input[name=rt]:checked');
     const corpo = {
       mundo: $("mundo").value,
+      mundoPublico: $("mundoPublico").value,
       runtime: rt ? rt.value : "local",
       endpoint: $("endpoint").value, model: $("model").value,
       remoteModel: $("remoteModel").value,
