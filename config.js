@@ -30,7 +30,10 @@ const DEFAULTS = {
   geminiModel: "gemini-3.5-flash",
   // o conector, nao mais o navegador
   mundo: "http://0.0.0.0:8777",
-  personagem: "",
+  // `personagem` SAIU daqui (spec 072). O conector nao serve mais UM personagem: ele
+  // serve uma SALA, e quem entra nela sao os assentos. O que resta de `--personagem` e
+  // uma semente opcional na linha de comando.
+  sala: null,
   canal: 8899,
   log: true,
   // O MODELO DE EMBEDDING é OPCIONAL (spec 060, US2), e vazio de propósito.
@@ -46,17 +49,57 @@ const DEFAULTS = {
 // O JWT do jogador pareado (spec 056) e credencial igual as outras: quem o
 // possui age no mundo pela conta dele, sem expiracao (FR-002 da spec 056). Por
 // isso entra em SEGREDOS — mesma trava estrutural, nao so disciplina.
-const SEGREDOS = ["apiKey", "openrouterKey", "geminiKey", "jwt"];
+//
+// SPEC 072: `jwt` (uma string, um dono) virou `jwtPorMembro` (um MAPA `sub -> jwt`).
+//
+// E ele e um MAPA PLANO de proposito, e nao um campo dentro de `sala.membros[]`. A
+// trava aqui e plana — um `defineProperty` por NOME —, entao uma credencial aninhada
+// num array voltaria a ser enumeravel justamente quando passa a haver credencial de
+// TERCEIRO para proteger. O roster (`cfg.sala`) nao guarda token nenhum.
+const SEGREDOS = ["apiKey", "openrouterKey", "geminiKey", "jwtPorMembro"];
+
+// Segredo que e MAPA nasce `{}`; os outros nascem `""`.
+const _MAPAS = new Set(["jwtPorMembro"]);
+const _vazioDe = (nome) => (_MAPAS.has(nome) ? {} : "");
+
+// A MIGRACAO DO FORMATO DE UM DONO SO (spec 072, contracts/sala-config.md).
+//
+// Silenciosa e automatica: um `conector.json` de antes da sala sobe como uma sala de UM
+// membro e UM assento — que e exatamente o que ele ja era. Ninguem reconfigura nada.
+function _migrar(bruto) {
+  const b = { ...(bruto || {}) };
+  if (b.sala || (!b.personagem && !b.jwt && !b.authSub)) return b;
+  const sub = b.authSub || "local";
+  b.sala = {
+    nome: "Minha sala",
+    anfitriao: sub,
+    tetoCustoTokens: null,
+    membros: [{ sub, email: b.authEmail || "", nome: b.authName || "",
+                entrouEm: new Date().toISOString() }],
+    assentos: b.personagem
+      ? [{ personagem: b.personagem, dono: sub, nome: b.personagem,
+           // a autonomia do formato antigo era um booleano do PROCESSO; vira a vontade
+           // do dono daquele assento, com o teto aberto.
+           autonomia: { permitido: true, ligado: b.autonomia !== false, motivo: null },
+           intervaloMs: 45000 }]
+      : [],
+  };
+  if (b.jwt) b.jwtPorMembro = { ...(b.jwtPorMembro || {}), [sub]: b.jwt };
+  delete b.jwt;
+  delete b.personagem;
+  return b;
+}
 
 function _montar(bruto) {
+  const migrado = _migrar(bruto);
   const cfg = {};
-  for (const [k, v] of Object.entries({ ...DEFAULTS, ...bruto })) {
+  for (const [k, v] of Object.entries({ ...DEFAULTS, ...migrado })) {
     if (SEGREDOS.includes(k)) continue;
     cfg[k] = v;
   }
   for (const nome of SEGREDOS) {
     Object.defineProperty(cfg, nome, {
-      value: bruto[nome] || "",
+      value: migrado[nome] || _vazioDe(nome),
       enumerable: false,   // <- a trava
       writable: true,
       configurable: true,
@@ -70,6 +113,30 @@ let _cache = null;
 function carregar(recarregar) {
   if (!_cache || recarregar) _cache = _montar(armazenamento.ler());
   return _cache;
+}
+
+// --- as credenciais dos membros, como PORTA (spec 072) ---------------------- //
+//
+// `sala.js` nunca guarda um token em campo proprio: pede por aqui quando precisa. E o
+// que permite testar o roster inteiro sem nenhum segredo em memoria — e o que mantem a
+// trava acima como o UNICO lugar que enxerga chave.
+function credenciais(cfg) {
+  const c = cfg || carregar();
+  return {
+    ler: (sub) => (sub && c.jwtPorMembro && c.jwtPorMembro[sub]) || null,
+    gravar: (sub, jwt) => {
+      if (!sub || !jwt) return;
+      c.jwtPorMembro = { ...(c.jwtPorMembro || {}), [sub]: jwt };
+      gravar(c);
+    },
+    apagar: (sub) => {
+      if (!sub || !c.jwtPorMembro) return;
+      const copia = { ...c.jwtPorMembro };
+      delete copia[sub];
+      c.jwtPorMembro = copia;
+      gravar(c);
+    },
+  };
 }
 
 function gravar(cfg) {
@@ -98,11 +165,8 @@ function faltando(cfg) {
                   diga: "o endereco do mundo",
                   como: "--mundo http://localhost:8777" });
   }
-  if (!cfg.personagem) {
-    faltas.push({ campo: "personagem",
-                  diga: "qual personagem esta Mente joga",
-                  como: "--personagem <id>  (use --personagens para listar)" });
-  }
+  // `personagem` NAO e mais exigencia (spec 072, FR-008): a sala sobe VAZIA e espera
+  // alguem entrar. Cobrar um personagem no boot era a marca do conector de um dono so.
   if (cfg.runtime === "remote" && !cfg.apiKey) {
     faltas.push({ campo: "apiKey",
                   diga: "a chave da Anthropic",
@@ -130,8 +194,9 @@ function faltando(cfg) {
 // exatamente como chaves vazam.
 function paraPagina(cfg) {
   const c = cfg || carregar();
+  const sala = c.sala || null;
   return {
-    mundo: c.mundo, personagem: c.personagem, canal: c.canal,
+    mundo: c.mundo, canal: c.canal,
     runtime: c.runtime, model: c.model, endpoint: c.endpoint,
     remoteModel: c.remoteModel,
     openrouterModel: c.openrouterModel, openrouterEndpoint: c.openrouterEndpoint,
@@ -140,9 +205,19 @@ function paraPagina(cfg) {
     temChaveAnthropic: !!c.apiKey,
     temChaveOpenrouter: !!c.openrouterKey,
     temChaveGemini: !!c.geminiKey,
-    // pareamento (spec 056): so o email aparece — nunca o JWT.
-    pareado: !!c.jwt,
-    logadoComo: c.authEmail || null,
+    // A SALA, sem credencial nenhuma — nem mascarada (spec 072). `pareado` deixou de
+    // ser um booleano do processo e virou um por MEMBRO: com N contas, "o conector esta
+    // pareado" nao responde mais a pergunta de ninguem.
+    sala: sala ? {
+      nome: sala.nome, anfitriao: sala.anfitriao,
+      tetoCustoTokens: sala.tetoCustoTokens || null,
+      membros: (sala.membros || []).map((m) => ({
+        sub: m.sub, email: m.email, nome: m.nome,
+        ehAnfitriao: m.sub === sala.anfitriao,
+        pareado: !!(c.jwtPorMembro && c.jwtPorMembro[m.sub]) })),
+      assentos: (sala.assentos || []).map((a) => ({
+        personagem: a.personagem, dono: a.dono, autonomia: a.autonomia })),
+    } : null,
     arquivo: require("./armazenamento").caminho(),
   };
 }
@@ -154,7 +229,10 @@ function aplicar(cfg, vindo) {
   const texto = (k) => {
     if (typeof vindo[k] === "string" && vindo[k].trim()) cfg[k] = vindo[k].trim();
   };
-  ["mundo", "personagem", "runtime", "model", "endpoint", "remoteModel",
+  // `personagem` SAIU da lista (spec 072, FR-009): trocar o personagem do processo pela
+  // pagina de configuracao era a "troca ao vivo", e ela morreu com a sala. Quem troca de
+  // personagem entra e sai da sala.
+  ["mundo", "runtime", "model", "endpoint", "remoteModel",
    "openrouterModel", "openrouterEndpoint", "geminiModel"].forEach(texto);
   if (Number(vindo.canal)) cfg.canal = Number(vindo.canal);
   if (typeof vindo.apiKey === "string" && vindo.apiKey.trim()) {
@@ -187,5 +265,12 @@ function gravarAdiado(cfg, vindo) {
   return futuro;
 }
 
+// Grava o roster da sala. Separado de `gravar` porque a sala muda por outros gatilhos
+// (alguem entrou, alguem foi expulso) que nao passam pela pagina de configuracao.
+function gravarSala(cfg, sala) {
+  cfg.sala = sala ? sala.paraConfig() : null;
+  return gravar(cfg);
+}
+
 module.exports = { DEFAULTS, SEGREDOS, carregar, gravar, credencialDe, faltando,
-                   paraPagina, aplicar, gravarAdiado };
+                   paraPagina, aplicar, gravarAdiado, credenciais, gravarSala };

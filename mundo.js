@@ -62,6 +62,17 @@ class Mundo {
       headers: cabecalhos,
       signal: AbortSignal.timeout(TIMEOUT),
     });
+    // O VEREDITO DE IDENTIDADE VOLTA A QUEM CUIDA DA SALA (spec 072, research R6).
+    //
+    // Sem isto, um membro cujo token o mundo deixou de aceitar queima uma chamada de
+    // modelo a CADA volta do relógio para o servidor dizer 401 no fim — de graça para o
+    // mundo e caro para quem paga. Dois seguidos param os assentos dele.
+    //
+    // Não existe expiração natural a tratar (o JWT do mundo não tem `exp`), então isto
+    // só dispara quando o `auth.secret` do server muda. Raro, e caro de descobrir tarde.
+    if (typeof this.onIdentidade === "function") {
+      try { this.onIdentidade(res.status); } catch (_) { /* nunca derruba o turno */ }
+    }
     if (!res.ok) {
       const erro = await res.json().catch(() => ({ error: res.statusText }));
       throw new Error(erro.error || `o mundo respondeu ${res.status}`);
@@ -106,6 +117,22 @@ class Mundo {
   // recusar cedo, antes de gastar turno de LLM num personagem que nao e meu.
   personagensMinhas() {
     return this._json("/api/characters/mine");
+  }
+
+  // Os personagens de OUTRA pessoa que nao o dono deste cliente (spec 072).
+  //
+  // Numa sala, quem entra com um personagem e um MEMBRO, e a posse tem de ser conferida
+  // com o JWT DELE — nunca com o do anfitriao. Perguntar ao server com o token errado
+  // devolveria a lista errada, e o assento nasceria com o dono errado; dai em diante todo
+  // `tools/call` daquele personagem tomaria 403 do `_authorize_character`.
+  async personagensDe(jwt) {
+    if (!jwt) return [];
+    const res = await fetch(this.base + "/api/characters/mine", {
+      headers: { Authorization: "Bearer " + jwt },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return [];
+    return res.json();
   }
 
   // Pergunta ao SERVER se este `jwt` (de OUTRO lado, nao necessariamente

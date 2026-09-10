@@ -18,7 +18,9 @@
 const test = require("node:test");
 const assert = require("node:assert");
 
-const Mente = require("../mente");
+// spec 072: a Mente é uma POR ASSENTO. Só a construção mudou — as asserções abaixo
+// são as mesmas de antes, e é isso que prova que o refactor foi léxico (research R5).
+const Mente = require("../mente").criarMente();
 
 test("sem compromisso, o tick manda REFLETIR — e não chama modelo nenhum", async () => {
   // se tocasse no modelo, a chamada falharia (não há runtime no teste): o próprio

@@ -120,15 +120,26 @@
   </section>
 
   <section>
-    <h2>Mundo e personagem</h2>
+    <h2>O mundo</h2>
     <label>Endereço do mundo
       <input id="mundo" type="text" placeholder="http://localhost:8777">
     </label>
-    <label>Quem esta Mente joga
-      <select id="personagem"></select>
-    </label>
-    <p class="nota">Um conector joga <strong>um</strong> personagem por vez. Trocar
-       aqui vale na hora — não precisa reiniciar nada.</p>
+  </section>
+
+  <!-- A MESA (spec 072). Este conector deixou de servir UM personagem: ele é uma SALA.
+       Os poderes do anfitrião moram AQUI, e não na tela do jogo, porque é aqui que a
+       guarda certa já vale — a mesma de configurar e reiniciar: só da máquina onde o
+       processo roda. -->
+  <section>
+    <h2>A mesa</h2>
+    <div id="mesa">carregando…</div>
+    <p class="nota">Quem senta aqui traz a própria conta. <strong>A credencial de mundo
+       de cada convidado fica guardada nesta máquina</strong> — é o que permite o
+       personagem dele jogar com a tela fechada. Ela não expira: <strong>expulsar é o
+       que a apaga</strong>.</p>
+    <p class="nota"><strong>Bloquear a autonomia não cala o jogador</strong>: ele
+       continua sussurrando. O que o bloqueio segura é o gasto e a vaga na fila. Para
+       tirar alguém da mesa, existe expulsar.</p>
   </section>
 
   <section>
@@ -161,25 +172,10 @@
        campo. Deixe vazio para manter a que já está gravada.</p>
   </section>
 
-  <section>
-    <h2>A Mente joga sozinha</h2>
-    <label class="chaveia">
-      <input id="autonomia" type="checkbox">
-      Deixar em laço: o personagem toma iniciativa a cada ~45s, sem sussurro seu
-    </label>
-
-    <!-- O RELÓGIO MORA AQUI, e agora aparece aqui. A tela do jogo tinha uma barra
-         mostrando esta contagem, o que era um mostrador de relógio alheio: parecia
-         controle e não era. Saiu de lá; está no lugar onde o botão de fato age. -->
-    <div class="relogio">
-      <div class="trilho"><div id="preenche" class="preenche"></div></div>
-      <span id="conta" class="nota" style="margin:0; min-width:9ch">—</span>
-    </div>
-    <p class="nota">O relógio é <strong>daqui</strong>, não da aba do navegador — ele
-       age mesmo com a tela fechada. Cada volta custa uma chamada ao seu modelo.
-       Enquanto um turno corre, a contagem <strong>congela</strong>: travado é tempo
-       que não conta, nunca tempo perdido.</p>
-  </section>
+  <!-- A AUTONOMIA GLOBAL SAIU DAQUI (spec 072, FR-029/FR-048).
+       Era um interruptor do PROCESSO: um clique parava a Mente do conector inteiro.
+       Numa sala isso é um jogador pausando os outros. Agora a vontade é do DONO (na
+       tela de jogo dele) e o teto é do anfitrião (na lista da mesa, acima). -->
 
   <section>
     <h2>Reiniciar o conector</h2>
@@ -270,25 +266,18 @@ function pintar() {
   const m = dados.modelo || {};
   $("estado").innerHTML =
     `<span class="pilula ${m.ok ? "ok" : "ruim"}">${m.reason || "modelo"}</span>` +
-    `<span class="pilula">joga ${c.personagem || "—"}</span>` +
-    `<span class="pilula">${dados.turnos} turnos</span>` +
+    `<span class="pilula">${(dados.mesa && dados.mesa.assentos.length) || 0} à mesa</span>` +
+    `<span class="pilula">${(dados.mesa && dados.mesa.membros.length) || 0} jogador(es)</span>` +
     `<span class="pilula">${dados.extensoes.versaoPrompt}</span>` +
-    (dados.ocupado ? `<span class="pilula">turno em andamento</span>` : "") +
+    (dados.mesa && dados.mesa.jogando
+      ? `<span class="pilula">jogando: ${dados.mesa.jogando}</span>` : "") +
     ((dados.pendente || []).length
       ? `<span class="pilula" style="color:var(--aviso);border-color:#5a4a2f">` +
         `${dados.pendente.length} ajuste(s) esperando o turno acabar</span>` : "");
 
   $("mundo").value = c.mundo || "";
   $("arquivo").textContent = c.arquivo || "";
-  const sel = $("personagem");
-  sel.innerHTML = "";
-  for (const p of dados.personagens || []) {
-    const o = document.createElement("option");
-    o.value = p.id || p;
-    o.textContent = (p.name || p.id || p) + (p.location ? ` — ${p.location}` : "");
-    sel.appendChild(o);
-  }
-  sel.value = c.personagem || "";
+  pintarMesa();
 
   for (const r of document.querySelectorAll('input[name=rt]')) {
     r.checked = r.value === c.runtime;
@@ -308,7 +297,6 @@ function pintar() {
     ? "há uma chave gravada — deixe vazio para mantê-la" : "AIza…";
   blocos();
 
-  $("autonomia").checked = dados.autonomia.ligada && !dados.autonomia.pausado;
   avisoDeTravado(dados);
 
   // --- prompts, um por rotina ---
@@ -390,6 +378,104 @@ function pintar() {
       que você coloca na pasta — esta página lista, mas não escreve código.</p>`;
 }
 
+// A MESA — o roster, a fila e os dois poderes do anfitrião (spec 072, US5).
+//
+// Só aparece com o que EXISTE: sala vazia diz que está vazia em vez de mostrar uma
+// tabela de nada. E o motivo do bloqueio é obrigatório na hora de bloquear — bloquear em
+// silêncio faria o botão do outro morrer sem explicação, que é o que o Princípio VIII
+// proíbe.
+function pintarMesa() {
+  const mesa = dados.mesa;
+  const alvo = $("mesa");
+  if (!mesa) { alvo.textContent = "—"; return; }
+  if (!mesa.membros.length) {
+    alvo.innerHTML = `<p class="nota">Ninguém pareou ainda. Rode
+      <code>loreforge --parear</code> e passe o código para quem vai jogar —
+      quem parear primeiro vira o anfitrião.</p>`;
+    return;
+  }
+
+  const posicao = Object.fromEntries(
+    (mesa.fila || []).map((e) => [e.personagem, e]));
+  const linhas = [];
+
+  for (const m of mesa.membros) {
+    const meus = mesa.assentos.filter((a) => a.dono === m.sub);
+    const gasto = meus.reduce((s, a) => s + a.custo.entrada + a.custo.saida, 0);
+    linhas.push(`<div class="rotina"><div class="cabeca"><div>
+        <h3>${m.nome || m.email || m.sub}
+          <span class="pilula ${m.ehAnfitriao ? "ok" : ""}">${
+            m.ehAnfitriao ? "anfitrião" : "convidado"}</span>
+          ${m.estado === "desautenticado"
+            ? '<span class="pilula ruim">precisa parear de novo</span>' : ""}
+        </h3>
+        <p class="quando">${m.email || m.sub} · ${meus.length} personagem(ns) ·
+           ${gasto.toLocaleString("pt-BR")} tokens</p>
+      </div>
+      ${m.ehAnfitriao ? "" :
+        `<button type="button" class="mini" data-expulsar="${m.sub}">Expulsar</button>`}
+    </div>` +
+    (meus.length ? meus.map((a) => {
+      const naFila = posicao[a.personagem];
+      const estado = mesa.jogando === a.personagem ? "jogando agora"
+        : naFila ? `na fila (${naFila.classe}, ${naFila.posicao}º)`
+        : a.autonomia.permitido && a.autonomia.ligado
+          ? `sozinho em ${Math.ceil((a.restanteMs || 0) / 1000)}s`
+          : "parado";
+      return `<div class="linha" style="align-items:center; gap:.6rem">
+          <span>${a.nome || a.personagem}</span>
+          <span class="nota" style="margin:0">${estado}</span>
+          <span class="pilula ${a.autonomia.permitido ? "" : "ruim"}">${
+            a.autonomia.permitido
+              ? (a.autonomia.ligado ? "autônomo" : "manual")
+              : "bloqueado"}</span>
+          ${a.autonomia.motivo
+            ? `<span class="nota" style="margin:0">“${a.autonomia.motivo}”</span>` : ""}
+          <button type="button" class="mini" data-permitir="${a.personagem}"
+                  data-valor="${a.autonomia.permitido ? "0" : "1"}">${
+            a.autonomia.permitido ? "Bloquear autônomo" : "Liberar"}</button>
+        </div>`;
+    }).join("") : `<p class="nota">sem personagem na mesa</p>`) +
+    `</div>`);
+  }
+  alvo.innerHTML = linhas.join("");
+
+  for (const b of alvo.querySelectorAll("[data-expulsar]")) {
+    b.onclick = async () => {
+      const sub = b.getAttribute("data-expulsar");
+      const motivo = prompt(
+        "Expulsar apaga a credencial de mundo dessa pessoa desta máquina, e ela\n" +
+        "precisará de um código novo para voltar.\n\nMotivo (o expulso vai ler):", "");
+      if (motivo === null) return;
+      const r = await fetch("/sala/expulsar", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sub, motivo }) });
+      const d = await r.json();
+      recado(d.erro || "removido da sala", d.erro ? "var(--ruim)" : "var(--ok)");
+      await ler();
+    };
+  }
+  for (const b of alvo.querySelectorAll("[data-permitir]")) {
+    b.onclick = async () => {
+      const personagem = b.getAttribute("data-permitir");
+      const permitido = b.getAttribute("data-valor") === "1";
+      let motivo = null;
+      if (!permitido) {
+        motivo = prompt("Por que está bloqueando? (o dono vai ler no botão dele)",
+                        "a mesa está lenta");
+        if (motivo === null) return;
+      }
+      const r = await fetch("/sala/autonomia-permitida", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ personagem, permitido, motivo }) });
+      const d = await r.json();
+      recado(d.erro || (permitido ? "liberado" : "bloqueado"),
+             d.erro ? "var(--ruim)" : "var(--ok)");
+      await ler();
+    };
+  }
+}
+
 function blocos() {
   const rt = document.querySelector('input[name=rt]:checked');
   const v = rt ? rt.value : "local";
@@ -422,16 +508,20 @@ function avisoDeTravado(dados) {
   if (!el) return;
   const s = Number(dados.ocupadoSegundos) || 0;
   const presos = (dados.pendente || []).length;
-  if (!dados.ocupado || s < TURNO_SUSPEITO_S) {
+  // spec 072: "ocupado" virou "há um turno em voo NA MESA". A diferença importa porque
+  // agora o pendurado não congela um jogador, congela todo mundo — o prazo da fila já
+  // solta a pista sozinho, mas o aviso continua sendo o que explica a lentidão.
+  const jogando = (dados.mesa && dados.mesa.jogando) || null;
+  if (!jogando || s < TURNO_SUSPEITO_S) {
     el.hidden = true;
     return;
   }
   const min = Math.floor(s / 60);
   el.hidden = false;
   el.innerHTML =
-    `<strong>Este turno já dura ${min} min.</strong> Um turno leva segundos, então
-     provavelmente ele <strong>travou</strong> — em geral o modelo parou de responder.
-     Enquanto ele não fecha, o personagem não age sozinho` +
+    `<strong>O turno de ${jogando} já dura ${min} min.</strong> Um turno leva segundos,
+     então provavelmente ele <strong>travou</strong> — em geral o modelo parou de
+     responder. Enquanto ele não fecha, a mesa inteira espera` +
     (presos
       ? ` e <strong>a configuração que você salvou não entra em vigor</strong>
          (esperando: ${(dados.pendente || []).join(", ")})`
@@ -452,14 +542,13 @@ $("salvar").onclick = async () => {
     }
     const rt = document.querySelector('input[name=rt]:checked');
     const corpo = {
-      mundo: $("mundo").value, personagem: $("personagem").value,
+      mundo: $("mundo").value,
       runtime: rt ? rt.value : "local",
       endpoint: $("endpoint").value, model: $("model").value,
       remoteModel: $("remoteModel").value,
       openrouterEndpoint: $("openrouterEndpoint").value,
       openrouterModel: $("openrouterModel").value,
       geminiModel: $("geminiModel").value,
-      autonomia: $("autonomia").checked,
     };
     if ($("apiKey").value.trim()) corpo.apiKey = $("apiKey").value.trim();
     if ($("openrouterKey").value.trim()) corpo.openrouterKey = $("openrouterKey").value.trim();
@@ -493,40 +582,52 @@ $("salvar").onclick = async () => {
 
 $("recarregar").onclick = () => { recado(""); ler(); };
 
-// O RELÓGIO AO VIVO, pelo mesmo canal que a tela do jogo usa. É o conector
-// contando — esta página só mostra, mas mostra o relógio DELE, não um paralelo.
+// A MESA AO VIVO, pelo mesmo canal que as telas de jogo usam.
+//
+// Os RELÓGIOS agora são N — um por assento —, e a barra única que existia aqui deixou de
+// fazer sentido: ela mostrava o relógio do processo, e o processo não tem mais um. O que
+// esta página mostra é o roster, e ele se repinta quando a sala muda.
+//
+// A mesa é faixa de MESA (spec 072), então o painel a recebe como qualquer tela. O que
+// ele NÃO recebe é a faixa privada de ninguém: o painel se autentica como um membro só.
 try {
   const fonte = new EventSource("/eventos");
-  fonte.addEventListener("autonomia", (ev) => {
-    let d = {}; try { d = JSON.parse(ev.data); } catch (_) { return; }
-    const rel = document.querySelector(".relogio");
-    const frac = Math.max(0, Math.min(1, (d.restante || 0) / (d.total || 1)));
-    rel.classList.toggle("parado", !!d.pausado);
-    $("preenche").style.width = (d.pausado ? 1 : frac) * 100 + "%";
-    $("conta").textContent = d.pausado
-      ? "em pausa"
-      : `${Math.ceil((d.restante || 0) / 1000)}s`;
+  const repintar = () => { if (dados) pintarMesa(); };
+  for (const ev of ["sala", "fila", "entrou", "saiu"]) {
+    fonte.addEventListener(ev, (e) => {
+      let d = {}; try { d = JSON.parse(e.data); } catch (_) { return; }
+      if (!dados) return;
+      dados.mesa = { ...(dados.mesa || {}), ...d };
+      repintar();
+    });
+  }
+  // O relógio de um assento chega como evento do DONO. Serve para a contagem não ficar
+  // parada entre releituras — nada mais.
+  fonte.addEventListener("autonomia", (e) => {
+    let d = {}; try { d = JSON.parse(e.data); } catch (_) { return; }
+    if (!dados || !dados.mesa) return;
+    const a = (dados.mesa.assentos || []).find((x) => x.personagem === d.personagem);
+    if (!a) return;
+    a.restanteMs = d.restante;
+    a.autonomia = { permitido: d.permitido, ligado: d.ligado, motivo: d.motivo };
+    repintar();
   });
-  fonte.addEventListener("estado", (ev) => {
-    let d = {}; try { d = JSON.parse(ev.data); } catch (_) { return; }
-    document.querySelector(".relogio").classList.toggle("travado", !!d.ocupado);
-    if (d.ocupado) $("conta").textContent = "turno correndo";
+  fonte.addEventListener("estado", (e) => {
+    let d = {}; try { d = JSON.parse(e.data); } catch (_) { return; }
     // o aviso de travado tem de nascer SEM recarregar a página: quem está olhando a
     // tela quando o turno pendura é justamente quem precisa dele.
-    if (dados) {
-      dados.ocupado = !!d.ocupado;
-      dados.ocupadoDesde = d.ocupadoDesde || null;
-      dados.ocupadoSegundos = d.ocupadoDesde
-        ? Math.round((Date.now() - d.ocupadoDesde) / 1000) : 0;
-      avisoDeTravado(dados);
-    }
+    if (!dados) return;
+    dados.ocupadoDesde = d.ocupadoDesde || null;
+    dados.ocupadoSegundos = d.ocupadoDesde
+      ? Math.round((Date.now() - d.ocupadoDesde) / 1000) : 0;
+    avisoDeTravado(dados);
   });
 } catch (_) { /* sem canal: a página segue servindo para configurar */ }
 
 // O aviso precisa APARECER com o tempo passando, não só quando um evento chega —
 // um turno pendurado não emite nada, e é exatamente o silêncio que se quer avisar.
 setInterval(() => {
-  if (!dados || !dados.ocupado || !dados.ocupadoDesde) return;
+  if (!dados || !dados.ocupadoDesde) return;
   dados.ocupadoSegundos = Math.round((Date.now() - dados.ocupadoDesde) / 1000);
   avisoDeTravado(dados);
 }, 15000);

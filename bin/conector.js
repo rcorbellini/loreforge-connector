@@ -16,9 +16,11 @@ const path = require("path");
 
 const configuracao = require("../config");
 const armazenamento = require("../armazenamento");
-const Mente = require("../mente");
+const Mente = require("../mente");   // spec 072: o módulo agora exporta `criarMente`
 const { Mundo } = require("../mundo");
 const { Laco } = require("../laco");
+const { Sala } = require("../sala");
+const { Fila } = require("../fila");
 const extensoes = require("../extensoes");
 const registro = require("../registro");
 const { log } = require("../log");
@@ -43,15 +45,16 @@ function lerArgs(argv) {
 const AJUDA = `
 O conector da Mente — Loreforge
 
-  loreforge --mundo <url> --personagem <id>        joga pelo terminal
-  loreforge --headless --turnos 50                 a Mente joga sozinha
-  loreforge --canal 8899                           serve a tela nesta porta
-  loreforge --canal 8899 --expor                   ...e aceita a tela de outro aparelho
-  loreforge --canal 8899 --expor --config-remota   ...e deixa CONFIGURAR de fora
-  loreforge --parear                               gera o código pra vincular ao client
+  loreforge --canal 8899                           abre a SALA nesta porta
+  loreforge --canal 8899 --expor                   ...e aceita telas de outros aparelhos
+  loreforge --canal 8899 --expor --config-remota   ...e deixa MANDAR na sala de fora
+  loreforge --parear                               gera o código pra alguém entrar
+  loreforge --mundo <url> --personagem <id>        joga UM personagem pelo terminal
+  loreforge --headless --personagem <id>           a Mente joga sozinha, sem tela
   loreforge --configurar                           grava a configuração e sai
   loreforge --verificar                            testa mundo, personagem e modelo
   loreforge --personagens                          lista quem existe no mundo
+  --sala "<nome>"                                  batiza a mesa
 
 Opções de modelo (guardadas na sua máquina, nunca enviadas ao mundo):
   --runtime local|remote|openrouter|gemini    --modelo <nome>
@@ -113,7 +116,7 @@ function cobraConfiguracao(cfg) {
   }
   process.stdout.write(
     `\n  Para gravar de uma vez:\n` +
-    `      loreforge --configurar --mundo <url> --personagem <id>\n` +
+    `      loreforge --configurar --mundo <url>\n` +
     `\n  A configuração fica em ${armazenamento.caminho()} (só na sua máquina).\n\n`);
   return true;
 }
@@ -129,9 +132,6 @@ async function verificar(cfg, mundo) {
   try {
     const chars = await mundo.personagens();
     linhas.push(`  ✓ mundo alcançável (${chars.length} personagens)`);
-    const existe = chars.some((c) => (c.id || c) === cfg.personagem);
-    if (existe) linhas.push(`  ✓ personagem '${cfg.personagem}' existe`);
-    else { linhas.push(`  ✗ personagem '${cfg.personagem}' não existe neste mundo`); tudoBem = false; }
   } catch (e) {
     linhas.push(`  ✗ mundo inalcançável em ${cfg.mundo}: ${e.message}`);
     tudoBem = false;
@@ -142,19 +142,17 @@ async function verificar(cfg, mundo) {
   try {
     const authCfg = await mundo.authConfig();
     if (authCfg && authCfg.google_client_id) {
-      if (!cfg.jwt) {
-        linhas.push("  ✗ este mundo exige login, e o conector não está pareado " +
+      // spec 072: a posse é POR ASSENTO agora, conferida na hora de entrar na sala
+      // (`/sala/entrar`, com o JWT de quem entra). O que o diagnóstico ainda pode dizer
+      // é se ALGUÉM pareou — sem anfitrião, a sala não tem como aceitar ninguém.
+      const membros = (cfg.sala && cfg.sala.membros) || [];
+      if (!membros.length) {
+        linhas.push("  ✗ este mundo exige login e ninguém pareou nesta sala " +
                     "(rode `loreforge --parear`)");
         tudoBem = false;
       } else {
-        linhas.push(`  ✓ pareado como ${cfg.authEmail || cfg.authSub}`);
-        const minhas = await mundo.personagensMinhas();
-        if (minhas.some((c) => (c.id || c) === cfg.personagem)) {
-          linhas.push(`  ✓ '${cfg.personagem}' está associado a esta conta`);
-        } else {
-          linhas.push(`  ✗ '${cfg.personagem}' não está associado à conta pareada`);
-          tudoBem = false;
-        }
+        linhas.push(`  ✓ ${membros.length} membro(s) pareado(s): ` +
+                    membros.map((m) => m.email || m.sub).join(", "));
       }
     } else {
       linhas.push("  · mundo sem login exigido (modo legado)");
@@ -170,55 +168,37 @@ async function verificar(cfg, mundo) {
 
   // TOOL-CALLING é o que separa um turno com schema imposto de um turno de
   // adivinhação. Vale conferir explicitamente, e não descobrir jogando.
-  try {
-    const tools = await mundo.listarCapacidades();
-    linhas.push(tools.length
-      ? `  ✓ a cena oferece ${tools.length} capacidades`
-      : `  ✗ a cena não ofereceu capacidade nenhuma`);
-    if (!tools.length) tudoBem = false;
-  } catch (e) {
-    linhas.push(`  ✗ não consegui ler as capacidades da cena: ${e.message}`);
-    tudoBem = false;
+  const primeiro = (cfg.sala && cfg.sala.assentos || [])[0];
+  if (!primeiro) {
+    linhas.push("  · sala vazia: sem assento não há cena para checar capacidades");
+  } else {
+    try {
+      const m = new Mundo(cfg.mundo, primeiro.personagem);
+      m.jwt = (cfg.jwtPorMembro || {})[primeiro.dono] || null;
+      const tools = await m.listarCapacidades();
+      linhas.push(tools.length
+        ? `  ✓ a cena de '${primeiro.personagem}' oferece ${tools.length} capacidades`
+        : `  ✗ a cena de '${primeiro.personagem}' não ofereceu capacidade nenhuma`);
+      if (!tools.length) tudoBem = false;
+    } catch (e) {
+      linhas.push(`  ✗ não consegui ler as capacidades da cena: ${e.message}`);
+      tudoBem = false;
+    }
   }
 
   process.stdout.write("\n" + linhas.join("\n") + "\n\n");
   return tudoBem;
 }
 
-// A GUARDA DE POSSE (spec 056) antes de gastar turno de LLM à toa: se o mundo
-// exige login, confere pareamento e, com ele, se ESTE personagem é mesmo da
-// conta pareada. Um servidor inalcançável AGORA não é motivo pra recusar — o
-// erro de verdade (mundo fora do ar) aparece no primeiro turno, que é onde ele
-// pertence.
-async function confirmarPosse(cfg, mundo) {
-  let authCfg;
-  try {
-    authCfg = await mundo.authConfig();
-  } catch (_) {
-    return true;
-  }
-  if (!authCfg || !authCfg.google_client_id) return true;   // modo legado
-  if (!cfg.jwt) {
-    process.stdout.write(
-      "\nEste mundo exige login. Rode `loreforge --parear` primeiro.\n\n");
-    return false;
-  }
-  try {
-    const minhas = await mundo.personagensMinhas();
-    if (!minhas.some((c) => (c.id || c) === cfg.personagem)) {
-      process.stdout.write(
-        `\n'${cfg.personagem}' não está associado à conta pareada ` +
-        `(${cfg.authEmail || cfg.authSub}).\n` +
-        `Associe pelo client, ou pareie a conta certa com --parear.\n\n`);
-      return false;
-    }
-  } catch (e) {
-    process.stdout.write(
-      `\nNão consegui confirmar a posse do personagem: ${e.message}\n\n`);
-    return false;
-  }
-  return true;
-}
+// A GUARDA DE POSSE (spec 056) SAIU DAQUI (spec 072).
+//
+// Ela conferia, no boot, se O personagem do processo era da conta pareada — a pergunta
+// certa quando havia um dono e um personagem. Numa sala a pergunta é outra e acontece
+// em outro momento: cada assento confere a posse NA HORA DE ENTRAR (`/sala/entrar`), e
+// com o JWT de QUEM ESTÁ ENTRANDO. Conferir no boot não teria o que conferir — a sala
+// sobe vazia.
+//
+// O que continua valendo é o motivo: recusar antes de gastar turno de LLM à toa.
 
 // --------------------------------------------------------------------------- //
 // Principal
@@ -235,7 +215,8 @@ async function main() {
   // `--configurar`, vira o arquivo.
   const cfg = configuracao.carregar();
   if (args.mundo) cfg.mundo = String(args.mundo);
-  if (args.personagem) cfg.personagem = String(args.personagem);
+  // `--personagem` deixou de virar configuracao (spec 072): e SEMENTE de assento,
+  // lida direto de `args` la embaixo. O conector nao tem mais "o personagem dele".
   if (args.runtime) cfg.runtime = String(args.runtime);
   if (args.modelo) cfg.model = String(args.modelo);
   if (args.endpoint) cfg.endpoint = String(args.endpoint);
@@ -254,7 +235,7 @@ async function main() {
   }
 
   if (args.personagens) {
-    const mundo = new Mundo(cfg.mundo, cfg.personagem);
+    const mundo = new Mundo(cfg.mundo, null);
     const chars = await mundo.personagens();
     process.stdout.write("\n" + chars.map((c) =>
       `  ${c.id || c}${c.name ? "  — " + c.name : ""}`).join("\n") + "\n\n");
@@ -270,7 +251,7 @@ async function main() {
         "\nDefina --mundo antes de parear (ex.: --mundo http://localhost:8777).\n\n");
       return 1;
     }
-    const mundoP = new Mundo(cfg.mundo, cfg.personagem);
+    const mundoP = new Mundo(cfg.mundo, null);
     let authCfg;
     try {
       authCfg = await mundoP.authConfig();
@@ -289,19 +270,29 @@ async function main() {
       ler: async () => ({}), salvar: async () => ({ ok: true }),
       gravarPrompt: () => ({ ok: true }), reiniciar: async () => ({ ok: true }),
     };
+    // Uma sala de verdade, restaurada do disco: quem parear aqui ENTRA NELA e fica
+    // gravado. Antes isto escrevia num campo único do processo; agora acrescenta membro,
+    // e o segundo a parear é convidado, não substituto do primeiro.
+    const salaP = Sala.deConfig(cfg.sala, {
+      credenciais: configuracao.credenciais(cfg),
+      fabricas: { assento: async () => ({}) },
+    });
     let resolverPareado;
     const aguardarPareado = new Promise((resolve) => { resolverPareado = resolve; });
     const c = await require("../canal").servir({
-      porta, laco: { ocupado: false, numeroTurno: 0 }, cfg, expor: !!args.expor,
+      porta, sala: salaP, fila: new Fila({ sala: salaP }), cfg, expor: !!args.expor,
       painel: painelVazio, permitirConfigRemota: false,
       mundo: mundoP, configuracao, authAtivo: true,
       onPareado: (quem) => resolverPareado({ ok: true, quem }),
     });
     const { codigo, expiraEm } = c.gerarCodigoPareamento();
+    const primeiro = !salaP.anfitriao;
     process.stdout.write(
       `\nCódigo de pareamento: ${codigo}\n` +
       `  Cole no client, em Configurações → Pareamento do Conector, em até ` +
       `${Math.round((expiraEm - Date.now()) / 60000)} minutos.\n` +
+      (primeiro ? "  Quem parear primeiro vira o ANFITRIÃO da sala.\n"
+                : `  A sala já tem ${salaP.membros.size} membro(s); este entra como convidado.\n`) +
       `  Escutando em http://${args.expor ? "0.0.0.0" : "127.0.0.1"}:${porta}\n\n`);
     const resultado = await Promise.race([
       aguardarPareado,
@@ -310,23 +301,24 @@ async function main() {
     ]);
     await c.fechar();
     if (resultado.ok) {
-      process.stdout.write(`\nPareado com ${resultado.quem.email}. Pronto pra jogar.\n\n`);
+      process.stdout.write(
+        `\nPareado com ${resultado.quem.email}. Pronto pra entrar na sala.\n` +
+        `  A credencial de mundo dessa conta fica GUARDADA nesta máquina — é o que\n` +
+        `  permite o personagem jogar com a tela fechada. Expulsar é o que a apaga.\n\n`);
       return 0;
     }
     process.stdout.write(
       "\nExpirou sem ninguém parear. Rode --parear de novo quando quiser.\n\n");
     return 1;
   }
-
   if (cobraConfiguracao(cfg)) return 1;
 
-  const mundo = new Mundo(cfg.mundo, cfg.personagem);
-  mundo.jwt = cfg.jwt || null;
-  Mente.usarMundo(mundo);
+  // O CLIENTE DE SALA — sem personagem nenhum. Serve só ao que é da MESA: validar
+  // token, perguntar a configuração de auth, listar personagens. Quem fala com o mundo
+  // POR CONTA de um personagem é o `Mundo` daquele assento, com o JWT do dono dele.
+  const mundo = new Mundo(cfg.mundo, null);
 
   if (args.verificar) return (await verificar(cfg, mundo)) ? 0 : 1;
-
-  if (!(await confirmarPosse(cfg, mundo))) return 1;
 
   // Computado uma vez: se o mundo troca de auth.secret no meio da sessão, a
   // reinicialização (já existente, `/api/reiniciar`) é o caminho — não vale a
@@ -339,8 +331,6 @@ async function main() {
   } catch (_) { /* mundo fora do ar agora: o erro de verdade aparece adiante */ }
 
   const ext = extensoes.criar(path.join(__dirname, "..", "extensoes"));
-  Mente.usarExtensoes(ext);
-  const reg = registro.criar({ mundo, cfg, extensoes: ext, mente: Mente });
 
   const noTerminal = saidaDeTerminal();
   let paraOCanal = null;
@@ -348,45 +338,125 @@ async function main() {
   // O que ficou esperando o turno acabar (ver `painel.salvar`).
   let pendente = null;
 
-  function aplicarConfig(vindo) {
-    const antes = cfg.personagem;
-    configuracao.aplicar(cfg, vindo);
-    configuracao.gravar(cfg);
+  // A EMISSÃO DE TODO ASSENTO passa por aqui. O laço já carimba `personagem` e `escopo`
+  // (spec 072, FR-017); este ponto só decide PARA ONDE vai.
+  const emitir = (ev, d) => {
+    if (!args.canal || args.eco) noTerminal(ev, d);
+    if (paraOCanal) paraOCanal(ev, d);
+    if (ev === "estado" && d && d.ocupado === false && pendente) {
+      const agora = pendente;
+      pendente = null;
+      try {
+        aplicarConfig(agora);
+        log("CONFIGURAÇÃO ADIADA APLICADA", Object.keys(agora).join(", "));
+      } catch (e) {
+        log("NÃO CONSEGUI APLICAR A CONFIGURAÇÃO ADIADA", e.message);
+      }
+    }
+  };
 
-    // TROCA DE PERSONAGEM AO VIVO. Um conector serve UM personagem; sem isto
-    // trocar exigiria reiniciar o processo, e a tela ficaria mostrando um dono
-    // que já não é o que joga.
-    if (cfg.personagem !== antes) {
-      mundo.personagem = cfg.personagem;
-      mundo.capacidadesDaCena = null;   // a face agora é de OUTRA cena
-      laco.numeroTurno = 0;
-    }
-    // o relógio da autonomia: ligar/desligar sem reiniciar nada
-    if (typeof vindo.autonomia === "boolean") {
-      if (vindo.autonomia && !laco.autonomia) laco.iniciarAutonomia();
-      else if (laco.autonomia) laco.autonomia.pausar(!vindo.autonomia);
-    }
-    laco._emite("estado", { ocupado: laco.ocupado });
+  // A FÁBRICA DE ASSENTO — o único lugar que conhece o mundo, a Mente e as extensões ao
+  // mesmo tempo, e por isso é daqui que ela vem, não de dentro de `sala.js`.
+  //
+  // CADA ASSENTO GANHA O SEU (FR-006/FR-007): `Mundo` próprio (a tabela de resolução é da
+  // CENA daquele personagem e não pode vazar para outro), `Mente` própria (a fatura é do
+  // jogador dele) e `Laco` próprio. E o JWT que vai é o do DONO — nunca o do anfitrião,
+  // que é o que faria o server responder 403 em todo turno de convidado.
+  const fabricaDeAssento = async ({ personagem, dono, jwt }) => {
+    const meuMundo = new Mundo(cfg.mundo, personagem);
+    meuMundo.jwt = jwt || null;
+    // O 401 DO MUNDO CHEGA À SALA (research R6). Sem este fio, `sala.falhou401` seria
+    // guarda inerte — o mecanismo existiria e ninguém o chamaria, que é o modo de falha
+    // que este projeto já pagou caro para aprender a evitar.
+    meuMundo.onIdentidade = (status) => {
+      if (status === 401 || status === 403) {
+        if (sala.falhou401(dono)) {
+          fila.removerDe(dono);
+          emitir("sistema", { personagem, escopo: "dono", texto:
+            "O mundo deixou de aceitar a sua identidade. Seus personagens saíram da " +
+            "fila — pareie de novo para voltar." });
+        }
+      } else if (status >= 200 && status < 300) {
+        sala.respondeuBem(dono);
+      }
+    };
+    const minhaMente = Mente.criarMente({ mundo: meuMundo, extensoes: ext });
+    const reg = registro.criar({ mundo: meuMundo, cfg: { ...cfg, personagem },
+                                 extensoes: ext, mente: minhaMente,
+                                 sala: sala.nome, membro: dono });
+    const laco = new Laco({ mundo: meuMundo, mente: minhaMente, extensoes: ext,
+                            registro: reg, emitir });
+    // O NOME do personagem, para a tela da mesa. Falhar aqui não impede sentar: o id
+    // serve de nome, e o mundo fora do ar agora não é motivo para recusar a cadeira.
+    let nome = personagem;
+    try {
+      const ctx = await meuMundo.contexto();
+      nome = (ctx && ctx.self && ctx.self.name) || personagem;
+    } catch (_) { /* segue com o id */ }
+    return { mundo: meuMundo, mente: minhaMente, laco, nome };
+  };
+
+  // A SALA — restaurada do que estava gravado, ou nova e vazia. Ela SOBE VAZIA de
+  // propósito (FR-008): cobrar um personagem no boot era a marca do conector de um dono
+  // só, e agora quem enche a mesa é quem entra nela.
+  const sala = Sala.deConfig(cfg.sala, {
+    credenciais: configuracao.credenciais(cfg),
+    fabricas: { assento: fabricaDeAssento },
+    emitir: (ev, d) => emitir(ev, { ...d, escopo: d && d.escopo ? d.escopo : "mesa" }),
+  });
+  if (args.sala) sala.nome = String(args.sala);
+
+  // MODO LEGADO: mundo sem `auth.secret` não tem pareamento — e sem pareamento não
+  // haveria membro nenhum, então a sala recusaria TODO MUNDO, inclusive o dono da
+  // máquina. O jogo local não pode ficar mais difícil por causa da sala: aqui existe um
+  // membro único e implícito, que é exatamente o que o conector de um dono só era.
+  if (!authAtivo && !sala.anfitriao) {
+    sala.acrescentarMembro({ sub: "local", nome: "local" });
   }
 
-  const laco = new Laco({
-    mundo, mente: Mente, extensoes: ext, registro: reg,
-    emitir: (ev, d) => {
-      if (!args.canal || args.eco) noTerminal(ev, d);
-      if (paraOCanal) paraOCanal(ev, d);
-      // O turno acabou: é agora que o que ficou guardado entra em vigor.
-      if (ev === "estado" && d && d.ocupado === false && pendente) {
-        const agora = pendente;
-        pendente = null;
-        try {
-          aplicarConfig(agora);
-          log("CONFIGURAÇÃO ADIADA APLICADA", Object.keys(agora).join(", "));
-        } catch (e) {
-          log("NÃO CONSEGUI APLICAR A CONFIGURAÇÃO ADIADA", e.message);
-        }
-      }
-    },
-  });
+  const fila = new Fila({ sala, emitir });
+  if (!args["sem-autonomia"]) fila.iniciar();
+
+  function aplicarConfig(vindo) {
+    configuracao.aplicar(cfg, vindo);
+    configuracao.gravar(cfg);
+    // A "TROCA DE PERSONAGEM AO VIVO" MORREU AQUI (spec 072, FR-009).
+    //
+    // Ela existia porque um conector servia UM personagem, e trocar exigiria reiniciar o
+    // processo. Com a sala não se troca o personagem do processo: entra-se e sai-se da
+    // mesa (`/sala/entrar`, `/sala/sair`). Manter as duas vias seria a duplicação que o
+    // Princípio I proíbe — então a antiga saiu, não ficou em paralelo.
+    if (typeof vindo.tetoCustoTokens !== "undefined") {
+      sala.tetoCustoTokens = Number(vindo.tetoCustoTokens) || null;
+      sala.pausadaPorCusto = false;
+      configuracao.gravarSala(cfg, sala);
+    }
+  }
+
+  // A SEMENTE (FR-008). `--personagem` deixou de ser exigência e virou conveniência:
+  // quem joga sozinho não quer passar por tela de sala nenhuma para começar. Só funciona
+  // se já houver um anfitrião pareado (ou se o mundo não exigir login).
+  async function semear(personagem) {
+    if (!personagem) return null;
+    const dono = sala.anfitriao;
+    if (!dono) {
+      process.stdout.write(
+        `\nNão dá para semear '${personagem}': este mundo exige login e ninguém pareou.\n` +
+        `  Rode \`loreforge --parear\` primeiro.\n\n`);
+      return null;
+    }
+    const r = await sala.assentar({ personagem, sub: dono });
+    if (r.erro) {
+      process.stdout.write(`\nNão consegui sentar '${personagem}': ${r.erro}\n\n`);
+      return null;
+    }
+    configuracao.gravarSala(cfg, sala);
+    return sala.assentoDe(personagem);
+  }
+
+  const semeado = await semear(args.personagem
+    || (cfg.sala && cfg.sala.assentos && cfg.sala.assentos.length === 1
+        ? cfg.sala.assentos[0].personagem : null));
 
   if (args.canal) {
     // O PAINEL: o que a página de configuração pode ler e escrever. Fica aqui,
@@ -405,19 +475,17 @@ async function main() {
           rotinas: Mente.ROTINAS,
           padroes: Mente.promptsPadrao(),
           extensoes: ext.inventario(),
-          autonomia: laco.autonomia
-            ? { ligada: true, pausado: laco.autonomia.pausado }
-            : { ligada: false, pausado: true },
-          turnos: laco.numeroTurno,
-          ocupado: laco.ocupado,
-          // HÁ QUANTO TEMPO está ocupado. `ocupado` sozinho não distingue um turno
-          // normal de um pendurado, e é o pendurado que precisa de aviso na tela.
-          // Vão os DOIS: os segundos para quem só lê, e o instante para a tela poder
-          // continuar contando sozinha — um turno pendurado não emite evento nenhum,
-          // e é justamente o silêncio que precisa virar aviso.
-          ocupadoDesde: laco.ocupadoDesde || null,
-          ocupadoSegundos: laco.ocupadoDesde
-            ? Math.round((Date.now() - laco.ocupadoDesde) / 1000) : 0,
+          // A MESA no lugar do laço único: quem está sentado, quem joga, quem espera, e
+          // — o que o anfitrião mais precisa ver — o custo por membro.
+          mesa: { ...sala.paraTela(), ...fila.estado() },
+          // HÁ QUANTO TEMPO o turno em voo está correndo. `ocupado` sozinho não distingue
+          // um turno normal de um pendurado, e é o pendurado que precisa de aviso na
+          // tela. Um turno pendurado não emite evento nenhum, e é justamente o silêncio
+          // que precisa virar aviso.
+          ocupadoDesde: (() => {
+            const a = fila.jogando && sala.assentoDe(fila.jogando);
+            return (a && a.laco && a.laco.ocupadoDesde) || null;
+          })(),
           // o que já está no disco mas ainda não entrou em vigor
           pendente: pendente ? Object.keys(pendente) : [],
         };
@@ -429,12 +497,11 @@ async function main() {
       // a edição é do jogador, e mandá-lo digitar tudo de novo porque a Mente
       // estava pensando não protege nada que importe.
       //
-      // O que de fato não pode mudar no meio de um turno é o ALVO — trocar o
-      // personagem com propostas a caminho faria o resto do turno cair em cima
-      // de outra pessoa. Então: DISCO AGORA (a edição não se perde nem se o
-      // processo morrer), MEMÓRIA quando o turno acabar.
+      // O que de fato não pode mudar no meio de um turno é o ALVO do turno em voo.
+      // Então: DISCO AGORA (a edição não se perde nem se o processo morrer), MEMÓRIA
+      // quando o turno acabar.
       async salvar(vindo) {
-        if (laco.ocupado) {
+        if (fila.jogando) {
           configuracao.gravarAdiado(cfg, vindo);
           pendente = { ...(pendente || {}), ...vindo };
           return { ok: true, adiado: true, ...(await painel.ler()) };
@@ -448,16 +515,14 @@ async function main() {
       // REINICIAR O PRÓPRIO PROCESSO.
       //
       // Por que isto existe: um turno pendurado (o modelo que não responde, a rede
-      // que sumiu) trava o conector INTEIRO em silêncio. `ocupado` nunca volta a
-      // false, então a autonomia para de tickar e a configuração adiada — a troca
-      // de personagem, inclusive — fica presa no disco sem nunca entrar em vigor.
-      // Sem este botão, a única saída é ir ao terminal matar o processo; e quem
-      // joga a tela de outro aparelho (`--expor`) não tem terminal nenhum.
+      // que sumiu) trava a mesa INTEIRA em silêncio. Com a spec 072 o prazo do turno
+      // (`fila.js`) já solta a pista sozinho, mas o botão continua sendo a saída para o
+      // processo que enrolou de outro jeito — e quem joga a tela de outro aparelho
+      // (`--expor`) não tem terminal nenhum.
       //
       // NÃO é "reiniciar o turno" nem "reiniciar o mundo": nada do mundo é tocado,
       // e o que estava gravado no disco é justamente o que volta a valer, porque o
-      // processo novo LÊ a configuração ao subir. É por isso que reiniciar resolve
-      // a configuração encalhada em vez de perdê-la.
+      // processo novo LÊ a configuração ao subir — o roster da sala inclusive.
       //
       // Re-exec com o MESMO argv: as flags de quem subiu o processo (--canal,
       // --expor, --config-remota) têm de sobreviver, senão "reiniciar" mudaria
@@ -470,6 +535,7 @@ async function main() {
         // antes de fechar era colisão de bind: o filho morria e ninguém voltava.
         setTimeout(async () => {
           log("REINICIANDO A PEDIDO DA TELA", process.argv.slice(1).join(" "));
+          try { fila.parar(); } catch (_) {}
           try { await c.fechar(); } catch (_) {}
           try {
             const filho = require("child_process")
@@ -492,41 +558,52 @@ async function main() {
       },
     };
 
-    const c = await require("../canal").servir({ porta: cfg.canal, laco, cfg,
+    const c = await require("../canal").servir({ porta: cfg.canal, sala, fila, cfg,
                                                 expor: !!args.expor, painel,
                                                 permitirConfigRemota:
                                                   !!args["config-remota"],
                                                 mundo, configuracao, authAtivo });
     paraOCanal = c.emitir;
-    // Com tela aberta, a Mente continua tendo iniciativa própria — o relógio é
-    // daqui agora, não da aba. `--sem-autonomia` desliga.
-    if (!args["sem-autonomia"]) laco.iniciarAutonomia();
     if (args.expor) {
       process.stdout.write(
-        `\n⚠  ABERTO NA REDE LOCAL (--expor). Qualquer aparelho da sua rede alcança\n` +
-        `   este conector — e ele age no mundo com o SEU personagem e gasta o SEU\n` +
-        `   modelo. A sua credencial não é servida por aqui, mas quem alcançar esta\n` +
-        `   porta joga no seu lugar. Use em rede de casa, nunca em rede pública.\n`);
+        `\n⚠  ABERTO NA REDE (--expor). Qualquer aparelho que alcance esta porta pode\n` +
+        `   entrar na sala com o código de pareamento — e cada jogada gasta o SEU\n` +
+        `   modelo. A sua chave não é servida por aqui, mas a conta é sua.\n` +
+        `   E as credenciais de mundo de quem entrar ficam GUARDADAS nesta máquina:\n` +
+        `   expulsar é a única forma de tirá-las. Use com gente que você conhece.\n`);
     }
     process.stdout.write(
-      `\nA Mente de '${cfg.personagem}' está no ar em ` +
+      `\nA sala '${sala.nome}' está no ar em ` +
       `http://${args.expor ? "0.0.0.0" : "127.0.0.1"}:${cfg.canal}\n` +
       `  mundo: ${cfg.mundo}\n` +
       `  modelo: ${registro.rotuloDoModelo(cfg)}\n` +
-      `\n  configurar: http://127.0.0.1:${cfg.canal}/\n` +
-      `\nA tela agora pode conectar. Ctrl+C encerra.\n\n`);
+      `  à mesa: ${sala.assentos.size} assento(s), ${sala.membros.size} membro(s)\n` +
+      (sala.anfitriao ? "" : "  (ninguém pareou ainda — gere um código no painel)\n") +
+      `\n  painel: http://127.0.0.1:${cfg.canal}/\n` +
+      `\nAs telas agora podem conectar. Ctrl+C encerra.\n\n`);
   }
 
+  // --- os modos de UM jogador só ------------------------------------------- //
+  //
+  // `--headless` e o terminal interativo continuam sendo de UM personagem: são as portas
+  // de quem joga sozinho, e a sala não muda isso. O que muda é que eles agora operam
+  // sobre um ASSENTO da mesa em vez de sobre "o personagem do processo".
+
   if (args.headless) {
+    if (!semeado) {
+      process.stdout.write(
+        "\n--headless precisa de um personagem: use --personagem <id>.\n\n");
+      return 1;
+    }
     const total = Number(args.turnos) || 0;
     process.stdout.write(
-      `\nA Mente de '${cfg.personagem}' joga sozinha` +
+      `\nA Mente de '${semeado.nome}' joga sozinha` +
       (total ? ` por ${total} turnos` : " até você interromper") + ".\n");
     let n = 0;
     for (;;) {
       if (total && n >= total) break;
       n++;
-      await laco.talvezAgirSozinho();
+      await semeado.laco.talvezAgirSozinho();
       await new Promise((r) => setTimeout(r, Number(args.intervalo) || 3000));
     }
     process.stdout.write(`\n${n} turnos jogados.\n`);
@@ -538,9 +615,16 @@ async function main() {
     return 0;
   }
 
+  if (!semeado) {
+    process.stdout.write(
+      "\nO terminal interativo precisa de um personagem: use --personagem <id>.\n" +
+      "  (ou suba com --canal e entre na sala por uma tela)\n\n");
+    return 1;
+  }
+
   // Modo interativo de terminal.
   process.stdout.write(
-    `\nVocê guia '${cfg.personagem}'. Sussurre o que ele deve fazer.\n` +
+    `\nVocê guia '${semeado.nome}'. Sussurre o que ele deve fazer.\n` +
     `  (linha vazia: ele decide sozinho · Ctrl+C encerra)\n\n`);
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   // Entrada FECHADA (Ctrl+D, ou um roteiro canalizado por pipe) é fim de sessão,
@@ -558,8 +642,8 @@ async function main() {
     if (linha === null || acabou) break;
     const texto = linha.trim();
     if (texto === "sair" || texto === "/sair") break;
-    if (!texto) await laco.talvezAgirSozinho();
-    else await laco.sussurrar(texto, "manual");
+    if (!texto) await semeado.laco.talvezAgirSozinho();
+    else await semeado.laco.sussurrar(texto, "manual");
   }
   rl.close();
   process.stdout.write("\n");

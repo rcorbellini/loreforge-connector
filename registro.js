@@ -21,7 +21,7 @@
 
 const crypto = require("crypto");
 
-function criar({ mundo, cfg, extensoes, mente }) {
+function criar({ mundo, cfg, extensoes, mente, sala, membro }) {
   function abrir() {
     const inicio = Date.now();
     if (mente && mente.zerarCusto) mente.zerarCusto();
@@ -30,6 +30,12 @@ function criar({ mundo, cfg, extensoes, mente }) {
       // --- envelope ---
       turno_id: crypto.randomUUID(),
       personagem: cfg.personagem,
+      // DE QUE MESA E DE QUEM (spec 072, FR-034). Sem isto, uma corrida de sala vira um
+      // monte de turnos sem dono na análise: `personagem` diz QUEM agiu, e não diz de
+      // quem era a conta que pagou nem em que mesa aquilo aconteceu — que passam a ser
+      // as duas perguntas novas assim que mais de uma pessoa joga pelo mesmo processo.
+      ...(sala ? { sala } : {}),
+      ...(membro ? { membro } : {}),
       instante: new Date().toISOString(),
       modelo: rotuloDoModelo(cfg),
       versao_prompt: extensoes ? extensoes.versaoPrompt() : "padrao",

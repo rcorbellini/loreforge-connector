@@ -34,7 +34,36 @@ const { log: _logExterno } = require("./log");
 // conversa que não converge em 12 rodadas não vai convergir em 100.
 const MAX_RODADAS = 12;
 
-const Mente = (() => {
+// AVISO ÚNICO E VISÍVEL quando o runtime não devolve tool call. Vai para o terminal de
+// verdade, não só para o devlog: degradar para prosa em silêncio é exatamente o defeito
+// que a 043 curou, e ele não pode voltar pela porta dos fundos (spec 044, Edge Cases).
+//
+// FICA NO MÓDULO, e isso é decisão da spec 072 (research R5). Ele é sobre o RUNTIME, não
+// sobre o assento: por instância, uma sala de cinco imprimiria o mesmo parágrafo cinco
+// vezes — que é justamente o ruído que esta flag existe para evitar.
+let _avisouSemTools = false;
+function _avisaSemTools(porque) {
+  if (_avisouSemTools) return;
+  _avisouSemTools = true;
+  process.stderr.write(
+    `\n⚠  O modelo não devolveu chamada de capacidade (${porque}).\n` +
+    `   O turno termina sem decisão: a spec 045 aposentou o caminho de prosa, e\n` +
+    `   não existe segundo motor para onde cair (Princípio VIII). Se isso se\n` +
+    `   repetir, o modelo provavelmente não suporta tool-calling — rode com\n` +
+    `   --verificar para confirmar.\n\n`);
+}
+
+// A MENTE É UMA POR ASSENTO (spec 072, FR-007).
+//
+// Era um singleton de módulo: `_mundo`, `_custo` e o cache do resolvedor viviam no
+// arquivo, e o conector servia um personagem só. Numa sala isso misturaria a tabela de
+// resolução de uma cena com a de outra e a fatura de um jogador com a de outro — em
+// silêncio, que é o pior modo.
+//
+// O REFACTOR FOI LÉXICO, DE PROPÓSITO (research R5): move estado, não move lógica.
+// Nenhuma linha de prompt, de payload ou de adaptador de runtime mudou — o aviso do
+// topo deste arquivo continua valendo, e é o que a T057 confere por diff.
+function criarMente({ mundo, extensoes } = {}) {
   const DEFAULTS = configuracao.DEFAULTS;
 
   function config() {
@@ -123,21 +152,8 @@ const Mente = (() => {
   function custoDoTurno() { return { ..._custo }; }
   function zerarCusto() { _custo = { entrada: 0, saida: 0, chamadas: 0 }; }
 
-  // Aviso ÚNICO e VISÍVEL quando o runtime não devolve tool call. Vai para o
-  // terminal de verdade, não só para o devlog: degradar para prosa em silêncio é
-  // exatamente o defeito que a 043 curou, e ele não pode voltar pela porta dos
-  // fundos (spec 044, Edge Cases).
-  let _avisouSemTools = false;
-  function _avisaSemTools(porque) {
-    if (_avisouSemTools) return;
-    _avisouSemTools = true;
-    process.stderr.write(
-      `\n⚠  O modelo não devolveu chamada de capacidade (${porque}).\n` +
-      `   O turno termina sem decisão: a spec 045 aposentou o caminho de prosa, e\n` +
-      `   não existe segundo motor para onde cair (Princípio VIII). Se isso se\n` +
-      `   repetir, o modelo provavelmente não suporta tool-calling — rode com\n` +
-      `   --verificar para confirmar.\n\n`);
-  }
+  // (O aviso de "sem tool call" foi hoisted para o módulo — ver `_avisaSemTools`
+  // no topo do arquivo e o porquê em research R5.)
 
   // === O DIALETO DE CADA PROVEDOR ===========================================
   // Saiu daqui para `dialeto.js` (2026-08-14). Eram quatro funções que traduziam
@@ -1489,6 +1505,11 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
       quando: "ao fim de todo turno" },
   ];
 
+  // As dependências podem vir na construção (o caminho da sala) ou depois, pelos
+  // setters (o caminho que os testes e o `bin/conector.js` já usavam).
+  if (mundo) usarMundo(mundo);
+  if (extensoes) usarExtensoes(extensoes);
+
   return {
     promptsPadrao, ROTINAS, MAX_RODADAS,
     config, saveConfig, check, usarMundo, usarExtensoes, interpret,
@@ -1500,6 +1521,31 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     // expostas para o teste da US2 provar que o id não vaza
     _contextoPayload, _semIdDeCena, _cenaEmProsa,
   };
-})();
+}
 
-module.exports = Mente;
+// A PORTA DO MÓDULO PARA O QUE NÃO TEM ESTADO.
+//
+// `_cenaEmProsa`, `_contextoPayload`, `_semIdDeCena`, `_paradaFalsa`, os quatro prompts
+// padrão e as constantes são PUROS — não dependem de assento nenhum. Uma instância criada
+// uma vez serve de porta para eles, e é isso que mantém `require("./mente")._cenaEmProsa`
+// funcionando exatamente como antes (é assim que os testes da 060 os alcançam).
+//
+// Ela NÃO é a Mente de ninguém: não tem mundo, não joga turno, e o custo dela nunca é
+// lido. Quem joga é a instância do assento (`criarMente` em `sala.js`).
+const _semEstado = criarMente();
+
+module.exports = {
+  criarMente,
+  // constantes e funções puras — o mesmo contrato de antes da spec 072
+  promptsPadrao: _semEstado.promptsPadrao,
+  ROTINAS: _semEstado.ROTINAS,
+  MAX_RODADAS: _semEstado.MAX_RODADAS,
+  DEFAULTS: _semEstado.DEFAULTS,
+  config: _semEstado.config,
+  saveConfig: _semEstado.saveConfig,
+  check: _semEstado.check,
+  _paradaFalsa: _semEstado._paradaFalsa,
+  _contextoPayload: _semEstado._contextoPayload,
+  _semIdDeCena: _semEstado._semIdDeCena,
+  _cenaEmProsa: _semEstado._cenaEmProsa,
+};

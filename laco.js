@@ -40,6 +40,34 @@ const MAX_PASSOS_APLICADOS = 6;
 const MAX_RECADOS_DE_REFERENCIA = 2;
 
 
+// AS DUAS FAIXAS DA MESA (spec 072, US3 — `contracts/eventos-sse.md`).
+//
+//   A mesa ouve os FATOS. Cada jogador lê a INTERPRETAÇÃO do próprio personagem.
+//
+// É a fronteira entre julgar e interpretar aplicada ao TRANSPORTE, e ela sai de graça
+// porque o vocabulário de eventos daqui já a codifica: os `beat` são fato de mundo em 3ª
+// pessoa (é o que o `NARRATE_SYSTEM` recebe como matéria-prima), a `narracao` é 2ª pessoa
+// tingida por memória, personalidade e necessidade — o payload de `narrate` leva as três.
+//
+// Fanar a narração para a sala inteira entregaria a ficha íntima de cada personagem a
+// cada turno. E não precisa: os `beat` JÁ SÃO a narração pública da mesa, sem custar uma
+// chamada de modelo a mais.
+//
+// O DEFAULT É `dono`, e é de propósito: um evento novo que ninguém classificou fica
+// PRIVADO em vez de vazar. Errar para o lado do silêncio é recuperável; errar para o
+// lado do vazamento não.
+const _MESA = new Set([
+  "intencao_inicio", "intencao", "intencao_fim",   // a TENTATIVA, in-world
+  "decidiu",                                       // o sussurro que a autonomia produziu
+  "beat",                                          // fato do mundo, 3ª pessoa
+  "fila", "entrou", "saiu", "sala",                // estado da mesa
+]);
+
+function escopoDe(evento) {
+  return _MESA.has(evento) ? "mesa" : "dono";
+}
+
+
 class Laco {
   constructor({ mundo, mente, extensoes, registro, emitir }) {
     this.mundo = mundo;
@@ -58,10 +86,16 @@ class Laco {
   // outro — e os turnos autônomos do Coppo aterrissavam no log de quem você
   // estivesse olhando. O dono vai aqui, num lugar só, para nenhuma emissão
   // futura poder esquecer.
+  //
+  // E TODO EVENTO DIZ A QUEM PODE CHEGAR (spec 072, FR-017). O carimbo acima foi
+  // escrito para um conector de UM personagem; numa sala ele é metade do endereço, e a
+  // outra metade é a FAIXA. Quem DECLARA é aqui — o laço é quem sabe a natureza do
+  // evento; quem APLICA é o canal, que é quem sabe quem está ligado (research R2).
   _emite(evento, dados) {
     try {
       this.emitir(evento, { ...(dados || {}),
-                            personagem: this.mundo.personagem });
+                            personagem: this.mundo.personagem,
+                            escopo: escopoDe(evento) });
     } catch (e) {
       log("OUVINTE DO LAÇO FALHOU (o turno segue)", e.message);
     }
@@ -485,6 +519,12 @@ class Laco {
 
   // O fim do turno: ou o recado de por que nada houve, ou a narração do ARCO.
   async _fecharTurno(desfechos, contexto, inventadas, t) {
+    // ESTE TURNO MUDOU ALGUMA COISA? É o que a sala lê para decidir se o assento está
+    // girando à toa (spec 072, FR-032): N turnos autônomos seguidos sem nenhum passo
+    // aplicado fazem o intervalo crescer, em vez de continuar ocupando vaga na fila para
+    // não fazer nada. A Elga queimou 1,05M de tokens exatamente assim, e só se soube na
+    // análise dias depois.
+    this.ultimoTurnoAplicou = desfechos.some((d) => d && d.ok);
     if (!desfechos.length) {
       // Turno vazio. NÃO narramos: a narração recebe os fatos, e sem fato nenhum
       // ela preenche o vazio com cenário inventado — o pior erro possível, porque
@@ -589,43 +629,21 @@ class Laco {
   // Autonomia — o personagem NUNCA fica parado (spec 026/033)
   // ----------------------------------------------------------------------- //
 
-  // O RELÓGIO MUDOU DE DONO, e é essa a diferença que a cisão faz aqui. Ele
-  // vivia na aba: fechar a tela era o personagem parar de existir. Agora vive no
-  // conector — a Mente age porque está viva, não porque alguém está olhando.
+  // O RELÓGIO MUDOU DE DONO — DUAS VEZES.
   //
-  // Tempo TRAVADO não conta (pedido explícito do mantenedor): enquanto um turno
-  // corre, a contagem congela, em vez de queimar por baixo e disparar de novo
-  // assim que o anterior terminar.
-  iniciarAutonomia({ intervaloMs = 45000, passoMs = 500 } = {}) {
-    const auto = {
-      pausado: false,
-      restante: intervaloMs,
-      total: intervaloMs,
-      // Emite CAMPOS ESCOLHIDOS, nunca o objeto inteiro: `auto` guarda o próprio
-      // `Timeout`, e espalhá-lo fazia o SSE tentar serializar uma estrutura
-      // circular — o evento morria e a barra da tela congelava sem dizer por quê.
-      pausar: (p) => {
-        auto.pausado = !!p;
-        this._emite("autonomia", { pausado: auto.pausado,
-                                   restante: auto.restante, total: auto.total });
-      },
-      parar: () => clearInterval(auto._t),
-    };
-    auto._t = setInterval(() => {
-      if (!auto.pausado && !this.ocupado) {
-        auto.restante = Math.max(0, auto.restante - passoMs);
-        if (auto.restante <= 0) {
-          auto.restante = intervaloMs;
-          this.talvezAgirSozinho();
-        }
-      }
-      this._emite("autonomia",
-        { pausado: auto.pausado, restante: auto.restante, total: auto.total });
-    }, passoMs);
-    auto._t.unref && auto._t.unref();
-    this.autonomia = auto;
-    return auto;
-  }
+  // Primeiro ele vivia na aba: fechar a tela era o personagem parar de existir. A cisão
+  // da 044 o trouxe para cá, e a Mente passou a agir porque está viva, não porque alguém
+  // está olhando.
+  //
+  // Agora ele saiu daqui para a SALA (spec 072, FR-014). O motivo é que ele deixou de ser
+  // um relógio e passou a ser N: um por assento, todos disputando UMA fila e UMA LLM.
+  // Com N `setInterval` independentes, N personagens acordariam em N momentos e a fila
+  // encheria — o relógio agora é um só, da sala, e decrementa o `restanteMs` de cada
+  // assento ELEGÍVEL (`fila.js`). "Elegível" exclui quem está jogando e quem já está na
+  // fila, que é a generalização direta do `!this.ocupado` que morava aqui.
+  //
+  // O que sobrou no laço é o que sempre foi dele: JOGAR o turno quando mandam
+  // (`talvezAgirSozinho`), e dizer se ele mudou alguma coisa (`ultimoTurnoAplicou`).
 
   async talvezAgirSozinho() {
     return this.comTurno(async () => {
@@ -739,4 +757,4 @@ function sanitizeMovement(intent, routes) {
   intent.movement = achou ? { enter_route: achou.id } : null;
 }
 
-module.exports = { Laco, diffTextual, sanitizeMovement };
+module.exports = { Laco, diffTextual, sanitizeMovement, escopoDe, _MESA };

@@ -31,6 +31,18 @@ function pastaVazia() {
   return raiz;
 }
 
+// spec 072: o canal deixou de servir UM personagem e passou a servir uma SALA — então
+// `sala` e `fila` são dependências dele agora, no lugar do `laco` único. Só a construção
+// mudou: as asserções abaixo são as mesmas, e é isso que elas continuam guardando.
+function mesaVazia() {
+  const { Sala } = require("../sala");
+  const { Fila } = require("../fila");
+  const sala = new Sala({ nome: "Mesa de teste",
+                          credenciais: { ler: () => null, gravar: () => {}, apagar: () => {} },
+                          fabricas: { assento: async () => ({}) } });
+  return { sala, fila: new Fila({ sala }) };
+}
+
 test("o painel NUNCA devolve a credencial — só diz que existe", () => {
   const cfg = configuracao.carregar(true);
   cfg.apiKey = "sk-ant-SEGREDO-NAO-VAZAR";
@@ -125,8 +137,8 @@ test("escrever vale de qualquer endereço DESTA máquina", async () => {
     salvar: async () => ({ ok: true }),
     gravarPrompt: () => ({ ok: true }),
   };
-  const c = await servir({ porta: 0, laco: lacoFalso, cfg: { personagem: "x" },
-                           expor: true, painel: painelFalso });
+  const c = await servir({ porta: 0, ...mesaVazia(), cfg: {},
+                           expor: true, painel: painelFalso, configuracao });
   const porta = c.servidor.address().port;
 
   // todos os endereços desta máquina contam como "de casa"
@@ -159,9 +171,8 @@ test("reiniciar chega ao painel, e cabeçalho forjado não move a guarda", async
   const { servir } = require("../canal");
   let pedidos = 0;
   const c = await servir({
-    porta: 0,
-    laco: { ocupado: false, numeroTurno: 0, autonomia: null },
-    cfg: { personagem: "x" }, expor: true,
+    porta: 0, ...mesaVazia(), configuracao,
+    cfg: {}, expor: true,
     painel: {
       ler: async () => ({ config: {}, personagens: [] }),
       salvar: async () => ({ ok: true }),
@@ -194,9 +205,8 @@ test("reiniciar chega ao painel, e cabeçalho forjado não move a guarda", async
 test("`fechar` volta mesmo com a tela ouvindo eventos (senão o reinício pendura)", async () => {
   const { servir } = require("../canal");
   const c = await servir({
-    porta: 0,
-    laco: { ocupado: false, numeroTurno: 0, autonomia: null },
-    cfg: { personagem: "x" }, expor: false,
+    porta: 0, ...mesaVazia(), configuracao,
+    cfg: {}, expor: false,
     painel: { ler: async () => ({ config: {} }), salvar: async () => ({ ok: true }),
               gravarPrompt: () => ({ ok: true }), reiniciar: async () => ({ ok: true }) },
   });

@@ -55,13 +55,39 @@ test("quem PRECISA da credencial continua enxergando", () => {
 test("gravar e reler preserva a credencial (senão o jogador reconfigura toda vez)", () => {
   const cfg = configuracao.carregar(true);
   cfg.apiKey = "sk-ant-SEGREDO-NAO-VAZAR";
-  cfg.personagem = "fulano";
+  // O VEÍCULO DO ROUND-TRIP ERA `personagem`, e ele morreu com a spec 072 (FR-009): o
+  // conector não serve mais UM personagem. Troca-se o campo comum, não a asserção — o
+  // que este teste guarda é a credencial sobreviver ao disco, e isso segue igual.
+  cfg.mundo = "http://exemplo:8777";
   configuracao.gravar(cfg);
 
   const relido = configuracao.carregar(true);
   assert.strictEqual(relido.apiKey, "sk-ant-SEGREDO-NAO-VAZAR");
-  assert.strictEqual(relido.personagem, "fulano");
+  assert.strictEqual(relido.mundo, "http://exemplo:8777");
   assert.ok(!JSON.stringify(relido).includes("SEGREDO"));
+});
+
+// spec 072: a credencial do MEMBRO tem a mesma trava da chave de modelo — e ela é a que
+// mais importa proteger agora, porque é de OUTRA PESSOA. O achado da Fase 0 (o JWT do
+// mundo não tem `exp` e não há revogação individual) faz um vazamento aqui ser permanente.
+test("o JWT de cada membro é não-enumerável e sobrevive ao disco", () => {
+  const cfg = configuracao.carregar(true);
+  const creds = configuracao.credenciais(cfg);
+  creds.gravar("sub-convidado", "eyJ-SEGREDO-DE-OUTRO");
+
+  assert.strictEqual(creds.ler("sub-convidado"), "eyJ-SEGREDO-DE-OUTRO");
+  assert.ok(!JSON.stringify(cfg).includes("SEGREDO"),
+            "o JWT do convidado apareceu no espalhamento da configuração");
+  assert.strictEqual({ ...cfg }.jwtPorMembro, undefined,
+                     "o espalhamento copiou o mapa de credenciais");
+
+  const relido = configuracao.carregar(true);
+  assert.strictEqual(relido.jwtPorMembro["sub-convidado"], "eyJ-SEGREDO-DE-OUTRO");
+  assert.ok(!JSON.stringify(relido).includes("SEGREDO"));
+
+  // expulsar apaga a CÓPIA — é tudo o que este lado pode fazer (FR-042)
+  configuracao.credenciais(relido).apagar("sub-convidado");
+  assert.strictEqual(configuracao.carregar(true).jwtPorMembro["sub-convidado"], undefined);
 });
 
 test("a linha do registro que sobe ao mundo não contém credencial", async () => {

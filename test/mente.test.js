@@ -26,7 +26,9 @@ process.env.LOREFORGE_CONFIG = path.join(TMP, "conector.json");
 process.env.LOREFORGE_LOG = "0";
 
 const configuracao = require("../config");
-const Mente = require("../mente");
+// spec 072: a Mente é uma POR ASSENTO. Só a construção mudou — as asserções abaixo
+// são as mesmas de antes, e é isso que prova que o refactor foi léxico (research R5).
+const Mente = require("../mente").criarMente();
 
 const CENA = {
   self: { id: "fulano", name: "Fulano", memories: [], intentions: [],
