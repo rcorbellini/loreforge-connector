@@ -321,3 +321,45 @@ test("072/R6: o 401 do mundo CHEGA à sala pelo fio do `Mundo`", async () => {
   await new Promise((r) => srv.close(r));
   assert.deepStrictEqual(vistos, [401]);
 });
+
+// OS TETOS DA MESA (pedido do mantenedor, 2026-09-09). Cada cadeira a mais é um relógio
+// a mais na mesma fila: com T medido em ~136 s, ela custa mais de dois minutos no ciclo
+// de TODO MUNDO. O teto é o que deixa o anfitrião decidir esse preço.
+test("072: o teto de CADEIRAS recusa com o número, não com um 'não'", async () => {
+  const { s } = salaComDois();
+  s.maxAssentos = 1;
+  assert.ok((await s.assentar({ personagem: "elga", sub: "sub-A" })).ok);
+  const r = await s.assentar({ personagem: "draven", sub: "sub-B" });
+  assert.match(r.erro, /cheia \(1 de 1 cadeiras\)/);
+  // e liberar uma cadeira volta a aceitar
+  s.desassentar("elga");
+  assert.ok((await s.assentar({ personagem: "draven", sub: "sub-B" })).ok);
+});
+
+test("072: o teto POR JOGADOR não impede outro jogador de sentar", async () => {
+  const { s } = salaComDois();
+  s.maxPorJogador = 1;
+  assert.ok((await s.assentar({ personagem: "elga", sub: "sub-A" })).ok);
+  const meu = await s.assentar({ personagem: "coppo", sub: "sub-A" });
+  assert.match(meu.erro, /máximo por jogador/);
+  // o teto é POR JOGADOR: o outro membro senta normalmente
+  assert.ok((await s.assentar({ personagem: "draven", sub: "sub-B" })).ok);
+});
+
+test("072: sem teto declarado, nada muda (o comportamento de antes do campo)", async () => {
+  const { s } = salaComDois();
+  for (const p of ["a", "b", "c", "d", "e"]) {
+    assert.ok((await s.assentar({ personagem: p, sub: "sub-A" })).ok, p);
+  }
+  assert.strictEqual(s.assentos.size, 5);
+});
+
+test("072: os tetos atravessam o disco e voltam", () => {
+  const { s } = salaComDois();
+  s.maxAssentos = 4; s.maxPorJogador = 2;
+  const bruto = JSON.parse(JSON.stringify(s.paraConfig()));
+  const volta = require("../sala").Sala.deConfig(bruto, {
+    credenciais: credenciaisFalsas(), fabricas: fabricasFalsas() });
+  assert.strictEqual(volta.maxAssentos, 4);
+  assert.strictEqual(volta.maxPorJogador, 2);
+});

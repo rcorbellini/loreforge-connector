@@ -139,8 +139,19 @@ class Sala {
   // `fabricas.assento({personagem, dono, jwt})` devolve `{mundo, mente, laco, nome}`.
   // Injetada para este módulo não conhecer nem HTTP nem modelo: o teste passa uma
   // fábrica falsa e exercita o roster inteiro sem rede.
-  constructor({ nome, credenciais, fabricas, tetoCustoTokens = null, emitir } = {}) {
+  constructor({ nome, credenciais, fabricas, tetoCustoTokens = null, emitir,
+                maxAssentos = null, maxPorJogador = null } = {}) {
     this.nome = nome || "Sala";
+    // QUANTAS CADEIRAS A MESA TEM, e quantas cabem a um jogador só.
+    //
+    // Não é arbitrariedade: cada assento é um relógio a mais disputando UMA fila e UMA
+    // LLM, e o ritmo da mesa é `N × T + I` — com o T medido em produção (~136 s), cada
+    // cadeira a mais custa mais de dois minutos no ciclo de TODO MUNDO. O teto é o que
+    // deixa o anfitrião decidir esse preço em vez de descobri-lo.
+    //
+    // `null` nos dois = sem limite, que é o comportamento de antes deste campo existir.
+    this.maxAssentos = maxAssentos;
+    this.maxPorJogador = maxPorJogador;
     this.anfitriao = null;            // `sub` do primeiro a parear
     this.membros = new Map();         // sub -> Membro
     this.assentos = new Map();        // personagem -> Assento
@@ -258,6 +269,18 @@ class Sala {
 
   async assentar({ personagem, sub }) {
     if (!this.ehMembroAtivo(sub)) return { erro: "não é membro ativo desta sala" };
+    // OS TETOS RECUSAM EM LINGUAGEM DE MESA, com o número — "a mesa está cheia" sozinho
+    // faria o jogador tentar de novo sem saber o que mudou.
+    if (this.maxAssentos && this.assentos.size >= this.maxAssentos
+        && !this.assentos.has(personagem)) {
+      return { erro: `a mesa está cheia (${this.assentos.size} de ${this.maxAssentos} ` +
+                     `cadeiras) — alguém precisa sair antes` };
+    }
+    if (this.maxPorJogador && this.assentosDe(sub).length >= this.maxPorJogador
+        && !this.assentos.has(personagem)) {
+      return { erro: `você já está com ${this.assentosDe(sub).length} personagem(ns) na ` +
+                     `mesa, o máximo por jogador aqui` };
+    }
     if (this.assentos.has(personagem)) {
       const dono = this.dono(personagem);
       return dono === sub ? { erro: "você já está com este personagem na sala" }
@@ -366,6 +389,8 @@ class Sala {
       anfitriao: this.anfitriao,
       pausadaPorCusto: this.pausadaPorCusto,
       tetoCustoTokens: this.tetoCustoTokens,
+      maxAssentos: this.maxAssentos,
+      maxPorJogador: this.maxPorJogador,
       custo: this.custoTotal(),
       membros: [...this.membros.values()].map((m) => ({
         ...m.paraTela(), ehAnfitriao: this.ehAnfitriao(m.sub) })),
@@ -378,6 +403,8 @@ class Sala {
       nome: this.nome,
       anfitriao: this.anfitriao,
       tetoCustoTokens: this.tetoCustoTokens,
+      maxAssentos: this.maxAssentos,
+      maxPorJogador: this.maxPorJogador,
       membros: [...this.membros.values()].map((m) => m.paraConfig()),
       assentos: [...this.assentos.values()].map((a) => a.paraConfig()),
     };
@@ -390,6 +417,8 @@ class Sala {
   static deConfig(bruto, deps) {
     const s = new Sala({ nome: (bruto && bruto.nome) || undefined,
                          tetoCustoTokens: (bruto && bruto.tetoCustoTokens) || null,
+                         maxAssentos: (bruto && bruto.maxAssentos) || null,
+                         maxPorJogador: (bruto && bruto.maxPorJogador) || null,
                          ...deps });
     for (const m of (bruto && bruto.membros) || []) {
       if (!m || !m.sub) continue;

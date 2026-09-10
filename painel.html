@@ -132,6 +132,38 @@
        processo roda. -->
   <section>
     <h2>A mesa</h2>
+
+    <!-- O CÓDIGO DE PAREAMENTO, e ele precisava estar AQUI.
+         A rota existia desde a 056 e só o `loreforge --parear` a chamava — um processo
+         separado, de vida curta, que quem já está com o conector no ar não tem como
+         rodar sem derrubá-lo. Convidar alguém para a mesa é operação de mesa; a casa
+         dela é esta seção. -->
+    <div class="linha" style="align-items:center; gap:.8rem; margin-bottom:1rem">
+      <button id="gerar-codigo" type="button">Convidar alguém</button>
+      <code id="codigo" style="font-size:16px; letter-spacing:.12em">—</code>
+      <span id="codigo-conta" class="nota" style="margin:0"></span>
+    </div>
+    <p class="nota" style="margin-top:0">O convite são <strong>duas coisas</strong>: este
+       código e o endereço em que este conector responde. Quem for entrar cola os dois na
+       tela de salas. O código vale por 10 minutos, serve <strong>uma vez</strong> e morre
+       se o conector reiniciar.</p>
+
+    <div class="linha" style="margin-top:1rem">
+      <label>Cadeiras na mesa
+        <input id="maxAssentos" type="number" min="1" placeholder="sem limite">
+      </label>
+      <label>Personagens por jogador
+        <input id="maxPorJogador" type="number" min="1" placeholder="sem limite">
+      </label>
+      <label>Teto de gasto (tokens)
+        <input id="tetoCustoTokens" type="number" min="1" placeholder="sem teto">
+      </label>
+    </div>
+    <button id="salvar-mesa" type="button" class="fraco">Aplicar à mesa</button>
+    <p class="nota">Vazio ou zero = <strong>sem limite</strong>. Cada cadeira a mais é um
+       relógio a mais disputando a mesma fila e o mesmo modelo: com o turno medido em
+       ~136 s, cada uma custa mais de dois minutos no ciclo de <em>todo mundo</em>.</p>
+
     <div id="mesa">carregando…</div>
     <p class="nota">Quem senta aqui traz a própria conta. <strong>A credencial de mundo
        de cada convidado fica guardada nesta máquina</strong> — é o que permite o
@@ -266,7 +298,8 @@ function pintar() {
   const m = dados.modelo || {};
   $("estado").innerHTML =
     `<span class="pilula ${m.ok ? "ok" : "ruim"}">${m.reason || "modelo"}</span>` +
-    `<span class="pilula">${(dados.mesa && dados.mesa.assentos.length) || 0} à mesa</span>` +
+    `<span class="pilula">${(dados.mesa && dados.mesa.assentos.length) || 0}${
+       dados.mesa && dados.mesa.maxAssentos ? "/" + dados.mesa.maxAssentos : ""} à mesa</span>` +
     `<span class="pilula">${(dados.mesa && dados.mesa.membros.length) || 0} jogador(es)</span>` +
     `<span class="pilula">${dados.extensoes.versaoPrompt}</span>` +
     (dados.mesa && dados.mesa.jogando
@@ -388,6 +421,17 @@ function pintarMesa() {
   const mesa = dados.mesa;
   const alvo = $("mesa");
   if (!mesa) { alvo.textContent = "—"; return; }
+  // os campos só são repintados quando não estão sendo digitados, senão o valor pula
+  // debaixo do dedo de quem está editando
+  for (const [id, v] of [["maxAssentos", mesa.maxAssentos],
+                         ["maxPorJogador", mesa.maxPorJogador],
+                         ["tetoCustoTokens", mesa.tetoCustoTokens]]) {
+    if (document.activeElement !== $(id)) $(id).value = v || "";
+  }
+  for (const id of ["gerar-codigo", "salvar-mesa", "maxAssentos", "maxPorJogador",
+                    "tetoCustoTokens"]) {
+    $(id).disabled = !dados.podeEscrever;
+  }
   if (!mesa.membros.length) {
     alvo.innerHTML = `<p class="nota">Ninguém pareou ainda. Rode
       <code>loreforge --parear</code> e passe o código para quem vai jogar —
@@ -475,6 +519,43 @@ function pintarMesa() {
     };
   }
 }
+
+// O CONVITE. `/api/parear/gerar` já era guardado por `daPropriaMaquina`; o que faltava
+// era uma porta para ele que não fosse derrubar o processo e rodar `--parear`.
+let _contagemCodigo = null;
+$("gerar-codigo").onclick = async () => {
+  const r = await fetch("/api/parear/gerar", { method: "POST" });
+  const d = await r.json();
+  if (d.erro) return recado(d.erro, "var(--ruim)");
+  $("codigo").textContent = d.codigo;
+  let resta = d.expiraEmSegundos;
+  clearInterval(_contagemCodigo);
+  const pinta = () => {
+    if (resta <= 0) {
+      clearInterval(_contagemCodigo);
+      $("codigo").textContent = "—";
+      $("codigo-conta").textContent = "expirou — gere outro";
+      return;
+    }
+    const m = Math.floor(resta / 60), s2 = resta % 60;
+    $("codigo-conta").textContent = `vale por ${m}:${String(s2).padStart(2, "0")}`;
+    resta--;
+  };
+  pinta();
+  _contagemCodigo = setInterval(pinta, 1000);
+};
+
+$("salvar-mesa").onclick = async () => {
+  const r = await fetch("/sala/config", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      maxAssentos: $("maxAssentos").value,
+      maxPorJogador: $("maxPorJogador").value,
+      tetoCustoTokens: $("tetoCustoTokens").value }) });
+  const d = await r.json();
+  recado(d.erro || "mesa ajustada", d.erro ? "var(--ruim)" : "var(--ok)");
+  await ler();
+};
 
 function blocos() {
   const rt = document.querySelector('input[name=rt]:checked');

@@ -438,6 +438,34 @@ function servir({ porta, sala, fila, cfg, expor, painel,
       return responder(res, 200, { ok: true, autonomia: r.autonomia });
     }
 
+    // OS AJUSTES DA MESA — nome, cadeiras e tetos. G-MAQUINA, como todo controle.
+    if (req.method === "POST" && url.pathname === "/sala/config") {
+      if (!daPropriaMaquina(req)) {
+        return responder(res, 403, { erro:
+          "mandar na sala só da máquina onde o conector roda (ou suba com --config-remota)" });
+      }
+      const corpo = await corpoDe(req);
+      if (typeof corpo.nome === "string" && corpo.nome.trim()) {
+        sala.nome = corpo.nome.trim().slice(0, 60);
+      }
+      // ZERO OU VAZIO = SEM LIMITE, e é preciso poder voltar a isso: um teto que só sobe
+      // é uma armadilha para quem experimentou um número pequeno.
+      const numero = (v) => {
+        if (v === null || v === "" || typeof v === "undefined") return null;
+        const n = Number(v);
+        return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+      };
+      if ("maxAssentos" in corpo) sala.maxAssentos = numero(corpo.maxAssentos);
+      if ("maxPorJogador" in corpo) sala.maxPorJogador = numero(corpo.maxPorJogador);
+      if ("tetoCustoTokens" in corpo) {
+        sala.tetoCustoTokens = numero(corpo.tetoCustoTokens);
+        sala.pausadaPorCusto = false;   // mexer no teto é justamente destravar a mesa
+      }
+      salvarSala();
+      sala.emitir("sala", sala.paraTela());
+      return responder(res, 200, { ok: true, ...sala.paraTela() });
+    }
+
     if (req.method === "POST" && url.pathname === "/sala/expulsar") {
       if (!daPropriaMaquina(req)) {
         return responder(res, 403, { erro:
