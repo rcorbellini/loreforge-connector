@@ -335,24 +335,14 @@ async function main() {
   const noTerminal = saidaDeTerminal();
   let paraOCanal = null;
 
-  // O que ficou esperando o turno acabar (ver `painel.salvar`).
-  let pendente = null;
+  // (O `pendente` — a configuração que esperava o turno acabar — MORREU com o
+  // adiamento; ver `painel.salvar`. Salvar agora vale na hora, sempre.)
 
   // A EMISSÃO DE TODO ASSENTO passa por aqui. O laço já carimba `personagem` e `escopo`
   // (spec 072, FR-017); este ponto só decide PARA ONDE vai.
   const emitir = (ev, d) => {
     if (!args.canal || args.eco) noTerminal(ev, d);
     if (paraOCanal) paraOCanal(ev, d);
-    if (ev === "estado" && d && d.ocupado === false && pendente) {
-      const agora = pendente;
-      pendente = null;
-      try {
-        aplicarConfig(agora);
-        log("CONFIGURAÇÃO ADIADA APLICADA", Object.keys(agora).join(", "));
-      } catch (e) {
-        log("NÃO CONSEGUI APLICAR A CONFIGURAÇÃO ADIADA", e.message);
-      }
-    }
   };
 
   // A FÁBRICA DE ASSENTO — o único lugar que conhece o mundo, a Mente e as extensões ao
@@ -486,26 +476,28 @@ async function main() {
             const a = fila.jogando && sala.assentoDe(fila.jogando);
             return (a && a.laco && a.laco.ocupadoDesde) || null;
           })(),
-          // o que já está no disco mas ainda não entrou em vigor
-          pendente: pendente ? Object.keys(pendente) : [],
         };
       },
 
-      // SALVAR NUNCA É RECUSADO.
+      // SALVAR NUNCA É RECUSADO — E NUNCA MAIS É ADIADO (spec 072).
       //
-      // A primeira versão devolvia erro com um turno correndo, e isso é castigo:
-      // a edição é do jogador, e mandá-lo digitar tudo de novo porque a Mente
-      // estava pensando não protege nada que importe.
+      // A primeira versão RECUSAVA com um turno correndo, e isso era castigo. A segunda
+      // ADIAVA: gravava no disco e só aplicava na memória quando o turno fechasse. O
+      // motivo era um só, e está escrito no comentário de `config.js`: *"trocar o
+      // personagem no meio faria as propostas restantes caírem em cima de outra
+      // pessoa"*.
       //
-      // O que de fato não pode mudar no meio de um turno é o ALVO do turno em voo.
-      // Então: DISCO AGORA (a edição não se perde nem se o processo morrer), MEMÓRIA
-      // quando o turno acabar.
+      // ESSE MOTIVO MORREU. A troca de personagem ao vivo foi removida (FR-009): não se
+      // troca mais o personagem do processo, entra-se e sai-se da mesa. O que sobrou de
+      // configuração — modelo, endereços, tetos, nome — não tem como fazer um turno em
+      // voo cair em cima de outra pessoa.
+      //
+      // E o adiamento tinha um custo alto que a justificativa não pagava mais: numa mesa
+      // que serve turnos quase o tempo todo, `fila.jogando` está preenchido na maior
+      // parte do tempo, então quase todo salvamento virava "entra em vigor depois" — e
+      // quem ajusta um teto e vê o número não mudar conclui, com razão, que a página não
+      // salva. Uma configuração que só às vezes obedece é pior que uma que recusa.
       async salvar(vindo) {
-        if (fila.jogando) {
-          configuracao.gravarAdiado(cfg, vindo);
-          pendente = { ...(pendente || {}), ...vindo };
-          return { ok: true, adiado: true, ...(await painel.ler()) };
-        }
         aplicarConfig(vindo);
         return { ok: true, ...(await painel.ler()) };
       },

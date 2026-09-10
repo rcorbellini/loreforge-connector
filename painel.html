@@ -175,7 +175,6 @@
         <input id="tetoCustoTokens" type="number" min="1" placeholder="sem teto">
       </label>
     </div>
-    <button id="salvar-mesa" type="button" class="fraco">Aplicar à mesa</button>
     <p class="nota">Vazio ou zero = <strong>sem limite</strong>. Cada cadeira a mais é um
        relógio a mais disputando a mesma fila e o mesmo modelo: com o turno medido em
        ~136 s, cada uma custa mais de dois minutos no ciclo de <em>todo mundo</em>.</p>
@@ -320,9 +319,7 @@ function pintar() {
     `<span class="pilula">${dados.extensoes.versaoPrompt}</span>` +
     (dados.mesa && dados.mesa.jogando
       ? `<span class="pilula">jogando: ${dados.mesa.jogando}</span>` : "") +
-    ((dados.pendente || []).length
-      ? `<span class="pilula" style="color:var(--aviso);border-color:#5a4a2f">` +
-        `${dados.pendente.length} ajuste(s) esperando o turno acabar</span>` : "");
+    "";
 
   $("mundo").value = c.mundo || "";
   if (document.activeElement !== $("mundoPublico")) {
@@ -448,7 +445,7 @@ function pintarMesa() {
                          ["tetoCustoTokens", mesa.tetoCustoTokens]]) {
     if (document.activeElement !== $(id)) $(id).value = v || "";
   }
-  for (const id of ["gerar-codigo", "salvar-mesa", "nomeSala", "maxAssentos",
+  for (const id of ["gerar-codigo", "nomeSala", "maxAssentos",
                     "maxPorJogador", "tetoCustoTokens"]) {
     $(id).disabled = !dados.podeEscrever;
   }
@@ -565,7 +562,13 @@ $("gerar-codigo").onclick = async () => {
   _contagemCodigo = setInterval(pinta, 1000);
 };
 
-$("salvar-mesa").onclick = async () => {
+// UM SALVAR SÓ, e isto foi um bug de desenho meu.
+//
+// Havia dois: o "Salvar" da barra de baixo (grande, primário, o que qualquer um clica) e
+// um "Aplicar à mesa" discreto no meio da seção. Quem preenchia as cadeiras e clicava no
+// primeiro via NADA acontecer — e concluía, com razão, que a página não salvava. Dois
+// botões de salvar na mesma tela é a forma mais fácil de fazer uma página mentir.
+async function salvarMesa() {
   const r = await fetch("/sala/config", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -574,9 +577,9 @@ $("salvar-mesa").onclick = async () => {
       maxPorJogador: $("maxPorJogador").value,
       tetoCustoTokens: $("tetoCustoTokens").value }) });
   const d = await r.json();
-  recado(d.erro || "mesa ajustada", d.erro ? "var(--ruim)" : "var(--ok)");
-  await ler();
-};
+  if (d.erro) throw new Error(d.erro);
+  return d;
+}
 
 function blocos() {
   const rt = document.querySelector('input[name=rt]:checked');
@@ -609,7 +612,6 @@ function avisoDeTravado(dados) {
   const el = $("aviso-travado");
   if (!el) return;
   const s = Number(dados.ocupadoSegundos) || 0;
-  const presos = (dados.pendente || []).length;
   // spec 072: "ocupado" virou "há um turno em voo NA MESA". A diferença importa porque
   // agora o pendurado não congela um jogador, congela todo mundo — o prazo da fila já
   // solta a pista sozinho, mas o aviso continua sendo o que explica a lentidão.
@@ -623,12 +625,8 @@ function avisoDeTravado(dados) {
   el.innerHTML =
     `<strong>O turno de ${jogando} já dura ${min} min.</strong> Um turno leva segundos,
      então provavelmente ele <strong>travou</strong> — em geral o modelo parou de
-     responder. Enquanto ele não fecha, a mesa inteira espera` +
-    (presos
-      ? ` e <strong>a configuração que você salvou não entra em vigor</strong>
-         (esperando: ${(dados.pendente || []).join(", ")})`
-      : "") +
-    `. Reiniciar o conector, abaixo, é a saída — e faz valer o que está no disco.`;
+     responder. O prazo da fila solta a vez sozinho, mas reiniciar o conector, abaixo, é
+     a saída imediata.`;
 }
 
 $("salvar").onclick = async () => {
@@ -657,6 +655,9 @@ $("salvar").onclick = async () => {
     if ($("openrouterKey").value.trim()) corpo.openrouterKey = $("openrouterKey").value.trim();
     if ($("geminiKey").value.trim()) corpo.geminiKey = $("geminiKey").value.trim();
 
+    // A MESA VAI JUNTO, no mesmo clique: nome, cadeiras e tetos.
+    await salvarMesa();
+
     const r = await fetch("/api/config", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(corpo),
@@ -665,9 +666,8 @@ $("salvar").onclick = async () => {
     if (saida.erro) throw new Error(saida.erro);
     $("apiKey").value = ""; $("openrouterKey").value = ""; $("geminiKey").value = "";
     if (saida.adiado) {
-      // NÃO repinta: com um turno correndo, a configuração VIVA ainda é a
-      // antiga, e repintar com ela jogaria fora o que a pessoa acabou de
-      // escrever — depois de dizer que salvou.
+      // Não deveria mais acontecer (o adiamento morreu na 072) — mas se um conector
+      // antigo responder assim, a página não mente sobre o que aconteceu.
       dados.podeEscrever = saida.podeEscrever;
       recado("salvo no disco — entra em vigor quando este turno terminar",
              "var(--aviso)");
