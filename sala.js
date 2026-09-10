@@ -32,6 +32,23 @@ const MAX_401 = 2;
 const SEM_EFEITO_ATE_RECUAR = 3;
 const RECUO_MAX = 8;              // teto do multiplicador
 
+// O DESCANSO DA MESA entre duas jogadas AUTÔNOMAS.
+//
+// O relógio de cada assento é PESSOAL: ele diz de quanto em quanto tempo AQUELE
+// personagem quer agir. Ele não diz nada sobre o ritmo da MESA — e é aí que estava o
+// defeito relatado em jogo: com 4 assentos a 45 s e turnos de ~136 s, o relógio de todo
+// mundo vence enquanto outro joga, a fila nunca esvazia, e o conector serve turno colado
+// em turno para sempre. Cada personagem respeitava o intervalo dele; a mesa não
+// descansava nunca.
+//
+// Este é o intervalo MÍNIMO entre o fim de uma jogada autônoma e o começo da próxima.
+// Vale para a mesa inteira, não por assento — é o que dá à cena um tempo de respiro e à
+// conta um teto de ritmo.
+//
+// A JOGADA MANUAL NÃO ESPERA. Quem digitou está presente e olhando: fazê-lo esperar o
+// descanso dos robôs seria punir justamente a atenção que o jogo quer.
+const PAUSA_AUTONOMA_MS = 30000;
+
 
 class Assento {
   constructor({ personagem, dono, nome, mundo, mente, laco, intervaloMs = 45000 }) {
@@ -140,7 +157,8 @@ class Sala {
   // Injetada para este módulo não conhecer nem HTTP nem modelo: o teste passa uma
   // fábrica falsa e exercita o roster inteiro sem rede.
   constructor({ nome, credenciais, fabricas, tetoCustoTokens = null, emitir,
-                maxAssentos = null, maxPorJogador = null } = {}) {
+                maxAssentos = null, maxPorJogador = null,
+                pausaAutonomaMs = PAUSA_AUTONOMA_MS } = {}) {
     this.nome = nome || "Sala";
     // QUANTAS CADEIRAS A MESA TEM, e quantas cabem a um jogador só.
     //
@@ -152,6 +170,8 @@ class Sala {
     // `null` nos dois = sem limite, que é o comportamento de antes deste campo existir.
     this.maxAssentos = maxAssentos;
     this.maxPorJogador = maxPorJogador;
+    // O DESCANSO DA MESA entre duas jogadas AUTÔNOMAS — ver `PAUSA_AUTONOMA_MS`.
+    this.pausaAutonomaMs = pausaAutonomaMs;
     this.anfitriao = null;            // `sub` do primeiro a parear
     this.membros = new Map();         // sub -> Membro
     this.assentos = new Map();        // personagem -> Assento
@@ -391,6 +411,7 @@ class Sala {
       tetoCustoTokens: this.tetoCustoTokens,
       maxAssentos: this.maxAssentos,
       maxPorJogador: this.maxPorJogador,
+      pausaAutonomaMs: this.pausaAutonomaMs,
       custo: this.custoTotal(),
       membros: [...this.membros.values()].map((m) => ({
         ...m.paraTela(), ehAnfitriao: this.ehAnfitriao(m.sub) })),
@@ -405,6 +426,7 @@ class Sala {
       tetoCustoTokens: this.tetoCustoTokens,
       maxAssentos: this.maxAssentos,
       maxPorJogador: this.maxPorJogador,
+      pausaAutonomaMs: this.pausaAutonomaMs,
       membros: [...this.membros.values()].map((m) => m.paraConfig()),
       assentos: [...this.assentos.values()].map((a) => a.paraConfig()),
     };
@@ -419,6 +441,9 @@ class Sala {
                          tetoCustoTokens: (bruto && bruto.tetoCustoTokens) || null,
                          maxAssentos: (bruto && bruto.maxAssentos) || null,
                          maxPorJogador: (bruto && bruto.maxPorJogador) || null,
+                         pausaAutonomaMs:
+                           (bruto && typeof bruto.pausaAutonomaMs === "number")
+                             ? bruto.pausaAutonomaMs : PAUSA_AUTONOMA_MS,
                          ...deps });
     for (const m of (bruto && bruto.membros) || []) {
       if (!m || !m.sub) continue;
@@ -437,4 +462,5 @@ class Sala {
   }
 }
 
-module.exports = { Sala, Membro, Assento, MAX_401, SEM_EFEITO_ATE_RECUAR, RECUO_MAX };
+module.exports = { Sala, Membro, Assento, MAX_401, SEM_EFEITO_ATE_RECUAR, RECUO_MAX,
+                   PAUSA_AUTONOMA_MS };

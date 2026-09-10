@@ -71,6 +71,10 @@ async function mesa({ quantos = 2, demoraMs = 0, aplicou = true,
     s.assentoDe(p).intervaloMs = intervaloMs;
     s.assentoDe(p).restanteMs = intervaloMs;
   }
+  // O DESCANSO DA MESA NASCE DESLIGADO NO FIXTURE, e isso é declaração, não conveniência:
+  // ele é um segundo mecanismo de ritmo, e deixá-lo ligado por padrão faria TODO teste de
+  // ordem, prazo e recuo medir duas coisas ao mesmo tempo. Quem testa o descanso o liga.
+  s.pausaAutonomaMs = 0;
   const eventos = [];
   const f = new Fila({ sala: s, emitir: (ev, d) => eventos.push([ev, d]),
                        passoMs: 20 });
@@ -229,4 +233,69 @@ test("072: o evento `fila` é de MESA — quem espera é público numa roda", as
   const daFila = eventos.filter(([ev]) => ev === "fila");
   assert.ok(daFila.length > 0);
   assert.ok(daFila.every(([, d]) => d.escopo === "mesa"));
+});
+
+// O DESCANSO DA MESA (relatado em jogo, 2026-09-10).
+//
+// O relógio de cada assento é PESSOAL. Com 4 autônomos a 45 s e turnos de ~136 s, o
+// relógio de alguém está SEMPRE vencido: a fila nunca esvazia e o conector serve turno
+// colado em turno para sempre. Cada personagem respeitava o intervalo dele; a mesa não
+// descansava nunca.
+test("072: a mesa DESCANSA entre duas jogadas autônomas", async () => {
+  const { s, f, diario } = await mesa({ quantos: 3, demoraMs: 5 });
+  s.pausaAutonomaMs = 120;
+  f.enfileirar({ personagem: "p1", classe: "autonoma" });
+  f.enfileirar({ personagem: "p2", classe: "autonoma" });
+  f.enfileirar({ personagem: "p3", classe: "autonoma" });
+
+  await espera(60);
+  assert.strictEqual(diario.length, 1, "a mesa serviu duas autônomas coladas");
+  await espera(150);
+  assert.strictEqual(diario.length, 2, "a mesa não voltou depois do descanso");
+});
+
+test("072: a MANUAL não espera o descanso, e não abre um", async () => {
+  const { s, f, diario } = await mesa({ quantos: 2, demoraMs: 5 });
+  s.pausaAutonomaMs = 200;
+  f.enfileirar({ personagem: "p1", classe: "autonoma" });
+  await espera(40);
+  assert.strictEqual(diario.length, 1);
+
+  // com a mesa em pleno descanso, quem digitou passa na frente e joga JÁ
+  f.enfileirar({ personagem: "p2", classe: "manual", texto: "eu falo agora" });
+  await espera(40);
+  assert.deepStrictEqual(diario.map((d) => d.classe), ["autonoma", "manual"]);
+
+  // e a manual não reiniciou o descanso: ele continua contando do fim da autônoma
+  assert.ok(f.descansoRestante() > 0, "a manual abriu descanso próprio");
+});
+
+test("072: a fila ACORDA sozinha quando o descanso vence", async () => {
+  // sem o timer de descanso, uma mesa em que todos já estão enfileirados não tem tique
+  // nenhum para reacordar a fila — ela ficaria parada para sempre com trabalho na fila.
+  const { s, f, diario } = await mesa({ quantos: 2, demoraMs: 5 });
+  s.pausaAutonomaMs = 100;
+  f.enfileirar({ personagem: "p1", classe: "autonoma" });
+  f.enfileirar({ personagem: "p2", classe: "autonoma" });
+  // o relógio da sala NUNCA é iniciado neste teste: só o timer do descanso pode salvar
+  await espera(250);
+  assert.strictEqual(diario.length, 2, "a fila dormiu com trabalho para fazer");
+});
+
+test("072: descanso zero = comportamento de antes do campo", async () => {
+  const { s, f, diario } = await mesa({ quantos: 3, demoraMs: 5 });
+  s.pausaAutonomaMs = 0;
+  f.enfileirar({ personagem: "p1", classe: "autonoma" });
+  f.enfileirar({ personagem: "p2", classe: "autonoma" });
+  f.enfileirar({ personagem: "p3", classe: "autonoma" });
+  await espera(120);
+  assert.strictEqual(diario.length, 3);
+});
+
+test("072: o descanso desce no estado da fila (a tela não lê silêncio como pane)", async () => {
+  const { s, f } = await mesa({ quantos: 2, demoraMs: 5 });
+  s.pausaAutonomaMs = 300;
+  f.enfileirar({ personagem: "p1", classe: "autonoma" });
+  await espera(40);
+  assert.ok(f.estado().descansoMs > 0, JSON.stringify(f.estado()));
 });

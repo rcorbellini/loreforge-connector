@@ -40,6 +40,17 @@ class Fila {
     this.entradas = [];        // {personagem, classe, texto, quem, em}
     this.jogando = null;       // personagem do turno em voo
     this._t = null;
+    // QUANDO A ÚLTIMA JOGADA AUTÔNOMA TERMINOU. É contra isto que o descanso da mesa
+    // (`sala.pausaAutonomaMs`) é medido. Nasce em zero: a primeira jogada não espera.
+    this._ultimoAutonomoEm = 0;
+    this._descanso = null;     // timer que reacorda a fila quando o descanso vence
+  }
+
+  // Quanto ainda falta de descanso, em ms. Zero = a mesa pode servir um autônomo agora.
+  descansoRestante() {
+    const pausa = this.sala.pausaAutonomaMs || 0;
+    if (!pausa || !this._ultimoAutonomoEm) return 0;
+    return Math.max(0, pausa - (Date.now() - this._ultimoAutonomoEm));
   }
 
   // --- a fila ------------------------------------------------------------- //
@@ -90,6 +101,16 @@ class Fila {
     return [...this.entradas].sort((a, b) => peso(a) - peso(b) || a.em - b.em);
   }
 
+  // A PRÓXIMA QUE PODE SER SERVIDA AGORA — que não é a mesma coisa que a primeira da
+  // fila. Durante o descanso da mesa, uma entrada autônoma continua na frente na ORDEM
+  // (ela chegou antes) mas não é servível; uma manual que chegue depois passa, porque
+  // quem digitou está presente e olhando.
+  _servivel() {
+    const descansando = this.descansoRestante() > 0;
+    return this._ordenadas().find(
+      (e) => e.classe === "manual" || !descansando) || null;
+  }
+
   _posicaoDe(personagem, classe) {
     return this._ordenadas().findIndex(
       (e) => e.personagem === personagem && e.classe === classe) + 1;
@@ -98,6 +119,9 @@ class Fila {
   estado() {
     return {
       jogando: this.jogando,
+      // quanto a mesa ainda descansa antes da próxima jogada autônoma — a tela precisa
+      // disto para não ler o silêncio como travamento
+      descansoMs: this.descansoRestante(),
       fila: this._ordenadas().map((e, i) => ({
         personagem: e.personagem, classe: e.classe, posicao: i + 1 })),
     };
@@ -112,8 +136,16 @@ class Fila {
 
   async _servir() {
     if (this.jogando) return;                    // um turno por vez
-    const proxima = this._ordenadas()[0];
-    if (!proxima) return;
+    const proxima = this._servivel();
+    if (!proxima) {
+      // Nada servível AGORA. Se há autônomo esperando o descanso, marca a volta — sem
+      // isto a fila só acordaria no próximo tique de relógio de alguém, e uma mesa em
+      // que todos já estão enfileirados não tem tique nenhum: ficaria parada para
+      // sempre com trabalho na fila.
+      const falta = this.descansoRestante();
+      if (falta > 0 && this.entradas.length) this._agendarDescanso(falta);
+      return;
+    }
 
     const assento = this.sala.assentoDe(proxima.personagem);
     if (!assento) {                              // o assento saiu enquanto esperava
@@ -159,9 +191,23 @@ class Fila {
     }
   }
 
+  _agendarDescanso(ms) {
+    if (this._descanso) clearTimeout(this._descanso);
+    this._descanso = setTimeout(() => {
+      this._descanso = null;
+      this._anunciar();
+      this._servir();
+    }, ms + 20);
+    if (this._descanso.unref) this._descanso.unref();
+  }
+
   _liberar(assento, entrada, { aplicou }) {
     if (this.jogando !== entrada.personagem) return;   // já foi liberada pelo prazo
     this.jogando = null;
+    // O DESCANSO CONTA DO FIM DE UMA AUTÔNOMA, e só dela: uma jogada manual não abre
+    // descanso nenhum (o jogador presente não paga pelo ritmo dos robôs) nem é atrasada
+    // por um descanso em curso.
+    if (entrada.classe === "autonoma") this._ultimoAutonomoEm = Date.now();
     // O RELÓGIO REARMA AQUI, no fim do turno DELE (FR-014) — e é daqui que sai o
     // rodízio, sem política de justiça nenhuma precisar existir.
     assento.fecharTurno({ aplicou, autonomo: entrada.classe === "autonoma" });
@@ -186,6 +232,8 @@ class Fila {
   parar() {
     if (this._t) clearInterval(this._t);
     this._t = null;
+    if (this._descanso) clearTimeout(this._descanso);
+    this._descanso = null;
   }
 
   _tique() {

@@ -472,6 +472,12 @@ function servir({ porta, sala, fila, cfg, expor, painel,
         return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
       };
       if ("maxAssentos" in corpo) sala.maxAssentos = numero(corpo.maxAssentos);
+      if ("pausaAutonomaSegundos" in corpo) {
+        // em SEGUNDOS na tela (é o que uma pessoa pensa), em ms por dentro. Zero é
+        // legítimo aqui e significa "sem descanso" — o comportamento de antes do campo.
+        const n = Number(corpo.pausaAutonomaSegundos);
+        sala.pausaAutonomaMs = Number.isFinite(n) && n > 0 ? Math.floor(n) * 1000 : 0;
+      }
       if ("maxPorJogador" in corpo) sala.maxPorJogador = numero(corpo.maxPorJogador);
       if ("tetoCustoTokens" in corpo) {
         sala.tetoCustoTokens = numero(corpo.tetoCustoTokens);

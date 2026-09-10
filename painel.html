@@ -174,7 +174,17 @@
       <label>Teto de gasto (tokens)
         <input id="tetoCustoTokens" type="number" min="1" placeholder="sem teto">
       </label>
+      <label>Descanso entre jogadas autônomas (s)
+        <input id="pausaAutonoma" type="number" min="0" placeholder="30">
+      </label>
     </div>
+    <p class="nota">O relógio de cada personagem é <strong>pessoal</strong>: diz de
+       quanto em quanto tempo <em>ele</em> quer agir. Não diz nada sobre o ritmo da
+       <strong>mesa</strong> — com vários autônomos, o relógio de alguém está sempre
+       vencido e o conector serve turno colado em turno. Este descanso é o intervalo
+       mínimo entre o fim de uma jogada autônoma e o começo da próxima, para a mesa
+       inteira. <strong>Jogada manual não espera</strong>: quem digitou está presente.
+       Zero = sem descanso.</p>
     <p class="nota">Vazio ou zero = <strong>sem limite</strong>. Cada cadeira a mais é um
        relógio a mais disputando a mesma fila e o mesmo modelo: com o turno medido em
        ~136 s, cada uma custa mais de dois minutos no ciclo de <em>todo mundo</em>.</p>
@@ -442,11 +452,13 @@ function pintarMesa() {
   for (const [id, v] of [["nomeSala", mesa.nome],
                          ["maxAssentos", mesa.maxAssentos],
                          ["maxPorJogador", mesa.maxPorJogador],
-                         ["tetoCustoTokens", mesa.tetoCustoTokens]]) {
+                         ["tetoCustoTokens", mesa.tetoCustoTokens],
+                         ["pausaAutonoma",
+                          Math.round((mesa.pausaAutonomaMs || 0) / 1000)]]) {
     if (document.activeElement !== $(id)) $(id).value = v || "";
   }
   for (const id of ["gerar-codigo", "nomeSala", "maxAssentos",
-                    "maxPorJogador", "tetoCustoTokens"]) {
+                    "maxPorJogador", "tetoCustoTokens", "pausaAutonoma"]) {
     $(id).disabled = !dados.podeEscrever;
   }
   if (!mesa.membros.length) {
@@ -575,7 +587,8 @@ async function salvarMesa() {
       nome: $("nomeSala").value,
       maxAssentos: $("maxAssentos").value,
       maxPorJogador: $("maxPorJogador").value,
-      tetoCustoTokens: $("tetoCustoTokens").value }) });
+      tetoCustoTokens: $("tetoCustoTokens").value,
+      pausaAutonomaSegundos: $("pausaAutonoma").value }) });
   const d = await r.json();
   if (d.erro) throw new Error(d.erro);
   return d;

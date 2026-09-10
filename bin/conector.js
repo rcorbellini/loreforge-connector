@@ -452,6 +452,31 @@ async function main() {
     }
   }
 
+  // OS ASSENTOS VOLTAM NO BOOT — e não voltavam, o que era pior do que parece.
+  //
+  // `Sala.deConfig` guardava os bits de cada assento e NÃO recriava o assento, com a
+  // justificativa de não subir `Mundo`/`Mente` contra um mundo que pode estar fora do ar.
+  // Só que o primeiro `salvarSala()` depois do boot gravava a sala VAZIA por cima — então
+  // não era "os assentos voltam depois", era "os assentos são APAGADOS a cada reinício",
+  // e o registro deles ia junto. Quem tinha quatro personagens à mesa achava a mesa vazia
+  // e sem rastro do que havia nela.
+  //
+  // O medo era infundado: a fábrica já lida com mundo fora do ar (o nome do personagem
+  // cai no id e o assento nasce assim mesmo). Um assento que falhe em nascer é anotado e
+  // pulado — nunca derruba o boot.
+  async function restaurarAssentos() {
+    const guardados = (cfg.sala && cfg.sala.assentos) || [];
+    for (const a of guardados) {
+      if (!a || !a.personagem || !a.dono) continue;
+      const r = await sala.assentar({ personagem: a.personagem, sub: a.dono });
+      if (r.erro) log("ASSENTO NÃO VOLTOU (a mesa segue)", `${a.personagem}: ${r.erro}`);
+    }
+    if (guardados.length) {
+      log("MESA RESTAURADA", `${sala.assentos.size} de ${guardados.length} assento(s)`);
+    }
+  }
+  await restaurarAssentos();
+
   // A SEMENTE (FR-008). `--personagem` deixou de ser exigência e virou conveniência:
   // quem joga sozinho não quer passar por tela de sala nenhuma para começar. Só funciona
   // se já houver um anfitrião pareado (ou se o mundo não exigir login).
@@ -464,6 +489,7 @@ async function main() {
         `  Rode \`loreforge --parear\` primeiro.\n\n`);
       return null;
     }
+    if (sala.assentoDe(personagem)) return sala.assentoDe(personagem);
     const r = await sala.assentar({ personagem, sub: dono });
     if (r.erro) {
       process.stdout.write(`\nNão consegui sentar '${personagem}': ${r.erro}\n\n`);
@@ -473,9 +499,11 @@ async function main() {
     return sala.assentoDe(personagem);
   }
 
-  const semeado = await semear(args.personagem
-    || (cfg.sala && cfg.sala.assentos && cfg.sala.assentos.length === 1
-        ? cfg.sala.assentos[0].personagem : null));
+  // a semente agora é SÓ o `--personagem` da linha de comando; o que estava à mesa
+  // voltou sozinho acima. Se ele já está sentado, `semear` devolve o assento existente.
+  const semeado = (await semear(args.personagem))
+    || (args.personagem ? sala.assentoDe(args.personagem) : null)
+    || (sala.assentos.size === 1 ? [...sala.assentos.values()][0] : null);
 
   if (args.canal) {
     // O PAINEL: o que a página de configuração pode ler e escrever. Fica aqui,
