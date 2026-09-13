@@ -15,9 +15,24 @@ const { log } = require("./log");
 
 const TIMEOUT = 180000;   // o juizo de uma capacidade arbitrada leva dezenas de s
 
-// Percorre os schemas da face e colhe, por capacidade e por parâmetro, a lista de
-// ids que o mundo declarou como válidos. É o que o `enum` sempre carregou — só
-// que agora ele fica AQUI em vez de descer ao modelo.
+// QUAIS PARÂMETROS APONTAM PARA ALGO DA CENA, ditos pelo MUNDO (braço B).
+//
+// Só a MARCA, nunca a lista: os candidatos vêm do contexto (ver `candidatosDe`).
+// Sem ela, `ask_directions.quem` e `set_intention.content` seriam os dois "string
+// sem enum", e resolver o segundo trocaria a frase da Mente por um id.
+function _tabelaPorNome(tools) {
+  const tabela = {};
+  for (const t of tools || []) {
+    const marca = (t.annotations && t.annotations.byName) || null;
+    const params = Array.isArray(marca) ? marca
+                 : (marca && typeof marca === "object") ? Object.keys(marca) : null;
+    if (params && params.length) tabela[t.name] = new Set(params);
+  }
+  return tabela;
+}
+
+// Os enums que SOBREVIVERAM no schema (vocabulário fechado, subconjunto calculado).
+// No braço B os de ENTIDADE já não chegam aqui — saíram na fonte, em `face.py`.
 function _tabelaDeCandidatos(tools) {
   const tabela = {};
   for (const t of tools || []) {
@@ -47,6 +62,7 @@ class Mundo {
     this.turnoId = null;
     this.capacidadesDaCena = null;
     this.candidatosDaCena = null;   // spec 060: a tabela de resolução
+    this.porNomeDaCena = null;      // quais params são referência (braço B)
     this._nomesDaCena = null;       // id -> nome, colhido do contexto
     this._ausentes = null;          // spec 060: quem ele sabe nomear e não está aqui
     // o JWT do jogador pareado (spec 056) — quando o server exige login, todo
@@ -182,19 +198,41 @@ class Mundo {
     // permite à Mente apontar por NOME sem nunca ver um id: o conector converte.
     // O dado já chegava à máquina do jogador; só estava sendo jogado fora.
     this.candidatosDaCena = _tabelaDeCandidatos(tools);
+    this.porNomeDaCena = _tabelaPorNome(tools);
     log("MCP tools/list", tools.map((t) => t.name).join(", "));
     return tools;
   }
 
   // Os candidatos de um parâmetro, já emparelhados com o NOME que a Mente vê.
-  // `null` quando o parâmetro não tem lista — e aí não há o que resolver: quem
-  // chama manda a referência como veio (é texto livre por desenho, como a prosa).
+  //
+  // BRAÇO B — O MAPA VEM DO CONTEXTO (2026-09-11).
+  //
+  // O desenho é o do documento de propostas, e a divisão é esta:
+  //
+  //   · o SCHEMA é estável — não carrega mais o elenco da cena (`face.py` parou de
+  //     emitir enum de entidade). Ele diz a FORMA, nunca o conteúdo.
+  //   · o CONTEXTO diz o que existe agora, com id e nome — e é dele que sai este
+  //     mapa chave→valor, montado por `registrarNomes` a cada leitura de cena.
+  //   · o mapa FICA NA MEMÓRIA DO CONECTOR. Nunca desce ao prompt: A Mente aponta
+  //     pelo nome que ela já leu na cena, e a conversão acontece aqui.
+  //   · o MUNDO valida. Resolver largo não afrouxa nada — quem decide se o alvo
+  //     serve é o Motor, que revalida tudo (Princípio III).
+  //
+  // `annotations.byName` diz apenas QUAIS parâmetros são referência. Sem essa marca,
+  // `set_intention.content` — que é prosa livre — seria "resolvido" contra a lista de
+  // entidades, e o teor de um compromisso viraria um id, calado.
   candidatosDe(capacidade, parametro) {
+    const nomes = this._nomesDaCena || {};
+    // 1. o enum que SOBREVIVEU (vocabulário fechado, subconjunto calculado): ele é
+    //    mais estreito que a cena e continua mandando onde existe.
     const porParam = this.candidatosDaCena && this.candidatosDaCena[capacidade];
     const ids = porParam && porParam[parametro];
-    if (!ids || !ids.length) return null;
-    const nomes = this._nomesDaCena || {};
-    return ids.map((id) => ({ id, nome: nomes[id] || id }));
+    if (ids && ids.length) return ids.map((id) => ({ id, nome: nomes[id] || id }));
+    // 2. o MAPA DO CONTEXTO, para os parâmetros que o mundo marcou como referência.
+    const refs = this.porNomeDaCena && this.porNomeDaCena[capacidade];
+    if (!refs || !refs.has(parametro)) return null;
+    const doContexto = Object.entries(nomes).map(([id, nome]) => ({ id, nome }));
+    return doContexto.length ? doContexto : null;
   }
 
   // O DICIONÁRIO id -> nome, colhido do contexto. Sem ele a tabela teria só ids,
