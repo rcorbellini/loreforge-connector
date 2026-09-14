@@ -224,3 +224,66 @@ test("as outras rotinas NÃO herdam o `think` de planejar", async () => {
     "o `think` vazou para uma rotina que não o pediu — a sobreposição tem de ser "
     + "por rotina, não global");
 });
+
+// --------------------------------------------------------------------------- //
+// 5. O PLANO NÃO ANDA EM CÍRCULO POR DENTRO (§13.1 e §13.2)
+// --------------------------------------------------------------------------- //
+//
+// As duas travas abaixo prendem a saída LITERAL que o `qwen3:8b` devolveu na
+// primeira chamada real de `planejar`, dirigindo o Draven na Praça do Mercado. Não
+// é entrada inventada: é o que o modelo fez, e o que a suíte não sabia proibir.
+
+test("passos idênticos são riscados do plano — o círculo por dentro", async () => {
+  configuracao.carregar(true);
+  // O que o `qwen3` devolveu ao vivo: o mesmo par, quatro vezes, enchendo os oito
+  // lugares. Um plano assim nasce com a doença que a spec veio curar — o passo 3 é
+  // o passo 1 de novo, então riscar o 1 não faz o personagem avançar: ele volta.
+  const e = espia([
+    "- take Macieira da Praça", "- eat Macieira da Praça",
+    "- take Macieira da Praça", "- eat Macieira da Praça",
+    "- take Macieira da Praça", "- eat Macieira da Praça",
+    "- take Macieira da Praça", "- eat Macieira da Praça",
+  ].join("\n"));
+  let plano;
+  try {
+    plano = await Mente.planejar("Matar minha fome.", copia());
+  } finally {
+    e.restaurar();
+  }
+  const passos = plano.split("\n").filter((l) => l.startsWith("- "));
+  assert.strictEqual(passos.length, 2, "o plano manteve o passo repetido");
+});
+
+test("repetir o VERBO com outro alvo sobrevive — a dedup não é cega", async () => {
+  configuracao.carregar(true);
+  const e = espia("- take o pão\n- take o queijo\n- eat o pão");
+  let plano;
+  try {
+    plano = await Mente.planejar("Matar minha fome.", copia());
+  } finally {
+    e.restaurar();
+  }
+  const passos = plano.split("\n").filter((l) => l.startsWith("- "));
+  assert.strictEqual(passos.length, 3,
+    "dois `take` de coisas DIFERENTES é plano legítimo, não repetição");
+});
+
+test("`set_intention` não é oferecido ao planejar, nem sobrevive como passo", async () => {
+  configuracao.carregar(true);
+  // Ao vivo, o `qwen3` fechou o plano com `set_intention \"Fome saciada\"` — a Mente
+  // planejando anunciar que cumpriu, que é o Princípio IX pelo avesso e o mesmo
+  // motivo que aposenta o `give.intention_id`.
+  const e = espia("- take o pão\n- eat o pão\n- set_intention \"Fome saciada\"");
+  let plano;
+  try {
+    plano = await Mente.planejar("Matar minha fome.", copia());
+  } finally {
+    e.restaurar();
+  }
+  const enviado = e.chamadas[0].corpo.messages[1].content;
+  const lista = enviado.split("EXATAMENTE estes:")[1] || "";
+  assert.ok(!lista.includes("set_intention"),
+    "o verbo de DECLARAR foi oferecido como passo do caminho");
+  assert.ok(!plano.includes("set_intention"),
+    "a Mente planejou declarar o próprio desfecho e o passo sobreviveu");
+});
