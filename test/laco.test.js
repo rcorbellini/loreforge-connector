@@ -801,3 +801,83 @@ test("060/US2: o não-match diz CONTRA O QUE comparou, não só o que foi pedido
   assert.deepStrictEqual(naoResolvidas[0].candidatos, ["nerissa-boticaria"],
     "e o log tem contra o que comparou");
 });
+
+// --------------------------------------------------------------------------- //
+// O PLANO NASCE COM O COMPROMISSO (spec 073, T025/T027)
+// --------------------------------------------------------------------------- //
+//
+// Esta trava existe por um defeito COMETIDO nesta mesma fase: `planejar` foi
+// escrito, exportado, e chamava uma função que não existia. O `try/catch` ao redor
+// engolia o `ReferenceError`, a função devolvia "sem plano" sempre, e a suíte
+// inteira ficou verde. Código que ninguém chama, e código que ninguém vê falhar,
+// dão exatamente o mesmo resultado no jogo: nada.
+//
+// Então o que se prende aqui é a LIGAÇÃO — que o despacho de `set_intention`
+// realmente passa pelo planejar, e que o que chega ao mundo é o compromisso COM os
+// passos.
+
+test("set_intention sai para o mundo COM o plano pendurado", async () => {
+  const c = coletor();
+  const mundo = mundoDe({ respostas: [
+    { recusado: false, texto: "",
+      narrativa: { aconteceu: ["Fulano firmou um compromisso."] } },
+  ] });
+  const mente = menteDe({ propostas: [{ capacidade: "set_intention",
+                                        alvos: { content: "Matar minha fome.",
+                                                 pronto_quando: "hunger" },
+                                        prosa: { acao: "decide" } }] });
+  let pedido = null;
+  mente.planejar = async (compromisso) => {
+    pedido = compromisso;
+    return compromisso + "\n- pegar o pão\n- comer o pão";
+  };
+  const laco = new Laco({ mundo, mente, extensoes: extVazio(),
+                          registro: null, emitir: c.emitir });
+
+  await laco.sussurrar("resolva sua fome");
+
+  assert.strictEqual(pedido, "Matar minha fome.",
+    "o planejar não foi chamado no despacho do set_intention");
+  const chamada = mundo.chamadas.find((x) => x.nome === "set_intention");
+  assert.ok(chamada, "o set_intention nem saiu");
+  assert.match(chamada.args.content, /- pegar o pão/,
+    "o compromisso foi ao mundo SEM o plano — nasce sem caminho e nunca anda");
+  assert.match(chamada.args.content, /^Matar minha fome\./,
+    "o compromisso deixou de ser a 1a linha: é dela que o corpo é lido");
+});
+
+test("compromisso que JÁ vem com passos não é replanejado", async () => {
+  const c = coletor();
+  const mundo = mundoDe({ respostas: [{ recusado: false, texto: "", narrativa: {} }] });
+  const mente = menteDe({ propostas: [{ capacidade: "set_intention",
+                                        alvos: { content: "Comer.\n- pegar o pão" },
+                                        prosa: { acao: "decide" } }] });
+  let chamou = false;
+  mente.planejar = async () => { chamou = true; return "outra coisa"; };
+  const laco = new Laco({ mundo, mente, extensoes: extVazio(),
+                          registro: null, emitir: c.emitir });
+
+  await laco.sussurrar("resolva sua fome");
+
+  assert.strictEqual(chamou, false,
+    "replanejou um compromisso que já tinha plano — é uma chamada ao modelo jogada "
+    + "fora, e o plano do jogador seria sobrescrito");
+});
+
+test("planejar que falha NÃO cancela o compromisso", async () => {
+  const c = coletor();
+  const mundo = mundoDe({ respostas: [{ recusado: false, texto: "", narrativa: {} }] });
+  const mente = menteDe({ propostas: [{ capacidade: "set_intention",
+                                        alvos: { content: "Matar minha fome." },
+                                        prosa: { acao: "decide" } }] });
+  mente.planejar = async () => { throw new Error("o modelo caiu"); };
+  const laco = new Laco({ mundo, mente, extensoes: extVazio(),
+                          registro: null, emitir: c.emitir });
+
+  await laco.sussurrar("resolva sua fome");
+
+  const chamada = mundo.chamadas.find((x) => x.nome === "set_intention");
+  assert.ok(chamada, "o compromisso morreu junto com o plano — sem plano ele ainda "
+    + "fecha pelo `pronto_quando`; perdido, não fecha nunca");
+  assert.strictEqual(chamada.args.content, "Matar minha fome.");
+});

@@ -190,3 +190,35 @@ test("Gemini: check() falha sem chave, e reporta o modelo com ela", async () => 
   assert.strictEqual(comChave.ok, true);
   assert.match(comChave.reason, /Gemini/);
 });
+
+// A ROTINA TROCA O MODELO SEM APAGAR O SEGREDO (spec 073, T026).
+//
+// `porRotina` sobrepõe modelo e opções por rotina. A primeira implementação fazia
+// isso com `{ ...config(), ...daRotina }` — e o spread APAGA os segredos, porque em
+// `config.js` eles são não-enumeráveis DE PROPÓSITO (a trava que os mantém fora de
+// todo log e dump). O efeito era mudo e total: toda integração remota passava a
+// morrer com "configure sua chave". Esta trava prende o caso pelo lado que dói.
+test("Gemini: rotina com modelo próprio NÃO apaga a chave (segredo não-enumerável)", async () => {
+  const cfg = configuracao.carregar(true);
+  cfg.runtime = "gemini";
+  cfg.geminiKey = "AIza-SEGREDO-DE-TESTE";
+  cfg.porRotina = { narrar: { model: "outro-modelo", think: false } };
+  configuracao.gravar(cfg);
+
+  assert.ok(!Object.keys(cfg).includes("geminiKey"),
+    "o segredo virou enumerável — a trava do config.js caiu, e este teste perdeu o sentido");
+
+  Mente.usarMundo(mundoFalso(TOOLS));
+  Mente.usarExtensoes({ toolsLocais: () => [], ehLocal: () => false,
+                        hook: async (_p, dado) => dado });
+  const espiao = espiaFetch();
+  try {
+    await Mente.interpret("faça algo", CENA);
+  } finally {
+    espiao.restaurar();
+  }
+  assert.strictEqual(espiao.chamadas.length, 1,
+    "nenhuma chamada saiu: a chave sumiu no caminho da rotina");
+  assert.strictEqual(espiao.chamadas[0].opts.headers["x-goog-api-key"],
+    "AIza-SEGREDO-DE-TESTE");
+});

@@ -272,7 +272,7 @@ class Laco {
       if (!lista.length) break;
       const resultados = [];
       const parou = await this._executar(lista, atual, t, desfechos, vistos,
-                                         jaTentadas, resultados);
+                                         jaTentadas, resultados, antes);
       if (parou && parou.abortar) break;
 
       // O TURNO CONTINUA NO SUCESSO — e não só depois de um "não" (spec 060).
@@ -423,7 +423,8 @@ class Laco {
   // Executa a sequência NA ORDEM e PARA no primeiro passo que o mundo recusa.
   // Devolve `null` se foi até o fim, `{motivo}` se parou numa recusa, ou
   // `{abortar:true}` se o transporte caiu (aí não há o que replanejar).
-  async _executar(lista, intent, t, desfechos, vistos, jaTentadas, resultados) {
+  async _executar(lista, intent, t, desfechos, vistos, jaTentadas, resultados,
+                  contexto) {
     for (const p of lista) {
       if (!p || !p.capacidade) continue;
       if (jaTentadas) jaTentadas.add(_chaveDe(p));
@@ -431,6 +432,33 @@ class Laco {
         ...(p.alvos || {}),
         prosa: p.prosa || { acao: (intent && intent.pensamento) || "age" },
       };
+
+      // O PLANO NASCE COM O COMPROMISSO (spec 073, T025/T027).
+      //
+      // Firmar e planejar são DUAS chamadas ao modelo, nunca uma: juntas mediram
+      // 0/9 (item 38) — ele escreve o compromisso OU os passos, nunca os dois na
+      // mesma resposta. Então aqui, no instante em que A Mente firma, o conector
+      // faz a SEGUNDA chamada e desce o compromisso já com o caminho.
+      //
+      // E é aqui, no despacho, e não num tick seguinte, por um motivo de porta: a
+      // ÚNICA porta de escrita do conector é `chamarCapacidade`. Planejar depois
+      // pediria uma capacidade "acrescente estes passos" — que, estando em
+      // `tools/list`, seria A Mente escrevendo o próprio plano por fora do
+      // compromisso. Enriquecer o `content` antes de despachar usa a capacidade
+      // que já existe, e o Motor valida o conjunto inteiro de uma vez.
+      //
+      // Falhar em planejar NUNCA cancela o compromisso: um compromisso sem plano
+      // ainda fecha pelo `pronto_quando`; um compromisso perdido não fecha nunca.
+      if (p.capacidade === "set_intention" && typeof corpo.content === "string"
+          && !/\n\s*[-*]\s+\S/.test(corpo.content)
+          && this.mente && typeof this.mente.planejar === "function") {
+        try {
+          const comPlano = await this.mente.planejar(corpo.content, contexto);
+          if (comPlano) corpo.content = comPlano;
+        } catch (e) {
+          log("PLANO NÃO NASCEU", e.message);
+        }
+      }
       let r;
       try {
         r = await this.mundo.chamarCapacidade(p.capacidade, corpo);

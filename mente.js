@@ -169,12 +169,28 @@ function criarMente({ mundo, extensoes } = {}) {
   }
 
   async function callModel(system, user, opts = {}) {
-    const cfg = config();
+    // A ROTINA PODE TROCAR O MODELO E AS OPÇÕES (item 79, spec 073 T026).
+    //
+    // `opts.rotina` é o nome da rotina (`planejar`, `narrar`…). Quando `porRotina`
+    // tem entrada para ela, o que estiver ali SOBREPÕE o config geral — inclusive
+    // `think`, que não é detalhe: pensando, o `qwen3` gasta 86 s e devolve plano
+    // vazio em 6 de 8. Sem entrada, nada muda e o caminho é byte-a-byte o de antes.
+    // NÃO espalhe o config aqui: em `config.js` os SEGREDOS são não-enumeráveis de
+    // propósito (a trava que os mantém fora de todo log e dump), e `{...cfg}` os
+    // apaga em silêncio — as três integrações remotas morrem com "configure sua
+    // chave". A herança por protótipo sobrepõe o que a rotina pediu e deixa o resto
+    // (segredos inclusive) vindo do original.
+    const _base = config();
+    const _daRotina = (opts.rotina && (_base.porRotina || {})[opts.rotina]) || {};
+    const cfg = Object.keys(_daRotina).length
+      ? Object.assign(Object.create(_base), _daRotina)
+      : _base;
     const label = opts.label || "chamada ao modelo";
     const alvo = cfg.runtime === "remote" ? cfg.remoteModel
                : cfg.runtime === "openrouter" ? cfg.openrouterModel
                : cfg.runtime === "gemini" ? (cfg.geminiModel || DEFAULTS.geminiModel)
                : cfg.model;
+    if (_daRotina.think !== undefined) opts = { ...opts, think: _daRotina.think };
 
     devlog(`ENVIADO À MENTE — ${label}`, `[runtime] ${cfg.runtime} (${alvo})\n\n[system]\n${system}\n\n[user]\n${user}`);
 
@@ -232,7 +248,7 @@ function criarMente({ mundo, extensoes } = {}) {
     try { return JSON.parse(corpo); } catch (_) { return null; }
   }
 
-  async function ollama(cfg, system, user, { forceJson = false, temperature = 0.4, onToken, tools, conversa } = {}) {
+  async function ollama(cfg, system, user, { forceJson = false, temperature = 0.4, onToken, tools, conversa, think } = {}) {
     const emit = _safeToken(onToken);
     const body = {
       model: cfg.model,
@@ -243,6 +259,9 @@ function criarMente({ mundo, extensoes } = {}) {
                  ...(conversa || [{ role: "user", content: user }])],
       stream: !!emit,
       options: { temperature },
+      // spec 073: `think:false` viaja no CORPO — `/no_think` no prompt não funciona
+      // nesta versão do Ollama. Só desce quando a rotina pediu.
+      ...(think !== undefined ? { think } : {}),
     };
     // spec 043: com `tools`, o schema é IMPOSTO pelo runtime. Streaming e tools não
     // combinam aqui (o Ollama entrega tool_calls no fim), e não faz falta: a chamada
@@ -452,6 +471,16 @@ Para garantir que sua escolha seja perfeita, siga este fluxo de raciocínio:
 - Leia as \`intencoes\`. Intenções são desejos ou planos, NÃO são obrigações absolutas.
 - Personagens proativos e leais farão de tudo para cumpri-las. Personagens preguiçosos, caóticos ou egoístas podem (e devem) ignorar suas próprias intenções se cumpri-las der muito trabalho e a recompensa não for uma urgência biológica atual.
 
+3b. O PASSO QUE FALTA — leia antes de escolher o que fazer:
+- Cada compromisso traz o plano no \`o_que\` e, em \`passos_cumpridos\`, QUANTOS passos dele já foram feitos.
+- ANTES DE AGIR, separe duas listas: o que JÁ FOI FEITO — esses passos estão cumpridos e NÃO se repetem — e o que FALTA. Destes, qual é o PRIMEIRO.
+- Faça o primeiro passo que ainda falta. NUNCA refaça um passo já cumprido: repetir o que já está feito não aproxima do objetivo, desperdiça a vez, e o tempo do mundo passa do mesmo jeito.
+- \`parada\` diz há quanto tempo aquele compromisso não anda. Um compromisso que não rende há muitas voltas pode ser abandonado (\`set_intention\` com status \`abandonada\`) — largar o que não leva a lugar nenhum é decisão de personagem, não fracasso.
+
+3c. O QUE O CORPO PEDE:
+- \`carencias\` é o que o corpo está pedindo agora, e cada uma traz o \`pronto_quando\` que a encerraria.
+- Se uma carência aperta e não há compromisso sobre ela, FIRME UM: \`set_intention\` com o \`pronto_quando\` da carência, e o plano em passos no \`content\`. Um corpo que pede e não vira plano vira nada — o personagem lê "faminto" a cada volta e nunca come.
+
 4. A Leitura de Cenário e Enquadramento:
 - Avalie o \`contexto\` (e, dentro dele, \`contexto.presentes\`) e consulte as \`capacidades\`.
 - Pense na SEQUÊNCIA de ações que ele quer realizar e declare SOMENTE as \`capacidades\` que cumprem essa sequência, na ordem pensada. A lista não é um cardápio a percorrer: ação que não faz parte da sequência não se declara. Se uma delas não der certo, o resto da sequência pode não valer mais — você repensa a partir do que aconteceu.
@@ -501,6 +530,30 @@ Responda EXCLUSIVAMENTE com um objeto JSON válido. Use a chave "sussurro" para 
     + "você já tentou muitas vezes sem render nada — se as suas lembranças mostram "
     + "que aquele caminho não leva a lugar nenhum, escolha outro.\n\n"
     + "O que você faz AGORA é decidir. Cumprir vem depois.";
+
+  // O PROMPT DE PLANEJAR (spec 073, T024). Nasce aqui, e o texto é MEDIDO —
+  // `specs/073-intention-cycle/medicoes.md` §4. Não reescrever de cabeça.
+  //
+  // POR QUE UMA CHAMADA SÓ PARA ISTO. Firmar o compromisso e planejá-lo na MESMA
+  // chamada mediu 0/9 (item 38): o modelo funde dever e plano numa pose. Separadas,
+  // o plano mínimo sai correto — inclusive no caso difícil, com alvo ausente e
+  // destino não adjacente.
+  //
+  // E O MODELO IMPORTA MAIS QUE O TEXTO: em quatro formatos de plano, o
+  // `llama3.1:8b` deu 0/56. Com `qwen3:8b` e `think:false`, o plano sai em 12s e
+  // ancora a referência 8/8. Pensando, o mesmo modelo gasta 86s e devolve plano
+  // VAZIO em 6 de 8 — o bloco de raciocínio come o orçamento de saída inteiro.
+  const PLANEJAR_SYSTEM = `Você é A Mente de um personagem de RPG num mundo persistente.
+
+O personagem acabou de assumir um compromisso. Sua tarefa agora NÃO é agir — é PLANEJAR: escrever a sequência de passos que leva do estado atual ao compromisso cumprido.
+
+Regras do plano:
+- Cada passo é UMA ação concreta, na ordem em que será feita.
+- Só existem os verbos que o mundo oferece. Nenhum passo pode usar outro.
+- O plano é o CAMINHO MAIS CURTO que funciona. Passo que não aproxima do objetivo não entra.
+- Se algo que o compromisso exige não tiver verbo no mundo, escreva o passo assim mesmo e marque com (SEM VERBO) — é melhor saber que falta do que fingir que dá.
+
+Responda com o plano e nada mais: um passo por linha, começando com um hífen, e cada passo COMEÇANDO por um dos verbos do mundo, seguido do alvo.`;
 
   const NARRATE_SYSTEM = `Você é o narrador de um RPG. Sua única função é narrar as consequências da última ação do personagem ("personagem").
 
@@ -1349,7 +1402,24 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     // O payload original é incrementado para expor as chaves exatas que o prompt cobra:
     const payload = {
       ...(await _contextoPayload(context)),
-      intencoes: intencoesAtivas.map((i) => ({ id: i.id, o_que: i.content })),
+      // O COMPROMISSO, COM O PROGRESSO (spec 073, T022).
+      //
+      // `passos_cumpridos` é a CONTAGEM que o prompt de executar lê para separar o
+      // feito do faltante; `parada` é o RÓTULO da estagnação (o número é segredo do
+      // mundo, Princípio V) e vem AUSENTE quando o compromisso acabou de andar.
+      //
+      // MEDIDO (§8): sem a informação de parada, o abandono é 0/32 — o personagem
+      // nunca larga nada, que é exatamente o que 425 turnos de jogo mostraram. Com
+      // ela, 8/8 no extremo e 0/8 no controle (a intenção velha que AVANÇOU).
+      intencoes: intencoesAtivas.map((i) => ({
+        id: i.id, o_que: i.content,
+        ...(i.passos_cumpridos != null ? { passos_cumpridos: i.passos_cumpridos } : {}),
+        ...(i.parada ? { parada: i.parada } : {}),
+      })),
+      // O QUE O CORPO PEDE, e que pode virar compromisso (spec 073, T021). Vem do
+      // mundo já com o `pronto_quando` que encerraria cada uma — é o que o
+      // `set_intention` cobra ao criar.
+      carencias: (_self.carencias || []),
       // `status_sobrevivencia: survival_level || 0` MORREU aqui. O campo nunca
       // existiu em lugar nenhum do mundo, então era constante ZERO para todo
       // personagem desde sempre — e o modelo lia o zero como urgência ("com o
@@ -1387,6 +1457,88 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
       ? { texto: parsed.sussurro || null, rotina: "autonomia",
           racional: parsed.racional || null }
       : null;
+  }
+
+  // TRAÇAR O PLANO DE UM COMPROMISSO (spec 073, T025).
+  //
+  // CHAMADA SEPARADA da que firma, e isso é medição, não estilo: empacotar dever e
+  // plano na mesma chamada deu 0/9 (item 38) — o modelo funde os dois numa pose.
+  //
+  // Devolve o `content` novo da intenção: a prosa do compromisso com o plano abaixo,
+  // em passos. O plano é PROSA dentro de `content` (FR-008) — campos por passo
+  // empataram 19/30 com prosa livre (§7), e contrato mais caro por ganho nenhum não
+  // se paga. O que fica estruturado é só a CONTAGEM de passos riscados, que o mundo
+  // mantém.
+  // Os verbos que ENCERRAM ou DECLARAM, nunca um passo do caminho: firmar o
+  // compromisso é o que acabou de acontecer, e narrar é o fim do turno.
+  const _NAO_SAO_PASSO = new Set(["set_intention", "narrate"]);
+
+  async function planejar(compromisso, context) {
+    const charId = (context.self && context.self.id) || context.character_id;
+    if (!charId || !compromisso) return null;
+    // OS VERBOS SAEM DA FACE, e da face DESTE personagem nesta cena — não de uma
+    // lista escrita aqui. Um plano cujos passos o mundo não sabe executar é o
+    // defeito do Tobias ("inventário completo dos frascos"): nasce impossível e
+    // nada percebe. `listarCapacidades` é a mesma porta que `interpret` usa.
+    //
+    // SEM `try` AO REDOR DISTO. A primeira versão embrulhava a busca num
+    // `catch (_) { return null; }` e chamava uma função que não existia — o
+    // `ReferenceError` virava "sem plano", `planejar` devolvia `null` desde que
+    // nasceu, e a suíte ficou verde o tempo todo. Um erro de programação tem de
+    // estourar; o que pode falhar sem culpa (o transporte) é problema de quem
+    // chama, e `laco.js` já trata.
+    const capacidades = await listarCapacidades(charId);
+    if (!capacidades || !capacidades.length) return null;
+    // O PLANO É FEITO DE ATOS — e por isso os verbos que DECLARAM não entram na
+    // lista (medido ao vivo, T031: o `qwen3` fechou o plano com
+    // `set_intention "Fome saciada"`, a Mente planejando declarar o próprio
+    // desfecho, que é o Princípio IX pelo avesso).
+    //
+    // A restrição desce como DADO, não como proibição em prosa: o verbo
+    // simplesmente não é oferecido. Proibir por escrito vaza para a cena e faz o
+    // modelo recusar o que não devia — foi medido antes, e é caro.
+    const verbos = capacidades.map((t) => t.name)
+      .filter((n) => !_NAO_SAO_PASSO.has(n)).sort().join(", ");
+    const base = "O COMPROMISSO: " + compromisso + "\n\n"
+               + _cenaEmProsa(await _contextoPayload(context)) + "\n\n"
+               + "Os verbos que o mundo oferece são EXATAMENTE estes:\n" + verbos;
+    const resp = await callModel(_sys("planejar", PLANEJAR_SYSTEM), base,
+                                 { temperature: 0.4, rotina: "planejar",
+                                   label: "PLANEJAR (o caminho)" });
+    const texto = typeof resp === "string" ? resp
+                : (resp && typeof resp.texto === "string" ? resp.texto : "");
+    // SÓ AS LINHAS QUE SÃO PASSO. O que vier de enfeite (títulos, "aqui está o
+    // plano:") morre aqui — o `content` da intenção é o compromisso e os passos,
+    // nada mais.
+    const crus = texto.split("\n")
+      .map((l) => l.trim())
+      .filter((l) => /^[-*\d.)]+\s*\S/.test(l))
+      .map((l) => l.replace(/^[-*\d.)]+\s*/, "").trim())
+      .filter((l) => l.length > 2);
+    // O PLANO NÃO ANDA EM CÍRCULO — nem por dentro (medido ao vivo, T031).
+    //
+    // Dirigindo o Draven real, o `qwen3` devolveu "take Macieira / eat Macieira"
+    // QUATRO vezes seguidas e encheu os oito lugares com o mesmo par. Um plano
+    // assim nasce com o defeito que esta spec existe para curar: o personagem
+    // riscaria o passo 1, e o passo 3 seria o passo 1 de novo.
+    //
+    // A dedup é DETERMINÍSTICA e por texto normalizado (sem acento, sem
+    // pontuação, caixa baixa) — repetição de verbo com alvo diferente ("take
+    // pão", "take queijo") sobrevive, que é plano legítimo. O que morre é o passo
+    // IDÊNTICO, que nunca é trabalho novo.
+    const vistos = new Set();
+    const passos = [];
+    for (const passo of crus) {
+      const chave = passo.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+                         .toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      if (!chave || vistos.has(chave)) continue;
+      if ([..._NAO_SAO_PASSO].some((v) => chave.includes(v.replace("_", " ")))) continue;
+      vistos.add(chave);
+      passos.push(passo);
+      if (passos.length >= 8) break;   // oito passos já é longo demais para um dia
+    }
+    if (!passos.length) return null;
+    return compromisso + "\n" + passos.map((p) => "- " + p).join("\n");
   }
 
   // `onToken` (spec 043): recebe cada pedaço da prosa conforme ela nasce, para a
@@ -1486,6 +1638,7 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
       interpretar: ESCOLHER_SYSTEM,
       autonomia: AUTONOMY_SYSTEM,
       refletir: REFLECT_COMMAND,
+      planejar: PLANEJAR_SYSTEM,
       narrar: NARRATE_SYSTEM,
     };
   }
@@ -1494,6 +1647,9 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     { nome: "interpretar",
       titulo: "Escolher a ação",
       quando: "a cada sussurro — o único caminho de ação (spec 045)" },
+    { nome: "planejar",
+      titulo: "Traçar o caminho de um compromisso",
+      quando: "uma vez, quando o compromisso nasce — nunca junto de firmá-lo" },
     { nome: "autonomia",
       titulo: "Decidir agir sozinho",
       quando: "a cada volta do relógio, COM um compromisso em mente" },
@@ -1513,7 +1669,7 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
   return {
     promptsPadrao, ROTINAS, MAX_RODADAS,
     config, saveConfig, check, usarMundo, usarExtensoes, interpret,
-    deriveWhisper, narrate, narrateObservation, log: devlog, DEFAULTS,
+    deriveWhisper, narrate, narrateObservation, planejar, log: devlog, DEFAULTS,
     custoDoTurno, zerarCusto,
     // exposta só para teste: a spec 060 precisa provar que a parada FALSA
     // é distinguida do fim legítimo da vez, e a função é pura.

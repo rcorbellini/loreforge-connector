@@ -28,6 +28,23 @@ const DEFAULTS = {
   // 2.5-flash foi DESCONTINUADO pra chaves novas em 09/2026 (a API responde
   // 404 recomendando a família 3.x) — medido ao vivo, não por aviso de doc.
   geminiModel: "gemini-3.5-flash",
+  // O MODELO POR ROTINA (item 79, spec 073 T026) — e as OPÇÕES dele junto.
+  //
+  // A rotina não escolhe só o modelo: escolhe como ele roda. Medido em 2026-09-12,
+  // mesma cena, mesmo prompt, 8 repetições, planejando uma sequência:
+  //
+  //   llama3.1:8b               ancora a referência 0/8   2-16 s
+  //   qwen3:8b (pensando)       0/8 — devolve VAZIO 6/8   86 s
+  //   qwen3:8b (think:false)    8/8                       12 s
+  //
+  // PENSANDO, o bloco de raciocínio come o `num_predict` inteiro e o plano sai vazio.
+  // E `/no_think` no prompt NÃO funciona nesta versão do Ollama — só o campo `think`
+  // no corpo da requisição. Por isso ele viaja aqui, ao lado do modelo.
+  //
+  // Rotina sem entrada aqui usa o `model`/`runtime` de cima, como sempre.
+  porRotina: {
+    planejar: { model: "qwen3:8b", think: false },
+  },
   // o conector, nao mais o navegador
   mundo: "http://0.0.0.0:8777",
   // O ENDERECO DO MUNDO **PARA AS TELAS** (spec 072).

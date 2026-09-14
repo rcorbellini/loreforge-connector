@@ -76,6 +76,10 @@ const CONTEXTO = {
       recency: "há dias", salience: "vivida",
     }],
     intentions: [],
+    // spec 073: o que o corpo PEDE, e que pode virar compromisso. Vem do mundo já
+    // com o `pronto_quando` que encerraria cada carência.
+    carencias: [{ o_que: "matar a fome", porque: "faminto",
+                  pronto_quando: "hunger" }],
     known_elsewhere: [], transit: null,
   },
   scene: {
@@ -94,8 +98,14 @@ const copia = (extra = {}) => {
   return c;
 };
 
+// spec 073: o compromisso desce COM o progresso. `passos_cumpridos` é a contagem que
+// o prompt de executar lê para separar o feito do faltante; `parada` é o RÓTULO da
+// estagnação — o número é segredo do mundo (Princípio V), e a chave vem AUSENTE
+// quando o compromisso acabou de andar.
 const COMPROMISSO = [{ id: "int-1", status: "ativa",
-                       content: "Vigiar a pira até o amanhecer" }];
+                       content: "Vigiar a pira até o amanhecer",
+                       pronto_quando: "sleep", passos_cumpridos: 1,
+                       parada: "há algumas voltas sem andar" }];
 
 // Mesmo molde do `espiaFetch` do `mente.test.js`: nenhuma chamada sai da máquina.
 function fetchFalso(texto = "narrado") {
@@ -195,7 +205,33 @@ test("o AUTONOMY_SYSTEM só cobra chaves que o payload realmente manda", async (
   // toda `chave` em crase no system tem de existir no payload (aceita um nível: `a.b`)
   const citadas = [...new Set((sys.match(/`([a-z_.]+)`/g) || [])
     .map((s) => s.replace(/`/g, "")))];
+
+  // AS CHAVES DENTRO DE LISTA também contam. `intencoes` é um array de objetos, e o
+  // prompt cita `o_que`/`passos_cumpridos`/`parada` — que SÃO chaves que o payload
+  // manda, só que um nível abaixo. Sem isto a trava reprovaria o prompt por cobrar
+  // exatamente o que ele deve cobrar.
+  const dentroDeLista = new Set();
+  for (const v of Object.values(payload)) {
+    if (Array.isArray(v)) {
+      for (const item of v) {
+        if (item && typeof item === "object") {
+          Object.keys(item).forEach((k) => dentroDeLista.add(k));
+        }
+      }
+    }
+  }
+
+  // VOCABULÁRIO, não campo: nome de tool e valor de enum aparecem em crase de
+  // propósito — "chame `set_intention` com status `abandonada`" é instrução legítima,
+  // e `content`/`pronto_quando` são PARÂMETROS dela. A trava existe contra cobrar um
+  // CAMPO que o payload não manda (o caso de `livro_de_regras` e
+  // `status_sobrevivencia`), não contra o prompt saber o nome das coisas.
+  const vocabulario = new Set(["set_intention", "ativa", "concluida", "abandonada",
+                               "hunger", "thirst", "sleep", "content",
+                               "pronto_quando", "status", "intention_id"]);
+
   const semDono = citadas.filter((k) => {
+    if (vocabulario.has(k) || dentroDeLista.has(k)) return false;
     const [a, b] = k.split(".");
     if (!(a in payload)) return true;
     return b ? !(b in (payload[a] || {})) : false;
@@ -397,9 +433,11 @@ const MORTAS_CONHECIDAS = {
 // deixou de existir sem avisar, e o personagem passou a pagar uma chamada de modelo por
 // tick para tentar acordar de um sono do qual o Motor não deixa acordar.
 const CAMPOS = {
-  self: ["attributes", "id", "intentions", "inventory", "is_busy", "is_deep_asleep",
-         "is_resting", "known_elsewhere", "memories", "name", "needs", "physics",
-         "prose", "skills", "status", "transit"],
+  // `carencias` (spec 073): o que o corpo PEDE, derivado dos mesmos rótulos de
+  // `needs` — não é segunda verdade, é a mesma dita como o que ela é.
+  self: ["attributes", "carencias", "id", "intentions", "inventory", "is_busy",
+         "is_deep_asleep", "is_resting", "known_elsewhere", "memories", "name",
+         "needs", "physics", "prose", "skills", "status", "transit"],
   scene: ["characters", "exits", "items", "objects", "place"],
 };
 
