@@ -253,29 +253,54 @@ test("060/US2: nenhum id de cena aparece no payload que vai ao modelo", async ()
   }
 });
 
-test("060/US2: o enum de LISTA DE CENA sai das tools; o CALCULADO fica", () => {
+test("060/US2: o enum de referência sai; o CALCULADO e o VOCABULÁRIO ficam", () => {
   const m = require("../mente");
   if (typeof m._semIdDeCena !== "function") {
     assert.fail("_semIdDeCena precisa estar exposta para este teste valer");
   }
-  const take = m._semIdDeCena({ name: "take", inputSchema: { type: "object",
-    properties: { item: { type: "string", enum: ["frasco-de-oleo", "cantil"] } } } });
+  // QUEM DIZ O QUE É REFERÊNCIA É O MUNDO, por `annotations.byName` — não mais uma
+  // lista à mão neste arquivo. A cópia existiu e custou duas corridas A/B: o
+  // servidor passou a expor o vocabulário de `set_intention:pronto_quando` e o
+  // conector o arrancava de volta, porque a lista daqui não sabia dele.
+  const take = m._semIdDeCena({ name: "take", annotations: { byName: { item: ["frasco-de-oleo"] } },
+    inputSchema: { type: "object",
+      properties: { item: { type: "string", enum: ["frasco-de-oleo", "cantil"] } } } });
   assert.ok(!take.inputSchema.properties.item.enum,
-    "lista de cena SAI: a Mente já vê isso em prosa, e o enum é a segunda cópia");
+    "referência SAI: a Mente já vê isso em prosa, e o enum é a segunda cópia");
   assert.ok(take.inputSchema.properties.item.description,
     "e no lugar fica a dica de COMO chamar");
 
-  const heal = m._semIdDeCena({ name: "heal", inputSchema: { type: "object",
-    properties: { alvo: { type: "string", enum: ["fenn-dedos-leves"] } } } });
+  // O que o mundo NÃO marcou como referência fica intacto — é o subconjunto
+  // calculado (quem está caído) ou o vocabulário fechado (ativa/concluida).
+  const heal = m._semIdDeCena({ name: "heal", annotations: { byName: { outro: [] } },
+    inputSchema: { type: "object",
+      properties: { alvo: { type: "string", enum: ["fenn-dedos-leves"] } } } });
   assert.deepStrictEqual(heal.inputSchema.properties.alvo.enum, ["fenn-dedos-leves"],
     "subconjunto CALCULADO fica: quem está caído é a ÚNICA fonte, e o contexto " +
     "não diz isso de um jeito que ela use — tirar perderia conhecimento, não peso");
 
-  const arr = m._semIdDeCena({ name: "cook", inputSchema: { type: "object",
-    properties: { ingredientes: { type: "array", items: { type: "string",
-      enum: ["carne", "sal"] } } } } });
+  const voc = m._semIdDeCena({ name: "set_intention",
+    annotations: { byName: { content: [] } },
+    inputSchema: { type: "object", properties: {
+      pronto_quando: { type: "string", enum: ["hunger", "posse", "lugar"] } } } });
+  assert.deepStrictEqual(voc.inputSchema.properties.pronto_quando.enum,
+    ["hunger", "posse", "lugar"],
+    "VOCABULÁRIO FECHADO fica — foi arrancá-lo que matou duas corridas A/B");
+
+  const arr = m._semIdDeCena({ name: "cook",
+    annotations: { byName: { ingredientes: ["carne"] } },
+    inputSchema: { type: "object",
+      properties: { ingredientes: { type: "array", items: { type: "string",
+        enum: ["carne", "sal"] } } } } });
   assert.ok(!arr.inputSchema.properties.ingredientes.items.enum,
     "enum dentro de array também sai");
+
+  // TOOL LOCAL (do harness) não tem `byName`: nada é cortado. O enum dela é
+  // vocabulário do próprio harness, nunca lista de cena.
+  const local = m._semIdDeCena({ name: "pensar_alto", inputSchema: { type: "object",
+    properties: { tom: { type: "string", enum: ["seco", "irônico"] } } } });
+  assert.deepStrictEqual(local.inputSchema.properties.tom.enum, ["seco", "irônico"],
+    "tool sem `byName` fica intacta");
 });
 
 

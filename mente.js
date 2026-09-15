@@ -999,26 +999,35 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
   //     já lista cada um com o resumo.
   //   · lugar que ele SABE alcançar -> FICA. Deriva de memória de rota, e o
   //     contexto não traz essa lista.
-  const _ENUM_QUE_FICA = new Set([
-    "heal:alvo", "butcher:alvo",                 // subconjunto calculado
-    "write:instrumento", "sing:instrumento",     // idem (o que dá para empunhar)
-    "craft:peca", "forge_weapon:peca", "forge_armor:peca", "cook:peca",
-    "brew:peca",                                 // trabalho em processo
-    "set_intention:status", "give:intention_id", "trade:intention_id",
-    "promise:intention_id",                      // vocabulário fechado / intenção
-    "travel_to:destino", "ask_about:sobre_lugar",// lugar que ele sabe alcançar
-    "learn_routes:rotas",                        // rotas do MUNDO, não da cena
-  ]);
-
-  // Devolve a tool sem os enums que são lista de cena. Não muta a original: o
-  // `mundo` continua com a face inteira, que é de onde a tabela de resolução vem.
+  // A LISTA MORREU AQUI — quem diz o que é referência de cena é o MUNDO.
+  //
+  // Havia uma cópia à mão de `face._ENUM_QUE_FICA` neste arquivo, e ela custou duas
+  // corridas A/B de quatro horas. O servidor foi consertado para expor o vocabulário
+  // de `set_intention:pronto_quando`, e o conector continuou a ARRANCÁ-LO de volta,
+  // porque a cópia daqui não sabia dele — e ainda listava `give:intention_id` e
+  // `trade:intention_id`, aposentados na 073. A Mente nunca via as opções, chutava um
+  // id parecido, e o ciclo inteiro da spec morria na recusa.
+  //
+  // Duas listas à mão para o mesmo fato é a segunda via que o Princípio I proíbe, e
+  // esta era pior que duplicata: era duplicata em OUTRA LINGUAGEM, onde nem um grep
+  // junta as duas.
+  //
+  // O sinal certo já vinha no protocolo: `annotations.byName` é o mapa que o servidor
+  // manda dizendo QUAIS parâmetros são referência resolvida por nome (spec 060) —
+  // exatamente os que tiveram o enum cortado lá. Derivar daqui não pode divergir:
+  // é o mesmo fato, dito uma vez.
+  //
+  // Tool sem `byName` (as LOCAIS do harness) não tem nada cortado: o enum delas é
+  // vocabulário do próprio harness, nunca lista de cena.
   function _semIdDeCena(tool) {
     const esq = tool.inputSchema || tool.parameters;
     if (!esq || !esq.properties) return tool;
+    const porNome = (tool.annotations && tool.annotations.byName) || null;
+    if (!porNome) return tool;
     const props = {};
     let mexeu = false;
     for (const [nome, v] of Object.entries(esq.properties)) {
-      if (!v || typeof v !== "object" || _ENUM_QUE_FICA.has(`${tool.name}:${nome}`)) {
+      if (!v || typeof v !== "object" || !(nome in porNome)) {
         props[nome] = v;
         continue;
       }
