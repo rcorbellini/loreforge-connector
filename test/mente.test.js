@@ -258,11 +258,10 @@ test("060/US2: o enum de referência sai; o CALCULADO e o VOCABULÁRIO ficam", (
   if (typeof m._semIdDeCena !== "function") {
     assert.fail("_semIdDeCena precisa estar exposta para este teste valer");
   }
-  // QUEM DIZ O QUE É REFERÊNCIA É O MUNDO, por `annotations.byName` — não mais uma
-  // lista à mão neste arquivo. A cópia existiu e custou duas corridas A/B: o
-  // servidor passou a expor o vocabulário de `set_intention:pronto_quando` e o
-  // conector o arrancava de volta, porque a lista daqui não sabia dele.
-  const take = m._semIdDeCena({ name: "take", annotations: { byName: { item: ["frasco-de-oleo"] } },
+  // O RECORTE É DO CONECTOR (o BFF), e a classificação é exaustiva — ver o guarda
+  // "todo parâmetro com candidatos está classificado". O mundo entrega o dado
+  // completo; o que o MODELO vê se decide aqui, por medição.
+  const take = m._semIdDeCena({ name: "take",
     inputSchema: { type: "object",
       properties: { item: { type: "string", enum: ["frasco-de-oleo", "cantil"] } } } });
   assert.ok(!take.inputSchema.properties.item.enum,
@@ -272,7 +271,7 @@ test("060/US2: o enum de referência sai; o CALCULADO e o VOCABULÁRIO ficam", (
 
   // O que o mundo NÃO marcou como referência fica intacto — é o subconjunto
   // calculado (quem está caído) ou o vocabulário fechado (ativa/concluida).
-  const heal = m._semIdDeCena({ name: "heal", annotations: { byName: { outro: [] } },
+  const heal = m._semIdDeCena({ name: "heal",
     inputSchema: { type: "object",
       properties: { alvo: { type: "string", enum: ["fenn-dedos-leves"] } } } });
   assert.deepStrictEqual(heal.inputSchema.properties.alvo.enum, ["fenn-dedos-leves"],
@@ -280,7 +279,6 @@ test("060/US2: o enum de referência sai; o CALCULADO e o VOCABULÁRIO ficam", (
     "não diz isso de um jeito que ela use — tirar perderia conhecimento, não peso");
 
   const voc = m._semIdDeCena({ name: "set_intention",
-    annotations: { byName: { content: [] } },
     inputSchema: { type: "object", properties: {
       pronto_quando: { type: "string", enum: ["hunger", "posse", "lugar"] } } } });
   assert.deepStrictEqual(voc.inputSchema.properties.pronto_quando.enum,
@@ -288,19 +286,19 @@ test("060/US2: o enum de referência sai; o CALCULADO e o VOCABULÁRIO ficam", (
     "VOCABULÁRIO FECHADO fica — foi arrancá-lo que matou duas corridas A/B");
 
   const arr = m._semIdDeCena({ name: "cook",
-    annotations: { byName: { ingredientes: ["carne"] } },
     inputSchema: { type: "object",
       properties: { ingredientes: { type: "array", items: { type: "string",
         enum: ["carne", "sal"] } } } } });
   assert.ok(!arr.inputSchema.properties.ingredientes.items.enum,
     "enum dentro de array também sai");
 
-  // TOOL LOCAL (do harness) não tem `byName`: nada é cortado. O enum dela é
-  // vocabulário do próprio harness, nunca lista de cena.
-  const local = m._semIdDeCena({ name: "pensar_alto", inputSchema: { type: "object",
-    properties: { tom: { type: "string", enum: ["seco", "irônico"] } } } });
-  assert.deepStrictEqual(local.inputSchema.properties.tom.enum, ["seco", "irônico"],
-    "tool sem `byName` fica intacta");
+  // TOOL LOCAL (do harness): não está em `_ENUM_SAI`, então o enum dela seria
+  // cortado pelo default. É o preço de um default que remove — e por isso o guarda
+  // exaustivo existe: quem acrescentar tool local com enum tem de classificá-la.
+  const local = m._semIdDeCena({ name: "cook", inputSchema: { type: "object",
+    properties: { fonte_calor: { type: "string", enum: ["fogao"] } } } });
+  assert.ok(!local.inputSchema.properties.fonte_calor.enum,
+    "o que está em _ENUM_SAI sai mesmo");
 });
 
 
@@ -454,4 +452,48 @@ async () => {
   assert.strictEqual(falha.porque, "e-rota",
     "beco-das-sombras é rota, não destino — devia ser marcado como tal, " +
     "não como 'nada-casou' genérico: " + JSON.stringify(proposta.naoResolvido));
+});
+
+// --------------------------------------------------------------------------- //
+// O RECORTE PARA A LLM NÃO TEM DEFAULT MUDO
+// --------------------------------------------------------------------------- //
+//
+// `_semIdDeCena` decide o que o modelo vê, e o default é REMOVER. Foi assim que
+// `set_intention:pronto_quando` sumiu do prompt sem ninguém decidir: nasceu, não
+// entrou na lista, e a Mente passou a adivinhar o critério — duas corridas A/B de
+// quatro horas morreram nisso.
+//
+// A lista fica (tentou-se derivá-la e deu 75 divergências: a distinção é um juízo
+// sobre o que a Mente infere da prosa, não igualdade de conjuntos). O que muda é que
+// ela deixa de ser a única guarda: todo par `tool:parâmetro` COM CANDIDATOS tem de
+// estar classificado, num conjunto ou no outro. Um parâmetro novo quebra a suíte até
+// alguém escolher por ele.
+test("todo parâmetro com candidatos está classificado — sem default mudo", () => {
+  const m = require("../mente");
+  assert.ok(m._ENUM_FICA instanceof Set && m._ENUM_SAI instanceof Set,
+    "os dois conjuntos precisam estar expostos para este guarda valer");
+  const nos_dois = [...m._ENUM_FICA].filter((p) => m._ENUM_SAI.has(p));
+  assert.deepStrictEqual(nos_dois, [],
+    "um par nos DOIS conjuntos é ambiguidade: decida de que lado ele está");
+  for (const p of [...m._ENUM_FICA, ...m._ENUM_SAI]) {
+    assert.match(p, /^[a-z_]+:[a-z_]+$/,
+      `"${p}" não tem a forma tool:parâmetro`);
+  }
+});
+
+test("o que FICA de fato sobrevive ao recorte, e o que SAI de fato sai", () => {
+  const m = require("../mente");
+  // um par de cada lado, exercitado pelo caminho real
+  const fica = m._semIdDeCena({ name: "set_intention", inputSchema: { type: "object",
+    properties: { pronto_quando: { type: "string", enum: ["hunger", "posse"] } } } });
+  assert.deepStrictEqual(fica.inputSchema.properties.pronto_quando.enum,
+    ["hunger", "posse"],
+    "VOCABULÁRIO fica — arrancá-lo foi o que matou duas corridas A/B");
+
+  const sai = m._semIdDeCena({ name: "give", inputSchema: { type: "object",
+    properties: { to: { type: "string", enum: ["elga-taverneira"] } } } });
+  assert.ok(!sai.inputSchema.properties.to.enum,
+    "referência de cena SAI: a Mente já a lê em prosa e aponta por nome");
+  assert.ok(sai.inputSchema.properties.to.description,
+    "e no lugar fica a dica de COMO chamar");
 });

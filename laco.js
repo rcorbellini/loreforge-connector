@@ -484,7 +484,10 @@ class Laco {
       }
 
       const out = { ...(r.narrativa || {}), ok: !r.recusado,
-                    erro: r.recusado ? r.texto : null };
+                    erro: r.recusado ? r.texto : null,
+                    // o corrigível viaja junto, para `_desfechoEmPalavras` montar o
+                    // convite ao retry. Não vai à tela: é material do modelo.
+                    recusaCorrigivel: r.recusado ? (r.recusa || null) : null };
       delete out.character_id;
       // A RECUSA VIRA MATÉRIA DE NARRAÇÃO (Princípio X: nunca um silêncio sem
       // causa). Sem isto, um turno só de recusas chegava à Mente com NADA e ela
@@ -527,8 +530,31 @@ class Laco {
   // O material das consultivas (`lido`, `wares`, `falas` — item 52.3) entra aqui
   // também: era exatamente o que o conector recebia e jogava fora, e é o que faz
   // "examinei" render alguma coisa em vez de silêncio.
+  // O QUE CORRIGIR, EM PALAVRAS — e em NOMES, nunca em ids.
+  //
+  // O mundo devolve `{campo, validos:[{id,nome}]}` como dado. A frase é montada
+  // AQUI porque é presentação, e presentação é do BFF: o conector sabe contra qual
+  // modelo fala; a API não, e não deveria.
+  //
+  // E diz o NOME. Uma versão desta lógica viveu no servidor preferindo o `id`, e
+  // mandou "bram-pescador, coelho-do-cais" ao modelo — desfazendo pela porta dos
+  // fundos o que a spec 060 tirou da face por medição. A Mente aponta por nome; a
+  // tabela de resolução converte. Mensagem de erro não é exceção — é justamente
+  // onde a tentação de "ajudar com o id exato" é maior.
+  _oQueCorrigir(rec) {
+    const validos = (rec && rec.validos) || [];
+    if (!validos.length) return "";
+    const nomes = validos.map((v) => (v && (v.nome || v.id)) || "").filter(Boolean);
+    if (!nomes.length) return "";
+    const campo = rec.campo ? `'${rec.campo}'` : "esse campo";
+    return `. Para ${campo}, só valem: ${nomes.join(", ")}.`;
+  }
+
   _desfechoEmPalavras(out) {
-    if (!out.ok) return out.erro || "o mundo não deixou.";
+    if (!out.ok) {
+      const base = out.erro || "o mundo não deixou.";
+      return base + this._oQueCorrigir(out.recusaCorrigivel);
+    }
     const partes = [];
     for (const f of out.aconteceu || []) partes.push(String(f));
     for (const f of out.failed_effects || []) {

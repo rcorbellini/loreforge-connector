@@ -999,35 +999,85 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
   //     já lista cada um com o resumo.
   //   · lugar que ele SABE alcançar -> FICA. Deriva de memória de rota, e o
   //     contexto não traz essa lista.
-  // A LISTA MORREU AQUI — quem diz o que é referência de cena é o MUNDO.
+  // O RECORTE PARA A LLM MORA AQUI, e é aqui que ele pertence.
   //
-  // Havia uma cópia à mão de `face._ENUM_QUE_FICA` neste arquivo, e ela custou duas
-  // corridas A/B de quatro horas. O servidor foi consertado para expor o vocabulário
-  // de `set_intention:pronto_quando`, e o conector continuou a ARRANCÁ-LO de volta,
-  // porque a cópia daqui não sabia dele — e ainda listava `give:intention_id` e
-  // `trade:intention_id`, aposentados na 073. A Mente nunca via as opções, chutava um
-  // id parecido, e o ciclo inteiro da spec morria na recusa.
+  // O conector é o BFF da Mente: o mundo entrega o dado COMPLETO (todo parâmetro,
+  // todo candidato com id e nome) sem se preocupar com onde será usado, e quem
+  // formata para ESTE modelo é este arquivo. Recorte é presentação, e presentação se
+  // mede contra um modelo — não se crava no contrato da API, onde um host MCP de
+  // terceiro também bebe.
   //
-  // Duas listas à mão para o mesmo fato é a segunda via que o Princípio I proíbe, e
-  // esta era pior que duplicata: era duplicata em OUTRA LINGUAGEM, onde nem um grep
-  // junta as duas.
+  // O QUE SAI, e por quê (spec 060, medido): o enum que REPETE o que a cena já
+  // mostra em prosa. Ele custava 35% do bloco de capacidades, não restringia nada
+  // (um id fora dele saiu em 4 de 5 chamadas), PARALISAVA no alvo ambíguo e fazia o
+  // modelo SUBSTITUIR em silêncio no alvo ausente. A Mente aponta por NOME, e a
+  // tabela de resolução do `mundo.js` converte.
   //
-  // O sinal certo já vinha no protocolo: `annotations.byName` é o mapa que o servidor
-  // manda dizendo QUAIS parâmetros são referência resolvida por nome (spec 060) —
-  // exatamente os que tiveram o enum cortado lá. Derivar daqui não pode divergir:
-  // é o mesmo fato, dito uma vez.
+  // O QUE FICA está em `_ENUM_FICA` abaixo: onde o enum não é a lista da cena, mas
+  // um RECORTE que só o mundo sabe calcular (quem está caído, o que dá para
+  // empunhar, que trabalho está em processo) ou um VOCABULÁRIO da própria tool
+  // (`ativa`, `hunger`, `posse`). Ali o enum INFORMA em vez de restringir, e tirá-lo
+  // perderia conhecimento, não peso.
   //
-  // Tool sem `byName` (as LOCAIS do harness) não tem nada cortado: o enum delas é
-  // vocabulário do próprio harness, nunca lista de cena.
+  // ISTO É UMA LISTA À MÃO, E ELA JÁ APODRECEU DUAS VEZES — no cliente (item 77) e
+  // depois no servidor, quando `set_intention:pronto_quando` nasceu e ninguém a
+  // atualizou: a Mente nunca viu o vocabulário, chutou um id parecido, e duas
+  // corridas A/B de quatro horas morreram na recusa.
+  //
+  // Mover de lado não curou, e ter duas cópias (uma em Python, outra aqui) foi pior:
+  // duplicata em OUTRA LINGUAGEM, onde nem um grep junta as duas. Tentou-se DERIVAR
+  // a regra — "enum igual a um conjunto que a cena já lista = repetição" — e deu 75
+  // divergências: quase todo enum de cena é subconjunto estrito de algo, então o
+  // critério classifica quase tudo como conhecimento. A distinção é um JUÍZO sobre o
+  // que a Mente infere da prosa, e juízo não sai de igualdade de conjuntos.
+  //
+  // A cura que sobrou é a honesta: a lista fica, mas o DEFAULT DEIXA DE SER MUDO.
+  // `test/mente.test.js` exige que TODO par `tool:parâmetro` com candidatos esteja
+  // classificado — em `_ENUM_FICA` ou em `_ENUM_SAI`. Um parâmetro novo não escolhe
+  // sozinho: ele quebra a suíte até alguém decidir.
+  const _ENUM_FICA = new Set([
+    "heal:alvo", "butcher:alvo",                 // subconjunto calculado
+    "write:instrumento", "sing:instrumento",     // o que dá para empunhar
+    "craft:peca", "forge_weapon:peca", "forge_armor:peca", "cook:peca",
+    "brew:peca",                                 // trabalho em processo
+    "set_intention:status", "set_intention:pronto_quando",
+    "promise:intention_id", "set_intention:intention_id",
+    "create_memory:intensity", "create_memory:domain",   // vocabulário fechado
+    "travel_to:destino", "ask_about:sobre_lugar",// lugar que ele sabe alcançar
+    "learn_routes:rotas",                        // rotas do MUNDO, não da cena
+    "accuse:memoria_id", "sing:memoria_id", "write:memoria_id",
+  ]);
+
+  // O QUE SAI, DITO EM VOZ ALTA. Só existe para o guarda do `mente.test.js`: ele
+  // exige que todo par com candidatos esteja num dos dois conjuntos. Sem isto, um
+  // parâmetro novo cairia no default — e o default é REMOVER, que foi exatamente
+  // como `pronto_quando` sumiu do prompt sem ninguém decidir.
+  const _ENUM_SAI = new Set([
+    "accuse:alvo", "ask_about:quem", "ask_directions:quem", "ask_wares:quem",
+    "attack:alvo", "attack:arma", "brew:ingredientes", "brew:recipiente",
+    "ask_wares:parceiro", "buy:parceiro", "buy:pagamento", "buy:mercadoria",
+    "carry:alvo", "carry:rota", "craft:materiais",
+    "chop:ferramenta", "chop:onde", "close:target", "cobrar:de_quem", "cobrar:item",
+    "cook:ingredientes", "cook:fonte_calor", "cura:alvo", "drink:alvo",
+    "drop:item", "eat:item", "enter_route:route", "equip:item", "examine:alvo",
+    "expulsar:alvo", "expulsar:rota", "forage:onde", "forge_armor:materiais",
+    "forge_armor:fonte_calor", "forge_weapon:materiais", "forge_weapon:fonte_calor",
+    "give:item", "give:to", "kindle_fire:materiais", "learn_routes:com_quem",
+    "mine:ferramenta", "mine:onde", "persuade:personagem", "persuade:rota",
+    "persuade_give:alvo", "persuade_give:item", "persuade_give:para",
+    "promise:para", "recognize:alvo", "shove:item", "shove:to", "steal:alvo",
+    "steal:item", "stow:item", "stow:container", "take:item", "trade:parceiro",
+    "trade:ofereco", "trade:quero", "unequip:item", "unequip:to", "write:alvo",
+    "write:superficie",
+  ]);
+
   function _semIdDeCena(tool) {
     const esq = tool.inputSchema || tool.parameters;
     if (!esq || !esq.properties) return tool;
-    const porNome = (tool.annotations && tool.annotations.byName) || null;
-    if (!porNome) return tool;
     const props = {};
     let mexeu = false;
     for (const [nome, v] of Object.entries(esq.properties)) {
-      if (!v || typeof v !== "object" || !(nome in porNome)) {
+      if (!v || typeof v !== "object" || _ENUM_FICA.has(`${tool.name}:${nome}`)) {
         props[nome] = v;
         continue;
       }
@@ -1685,6 +1735,7 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     _paradaFalsa,
     // expostas para o teste da US2 provar que o id não vaza
     _contextoPayload, _semIdDeCena, _cenaEmProsa,
+    _ENUM_FICA, _ENUM_SAI,
   };
 }
 
@@ -1712,5 +1763,8 @@ module.exports = {
   _paradaFalsa: _semEstado._paradaFalsa,
   _contextoPayload: _semEstado._contextoPayload,
   _semIdDeCena: _semEstado._semIdDeCena,
+  // expostos SÓ para o guarda da suíte: ninguém os lê em produção.
+  _ENUM_FICA: _semEstado._ENUM_FICA,
+  _ENUM_SAI: _semEstado._ENUM_SAI,
   _cenaEmProsa: _semEstado._cenaEmProsa,
 };

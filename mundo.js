@@ -331,6 +331,11 @@ class Mundo {
       // condição de SISTEMA, separada da narrativa de propósito (item 52.1): a pane
       // do juízo não pode ser tecida como fato do mundo.
       sistema: res._sistema || null,
+      // O QUE HÁ DE CORRIGÍVEL NA RECUSA (spec 073). Vem do mundo como DADO
+      // (`{campo, validos:[{id,nome}]}`); quem escreve a frase para A Mente é o
+      // conector — ver `laco._recusaEmPalavras`. A API não sabe contra qual modelo
+      // se está falando, e não deveria.
+      recusa: res._recusa || null,
       recusado: res.isError === true,
     };
   }

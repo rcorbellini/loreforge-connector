@@ -881,3 +881,58 @@ test("planejar que falha NÃO cancela o compromisso", async () => {
     + "fecha pelo `pronto_quando`; perdido, não fecha nunca");
   assert.strictEqual(chamada.args.content, "Matar minha fome.");
 });
+
+// --------------------------------------------------------------------------- //
+// A RECUSA CORRIGÍVEL É MONTADA AQUI, E DIZ O NOME
+// --------------------------------------------------------------------------- //
+//
+// O mundo devolve `{campo, validos:[{id,nome}]}` como DADO; a frase para A Mente é
+// montada no conector, que é o BFF dela. Uma versão desta lógica viveu no servidor
+// preferindo o `id` e mandou "bram-pescador, coelho-do-cais" ao modelo — desfazendo
+// pela porta dos fundos o que a spec 060 tirou da face por medição.
+test("a recusa corrigível vira convite ao retry, com NOMES", async () => {
+  const c = coletor();
+  const mundo = mundoDe({ respostas: [
+    { recusado: true, texto: "'x' não é um personagem presente",
+      recusa: { campo: "de_quem",
+                validos: [{ id: "bram-pescador", nome: "Bram, o Pescador" },
+                          { id: "sorin-correio", nome: "Sorin, o Correio" }] },
+      narrativa: {} },
+  ] });
+  const mente = menteDe({ propostas: [{ capacidade: "cobrar",
+                                        alvos: { de_quem: "x" },
+                                        prosa: { acao: "cobra" } }] });
+  const laco = new Laco({ mundo, mente, extensoes: extVazio(),
+                          registro: null, emitir: c.emitir });
+
+  await laco.sussurrar("cobre dele");
+
+  const recebido = (menteDe.recebeu || []).map((r) => r.conteudo).join(" ");
+  assert.match(recebido, /Bram, o Pescador/,
+    "a Mente precisa receber o NOME para poder corrigir");
+  assert.ok(!recebido.includes("bram-pescador"),
+    "e NÃO o id — foi por isso que a 060 os tirou da face");
+  assert.match(recebido, /de_quem/, "e qual campo corrigir");
+
+  // A FRASE DE MUNDO, essa sim, é o que o jogador lê — sem o convite ao retry.
+  const recusa = c.eventos.find((e) => e.ev === "recusa");
+  assert.ok(recusa && !recusa.texto.includes("só valem"),
+    "o convite ao retry é material do MODELO, não vai à tela");
+});
+
+test("recusa de MÉRITO não ganha lista — não há o que corrigir", async () => {
+  const c = coletor();
+  const mundo = mundoDe({ respostas: [
+    { recusado: true, texto: "isso já é verdade agora", narrativa: {} },
+  ] });
+  const mente = menteDe({ propostas: [{ capacidade: "set_intention",
+                                        alvos: { content: "x" },
+                                        prosa: { acao: "firma" } }] });
+  menteDe.recebeu = [];
+  const laco = new Laco({ mundo, mente, extensoes: extVazio(),
+                          registro: null, emitir: c.emitir });
+  await laco.sussurrar("firme isso");
+  const recebido = (menteDe.recebeu || []).map((r) => r.conteudo).join(" ");
+  assert.ok(!recebido.includes("só valem"),
+    "recusa de mérito não convida retry: o mundo decidiu, e re-tentar é teimosia");
+});
