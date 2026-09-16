@@ -303,6 +303,135 @@ test("060/US2: o enum de referência sai; o CALCULADO e o VOCABULÁRIO ficam", (
 
 
 // ===========================================================================
+// P2 (rodada 16/09) — a explicação do `prosa` é dita UMA vez, não quarenta.
+//
+// `mcp_core.input_schema` pendura o MESMO objeto `prosa` explicado em toda
+// capacidade de ação: ~320 chars × 40 = 30% do bloco de tools no mundo do marco.
+// O conector corta a explicação (e SÓ ela) porque o `ESCOLHER_SYSTEM` já a diz,
+// uma vez, no único caminho que vê estas tools.
+// ===========================================================================
+
+test("P2: a explicação do `prosa` sai, a FORMA dele fica inteira", () => {
+  const m = require("../mente");
+  const cru = { name: "persuade", inputSchema: { type: "object", properties: {
+    personagem: { type: "string" },
+    prosa: { type: "object",
+      description: "O que o personagem FAZ e DIZ ao tentar isto, in-world.",
+      properties: {
+        acao: { type: "string", description: "o que ele faz. Obrigatório." },
+        fala: { type: "string", description: "o que diz em voz alta, se disser" },
+      },
+      required: ["acao"] } },
+    required: ["personagem", "prosa"] } };
+  const t = m._semProsaExplicada(cru);
+  const p = t.inputSchema.properties.prosa;
+
+  assert.ok(!p.description, "a explicação repetida do objeto sai");
+  assert.ok(!p.properties.acao.description, "e a de cada campo também");
+  assert.ok(!p.properties.fala.description);
+
+  // O QUE NÃO PODE SAIR: a forma é o que o schema de fato entrega (spec 043).
+  assert.strictEqual(p.type, "object");
+  assert.deepStrictEqual(Object.keys(p.properties), ["acao", "fala"],
+    "os campos continuam lá — ela não fica sem saber que existe `fala`");
+  assert.deepStrictEqual(p.required, ["acao"],
+    "`acao` continua OBRIGATÓRIA: é a régua que lê COMO se tentou");
+  assert.deepStrictEqual(t.inputSchema.required, ["personagem", "prosa"]);
+  assert.deepStrictEqual(t.inputSchema.properties.personagem, { type: "string" },
+    "nenhum outro parâmetro é tocado");
+
+  // CAMPO NOVO EM `prosa` CONTINUA DESCENDO. O corte tira `description`, nunca
+  // uma chave — perder campo em silêncio já matou duas corridas A/B.
+  const comCampoNovo = m._semProsaExplicada({ name: "x", inputSchema: {
+    type: "object", properties: { prosa: { type: "object", properties: {
+      acao: { type: "string" },
+      tom: { type: "string", description: "inventado hoje" } } } } } });
+  assert.ok("tom" in comCampoNovo.inputSchema.properties.prosa.properties,
+    "um campo novo no contrato aparece no prompt em vez de sumir");
+
+  // CONSULTA não tem `prosa` (perguntar não é tentar) — passa intacta.
+  const consulta = { name: "consultar_momento",
+    inputSchema: { type: "object", properties: {} } };
+  assert.strictEqual(m._semProsaExplicada(consulta), consulta,
+    "sem `prosa` não há o que cortar, e a tool volta como veio");
+});
+
+test("P2: o FUNIL aplica os dois recortes — é por ele que o jogo e a bancada passam", () => {
+  const m = require("../mente");
+  const t = m._recorteDaMente({ name: "give", inputSchema: { type: "object",
+    properties: {
+      to: { type: "string", enum: ["elga-taverneira"] },
+      prosa: { type: "object", description: "explicação repetida",
+               properties: { acao: { type: "string", description: "o que ele faz" } },
+               required: ["acao"] } } } });
+  assert.ok(!t.inputSchema.properties.to.enum, "o enum de cena sai (060)");
+  assert.ok(t.inputSchema.properties.to.description, "e a dica entra no lugar");
+  assert.ok(!t.inputSchema.properties.prosa.description, "e a prosa explicada sai (P2)");
+  assert.ok(!t.inputSchema.properties.prosa.properties.acao.description);
+  assert.deepStrictEqual(t.inputSchema.properties.prosa.required, ["acao"]);
+});
+
+// A LIGAÇÃO DO FUNIL. Os dois testes acima provam a FUNÇÃO; este prova que ela está
+// no fio. Trocar o `map` do `interpret` de volta para `_semIdDeCena` deixaria os dois
+// verdes e o modelo lendo a explicação quarenta vezes — o modo de falha do "órfão com
+// a suíte verde", que aqui custaria 30% do bloco de tools em silêncio.
+test("P2: a explicação do `prosa` NÃO chega ao modelo por `interpret()`", async () => {
+  const cfg = configuracao.carregar(true);
+  cfg.runtime = "local";
+  configuracao.gravar(cfg);
+
+  const prosaExplicada = { type: "object",
+    description: "O que o personagem FAZ e DIZ ao tentar isto, in-world.",
+    properties: {
+      acao: { type: "string", description: "o que ele faz. Obrigatório." },
+      fala: { type: "string", description: "o que diz em voz alta, se disser" },
+    },
+    required: ["acao"] };
+  Mente.usarMundo(mundoFalso([
+    { name: "take", description: "Pega um item.",
+      inputSchema: { type: "object", properties: { prosa: prosaExplicada },
+                     required: ["prosa"] } },
+    { name: "narrate", description: "Encerra o turno.", inputSchema: { type: "object" } },
+  ]));
+  Mente.usarExtensoes({ toolsLocais: () => [], ehLocal: () => false,
+                        hook: async (_p, dado) => dado });
+
+  const espiao = espiaFetch();
+  try {
+    await Mente.interpret("pegue a corda", CENA);
+  } finally {
+    espiao.restaurar();
+  }
+
+  const corpo = espiao.corpos[0];
+  const take = (corpo.tools || []).find(
+    (t) => (t.function && t.function.name) === "take" || t.name === "take");
+  assert.ok(take, "a chamada não levou a tool `take` — o teste não exercita o caminho");
+  const esq = (take.function && take.function.parameters) || take.inputSchema;
+  assert.ok(esq.properties.prosa, "o `prosa` continua no schema — só a lição sai");
+  assert.ok(!esq.properties.prosa.description,
+    "a explicação do `prosa` chegou ao modelo: o funil do recorte saiu do fio");
+  assert.ok(!esq.properties.prosa.properties.acao.description);
+  assert.deepStrictEqual(esq.properties.prosa.required, ["acao"],
+    "e a obrigatoriedade de `acao` atravessou o fio inteira");
+});
+
+// A LIGAÇÃO DA LIÇÃO. Cortar a explicação do schema só é seguro porque ela está DITA no
+// `ESCOLHER_SYSTEM` — o único caminho que manda estas tools ao modelo (a autonomia
+// não tem `tools` nativas). Se alguém enxugar aquele texto, este teste cai: sem ele,
+// o corte acima passa a ser perda de informação, não de repetição.
+test("P2: o ESCOLHER_SYSTEM é quem ensina o `prosa` agora — e ainda ensina", () => {
+  const m = require("../mente");
+  const sys = m.promptsPadrao().interpretar;
+  assert.match(sys, /prosa\.acao/,
+    "o campo obrigatório precisa ser nomeado: o schema não explica mais");
+  assert.match(sys, /prosa\.fala/, "e o opcional também");
+  assert.match(sys, /TENTATIVA/,
+    "e a regra de descrever a tentativa, nunca o desfecho — era a frase do objeto");
+});
+
+
+// ===========================================================================
 // SPEC 060 / US3 — a cena em PROSA.
 //
 // Medida contra quatro alternativas: a prosa foi a mais barata E a mais certeira

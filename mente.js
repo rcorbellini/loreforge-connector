@@ -1202,6 +1202,66 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
   // medir as duas faces com o mesmo arnês, e sai quando a decisão for tomada.
   const _SEM_DICA = process.env.LOREFORGE_SEM_DICA === "1";
 
+  // A PROSA EXPLICADA UMA VEZ, NÃO QUARENTA E CINCO (proposta P2 da rodada de
+  // 16/09 — `ferramentas/ab/rodada-16-09-quatro-propostas.md`).
+  //
+  // `mcp_core.input_schema` pendura em TODA capacidade de ação o mesmo objeto
+  // `prosa` com as mesmas três frases de explicação ("o que o personagem FAZ e
+  // DIZ...", "o que ele faz. Obrigatório.", "o que diz em voz alta, se disser").
+  // São ~320 chars idênticos × 40 capacidades: MEDIDO em 12.920 chars do bloco de
+  // tools, e 14.244 (30% do bloco, ~3.000 tok por chamada) no mundo do marco da
+  // corrida A/B. O modelo relê a mesma lição quarenta vezes por chamada.
+  //
+  // E ela JÁ ESTÁ dita, uma vez, onde devia: o `ESCOLHER_SYSTEM` abre com
+  // *"Toda chamada leva prosa.acao ... Descreva a TENTATIVA, nunca o desfecho"*.
+  // Este é o único caminho que vê estas tools — a autonomia não tem `tools`
+  // nativas. Então aqui não se perde informação: para de repetir.
+  //
+  // POR QUE NO CONECTOR, e não no `input_schema` (onde o plano da rodada a tinha
+  // posto): o recorte é do BFF. O `mcp_core` é a API, e um host que não seja o
+  // nosso conector (Claude Desktop) não tem `ESCOLHER_SYSTEM` nenhum — para ele a
+  // descrição é a ÚNICA fonte. O próprio `input_schema` diz isso na primeira
+  // linha do corpo ("O SCHEMA É COMPLETO... quem recorta para a LLM é o
+  // conector"), e a spec 060 abriu o precedente com o enum.
+  //
+  // TIRA SÓ `description`, nunca uma chave. A FORMA é o que o schema de fato
+  // entrega (tipo, campo obrigatório presente — medido na 043), então `type`,
+  // `properties` e `required` passam intactos. Um campo novo em `prosa` continua
+  // descendo: perder campo em silêncio já custou duas corridas.
+  function _semProsaExplicada(tool) {
+    const esq = tool.inputSchema || tool.parameters;
+    const prosa = esq && esq.properties && esq.properties.prosa;
+    if (!prosa || typeof prosa !== "object" || !prosa.properties) return tool;
+    const { description: _foraDoObjeto, ...restoDoObjeto } = prosa;
+    const campos = {};
+    for (const [nome, v] of Object.entries(prosa.properties)) {
+      if (!v || typeof v !== "object") { campos[nome] = v; continue; }
+      const { description: _foraDoCampo, ...restoDoCampo } = v;
+      campos[nome] = restoDoCampo;
+    }
+    const novo = { ...tool };
+    const alvo = { ...esq, properties: { ...esq.properties,
+      prosa: { ...restoDoObjeto, properties: campos } } };
+    if (tool.inputSchema) novo.inputSchema = alvo; else novo.parameters = alvo;
+    return novo;
+  }
+
+  // O FUNIL ÚNICO do recorte para a Mente.
+  //
+  // Existe para que haja UM lugar por onde tudo o que o modelo vê passa: o laço do
+  // `interpret` e a `ferramentas/bancada.py` chamam este, e não os pedaços. Uma
+  // bancada que passasse só por um dos recortes mostraria um prompt que o jogo não
+  // usa — e a bancada é o instrumento com que se confere o que de fato desce.
+  // `LOREFORGE_COM_PROSA=1` devolve a explicação repetida — é o braço de CONTROLE
+  // da medição, não um modo de uso. Fica assim, e não o inverso, porque o recorte é
+  // o que se pretende embarcar: um interruptor que precisasse ser LIGADO mediria um
+  // caminho que ninguém roda, e foi assim que a P4 passou por boa até alguém
+  // perguntar o que acontece com quem está com fome e tem plano.
+  function _recorteDaMente(tool) {
+    const sem = process.env.LOREFORGE_COM_PROSA === "1";
+    return sem ? _semIdDeCena(tool) : _semProsaExplicada(_semIdDeCena(tool));
+  }
+
   // A CHAMADA QUE VEIO COMO TEXTO (spec 060).
   //
   // Reconhece pela FORMA, não por adivinhação: o conteúdo parseia como JSON (ou
@@ -1281,7 +1341,7 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
           // O que FICA está em `_ENUM_QUE_FICA`: onde o enum não é a lista da
           // cena mas um subconjunto que só o mundo sabe calcular, ele é a ÚNICA
           // fonte daquele fato. Tirá-lo perderia conhecimento, não peso.
-          const tools = doMundo.concat(locais).map(_semIdDeCena);
+          const tools = doMundo.concat(locais).map(_recorteDaMente);
           const ehLocal = (nome) =>
             !nomesDoMundo.has(nome) && _ext && _ext.ehLocal(nome);
           // AS CONSULTAS DO MUNDO (spec 040), reconhecidas pela marca do PRÓPRIO
@@ -1835,14 +1895,16 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     // é distinguida do fim legítimo da vez, e a função é pura.
     _paradaFalsa,
     // expostas para o teste da US2 provar que o id não vaza
-    _contextoPayload, _semIdDeCena, _cenaEmProsa, _limparMemorias,
+    _contextoPayload, _semIdDeCena, _semProsaExplicada, _recorteDaMente,
+    _cenaEmProsa, _limparMemorias,
     _ENUM_FICA, _ENUM_SAI, _SO_COM_SEMANTICA,
   };
 }
 
 // A PORTA DO MÓDULO PARA O QUE NÃO TEM ESTADO.
 //
-// `_cenaEmProsa`, `_contextoPayload`, `_semIdDeCena`, `_paradaFalsa`, os quatro prompts
+// `_cenaEmProsa`, `_contextoPayload`, `_recorteDaMente` (e os dois recortes que ele
+// compõe), `_paradaFalsa`, os quatro prompts
 // padrão e as constantes são PUROS — não dependem de assento nenhum. Uma instância criada
 // uma vez serve de porta para eles, e é isso que mantém `require("./mente")._cenaEmProsa`
 // funcionando exatamente como antes (é assim que os testes da 060 os alcançam).
@@ -1864,6 +1926,8 @@ module.exports = {
   _paradaFalsa: _semEstado._paradaFalsa,
   _contextoPayload: _semEstado._contextoPayload,
   _semIdDeCena: _semEstado._semIdDeCena,
+  _semProsaExplicada: _semEstado._semProsaExplicada,
+  _recorteDaMente: _semEstado._recorteDaMente,
   // expostos SÓ para o guarda da suíte: ninguém os lê em produção.
   _ENUM_FICA: _semEstado._ENUM_FICA,
   _SO_COM_SEMANTICA: _semEstado._SO_COM_SEMANTICA,
