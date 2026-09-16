@@ -1104,6 +1104,34 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
   // chamo?", que é uma das duas perguntas que a Mente faz — e nada além disso.
   const _DICA_DE_ALVO = "o NOME daquilo, como aparece na cena";
 
+  // O PASSO QUE FALTA, LIDO DO PLANO (rodada 16/09, P4).
+  //
+  // O `content` da intenção é `compromisso\n- passo\n- passo` (spec 073, FR-008), e
+  // `passos_cumpridos` conta quantos já foram riscados. O passo atual é, portanto,
+  // `passos[passos_cumpridos]` — MESMO índice que `casar_e_riscar` usa no Motor
+  // (`motor/intencoes/primitivas.py`). Se as duas leituras divergirem, o conector
+  // recorta a face por um passo e o mundo risca outro; por isso o reconhecimento da
+  // linha é o mesmo ("- " ou "* "), e não uma variação esperta daqui.
+  //
+  // Devolve a lista de VERBOS dos passos atuais (um por compromisso com plano), sem
+  // repetir. Vazia quando não há plano, quando ele acabou, ou quando a linha não
+  // começa por algo com cara de verbo — e o `llama3.1:8b` deu 0/56 em formato de
+  // plano (§medições da 073), então "não dá para ler" é caso COMUM, não exceção.
+  function _verbosDoPassoAtual(intencoes) {
+    const out = [];
+    for (const i of intencoes || []) {
+      const passos = String((i && i.content) || "").split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.startsWith("- ") || l.startsWith("* "))
+        .map((l) => l.slice(2).trim());
+      const feitos = Number(i && i.passos_cumpridos) || 0;
+      if (feitos >= passos.length) continue;      // sem plano, ou plano todo riscado
+      const verbo = (passos[feitos].split(/\s+/)[0] || "").toLowerCase();
+      if (/^[a-z][a-z_]{2,}$/.test(verbo) && !out.includes(verbo)) out.push(verbo);
+    }
+    return out;
+  }
+
   // A CHAMADA QUE VEIO COMO TEXTO (spec 060).
   //
   // Reconhece pela FORMA, não por adivinhação: o conteúdo parseia como JSON (ou
@@ -1154,10 +1182,28 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
         // Isto NÃO é um teto sobre o que A Mente pode querer (aquele foi
         // rejeitado, e com razão): é o escopo da PERGUNTA que a rotina faz. Ela
         // segue escrevendo o compromisso — é lá que a agência dela vive.
+        // E O RECORTE SÓ VALE SE O QUE ELE PEDE EXISTE NESTA CENA (rodada 16/09, P4).
+        //
+        // Sem esta guarda, um nome que a face não oferece derruba a face INTEIRA para
+        // as consultas e o turno morre sem ato possível — pensar, e nada mais. O caso
+        // novo é o P4 (o verbo vem do PLANO, escrito pelo modelo: o `llama3.1:8b` deu
+        // 0/56 em formato de plano, então verbo ilegível é o caso comum), mas o
+        // buraco já existia para a reflexão, se algum dia `set_intention` não for
+        // oferecida.
+        //
+        // Nenhum nome vivo = nenhum recorte. Perder o recorte custa tokens; perder a
+        // face custa o turno, e turno perdido é o que esta rodada existe para medir.
         if (Array.isArray(opts.somente) && opts.somente.length) {
-          doMundo = doMundo.filter(
-            (x) => opts.somente.includes(x.name)
-                   || (x.annotations && x.annotations.readOnlyHint));
+          const vivos = opts.somente.filter(
+            (n) => doMundo.some((x) => x.name === n));
+          if (vivos.length) {
+            doMundo = doMundo.filter(
+              (x) => vivos.includes(x.name)
+                     || (x.annotations && x.annotations.readOnlyHint));
+          } else {
+            devlog("FACE INTEIRA", "o recorte pedia [" + opts.somente.join(", ")
+                   + "], que esta cena não oferece — a face fica inteira");
+          }
         }
         if (doMundo.length) {
           // AS DUAS ORIGENS, e o roteamento por ORIGEM — nunca por nome.
@@ -1512,9 +1558,30 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
       devlog("RACIONAL AUTÔNOMO", `Racional: ${parsed.racional}\nAções: ${acoes}`);
     }
 
+    // A FACE RECORTADA PELO PASSO ATUAL (rodada 16/09, P4).
+    //
+    // Com um plano ativo, oferecer as 43 capacidades da cena é convidar a fazer
+    // outra coisa — e foi o que o controle de 15/09 mostrou: `passos_cumpridos` = 0
+    // em duas horas, com o plano parado no passo 1. O próximo passo NOMEIA um verbo;
+    // oferecer esse verbo é responder à pergunta que o tick está fazendo.
+    //
+    // PRECEDENTE MEDIDO: `opts.somente` já existe desde o item 53.6 — a reflexão
+    // recorta a face para `set_intention`, e a medição foi 8/12 contra a face
+    // inteira. O que muda aqui é de onde vem o nome.
+    //
+    // AS CONSULTAS CONTINUAM (o filtro as deixa passar pelo `readOnlyHint`): ele
+    // segue podendo ler a própria memória e o momento do dia antes de decidir, que é
+    // o raciocínio que dá conteúdo à decisão. E NARRAR NÃO É TOOL — o turno acaba
+    // quando ela para de chamar, e a narração é outra chamada, depois; não há o que
+    // preservar aqui para o turno fechar.
+    //
+    // RISCO ASSUMIDO, e é o que a rodada mede: isto ESTREITA a agência. Se o aceite
+    // cair, P4 perdeu — é o critério escrito no plano da rodada.
+    const somente = _verbosDoPassoAtual(intencoesAtivas);
     return parsed.agir
       ? { texto: parsed.sussurro || null, rotina: "autonomia",
-          racional: parsed.racional || null }
+          racional: parsed.racional || null,
+          ...(somente.length ? { somente } : {}) }
       : null;
   }
 
@@ -1734,7 +1801,7 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     // é distinguida do fim legítimo da vez, e a função é pura.
     _paradaFalsa,
     // expostas para o teste da US2 provar que o id não vaza
-    _contextoPayload, _semIdDeCena, _cenaEmProsa,
+    _contextoPayload, _semIdDeCena, _cenaEmProsa, _verbosDoPassoAtual,
     _ENUM_FICA, _ENUM_SAI,
   };
 }
@@ -1763,6 +1830,7 @@ module.exports = {
   _paradaFalsa: _semEstado._paradaFalsa,
   _contextoPayload: _semEstado._contextoPayload,
   _semIdDeCena: _semEstado._semIdDeCena,
+  _verbosDoPassoAtual: _semEstado._verbosDoPassoAtual,
   // expostos SÓ para o guarda da suíte: ninguém os lê em produção.
   _ENUM_FICA: _semEstado._ENUM_FICA,
   _ENUM_SAI: _semEstado._ENUM_SAI,

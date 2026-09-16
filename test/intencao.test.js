@@ -287,3 +287,144 @@ test("`set_intention` não é oferecido ao planejar, nem sobrevive como passo", 
   assert.ok(!plano.includes("set_intention"),
     "a Mente planejou declarar o próprio desfecho e o passo sobreviveu");
 });
+
+// --------------------------------------------------------------------------- //
+// 4. P4 (rodada 16/09) — A FACE RECORTADA PELO PASSO ATUAL
+//
+// Com um plano ativo, oferecer as 43 capacidades da cena é convidar a fazer outra
+// coisa: o controle de 15/09 fechou duas horas com `passos_cumpridos` = 0 e o plano
+// parado no passo 1. O próximo passo NOMEIA um verbo — oferecer esse verbo é
+// responder à pergunta que o tick está fazendo.
+//
+// O precedente é medido: `opts.somente` já existia (item 53.6) para a reflexão, e
+// mediu 8/12 contra a face inteira. O que muda aqui é de onde vem o nome.
+// --------------------------------------------------------------------------- //
+
+test("P4: o verbo do passo atual sai do plano, no MESMO índice que o Motor risca", () => {
+  const m = require("../mente");
+  // `passos_cumpridos: 1` → o passo atual é o SEGUNDO. É o índice que
+  // `casar_e_riscar` usa (`passos[feitos]`); divergir aqui faria o conector
+  // recortar por um passo e o mundo riscar outro.
+  assert.deepStrictEqual(
+    m._verbosDoPassoAtual([{ content: "Comer.\n- take pao\n- eat pao",
+                             passos_cumpridos: 1 }]),
+    ["eat"]);
+  assert.deepStrictEqual(
+    m._verbosDoPassoAtual([{ content: "Comer.\n- take pao\n- eat pao",
+                             passos_cumpridos: 0 }]),
+    ["take"]);
+  assert.deepStrictEqual(
+    m._verbosDoPassoAtual([{ content: "Comer.\n- take pao\n- eat pao",
+                             passos_cumpridos: 2 }]),
+    [], "plano todo riscado não recorta nada");
+  assert.deepStrictEqual(
+    m._verbosDoPassoAtual([{ content: "Comer.", passos_cumpridos: 0 }]),
+    [], "compromisso SEM plano não recorta nada");
+  // O `llama3.1:8b` deu 0/56 em formato de plano (medições da 073): passo que não
+  // começa por algo com cara de verbo é o caso COMUM, e não pode virar recorte.
+  assert.deepStrictEqual(
+    m._verbosDoPassoAtual([{ content: "Comer.\n- 1. ir até a praça",
+                             passos_cumpridos: 0 }]),
+    []);
+  // Dois compromissos com plano = os dois verbos. Recortar por um só calaria o outro.
+  assert.deepStrictEqual(
+    m._verbosDoPassoAtual([{ content: "A.\n- take pao", passos_cumpridos: 0 },
+                           { content: "B.\n- give moeda", passos_cumpridos: 0 }]),
+    ["take", "give"]);
+});
+
+test("P4: `deriveWhisper` devolve o recorte junto do sussurro", async () => {
+  configuracao.carregar(true);
+  const e = espia(JSON.stringify({ agir: true, racional: "vou comer",
+                                   sussurro: "come o pão" }));
+  let d;
+  try {
+    d = await Mente.deriveWhisper(copia({
+      intentions: [{ ...COMPROMISSO[0],
+                     content: "Matar minha fome.\n- take pao\n- eat pao" }],
+    }));
+  } finally {
+    e.restaurar();
+  }
+  assert.deepStrictEqual(d.somente, ["eat"],
+    "sem isto o `laco` não tem o que passar ao `interpret`, e o recorte é letra morta");
+});
+
+// ONDE O VERBO É CONFERIDO, e por que não aqui.
+//
+// "comer o pão de centeio" — o passo em prosa que o modelo de fato escreve — passa
+// por qualquer teste de FORMA: "comer" tem exatamente a cara de um nome de
+// capacidade. Não há regex que separe prosa portuguesa de nome de tool, e tentar
+// seria adivinhar.
+//
+// Quem sabe a resposta é a FACE, e ela vive no `interpret`. Então `deriveWhisper`
+// PROPÕE o recorte e o `interpret` o descarta quando a cena não oferece aquele nome
+// (a guarda logo abaixo). O contrário — validar aqui — obrigaria o tick a buscar a
+// face uma segunda vez, por chamada, só para não propor.
+test("P4: passo em PROSA é proposto, e é o `interpret` quem o recusa", async () => {
+  configuracao.carregar(true);
+  const e = espia(JSON.stringify({ agir: true, racional: "r", sussurro: "s" }));
+  let d;
+  try {
+    d = await Mente.deriveWhisper(copia());   // passos: "pegar…"/"comer o pão…"
+  } finally {
+    e.restaurar();
+  }
+  assert.deepStrictEqual(d.somente, ["comer"],
+    "o tick propõe pela FORMA — separar prosa de nome de tool não é trabalho dele");
+});
+
+test("P4: a guarda do `interpret` — nome que a cena não oferece mantém a face INTEIRA",
+     async () => {
+  const cfg = configuracao.carregar(true);
+  cfg.runtime = "local";
+  configuracao.gravar(cfg);
+  const face = [
+    { name: "take", description: "Pega.", inputSchema: { type: "object" } },
+    { name: "eat", description: "Come.", inputSchema: { type: "object" } },
+    { name: "consultar_momento", description: "Que horas são.",
+      inputSchema: { type: "object" }, annotations: { readOnlyHint: true } },
+  ];
+  const mundo = {
+    listarCapacidades: async () => face,
+    chamarCapacidade: async () => ({ texto: "", narrativa: {}, recusado: false }),
+    contexto: async () => copia(),
+  };
+  const nomesDaChamada = async (somente) => {
+    Mente.usarMundo(mundo);
+    Mente.usarExtensoes({ toolsLocais: () => [], ehLocal: () => false,
+                          hook: async (_p, dado) => dado });
+    const original = globalThis.fetch;
+    let corpo = null;
+    globalThis.fetch = async (_url, opts) => {
+      corpo = corpo || JSON.parse((opts && opts.body) || "{}");
+      return { ok: true, headers: { get: () => "application/json" },
+               json: async () => ({ message: { content: "", tool_calls: [
+                 { function: { name: "narrate", arguments: { narrative_hint: "fim" } } }] },
+                 prompt_eval_count: 10, eval_count: 5 }) };
+    };
+    try {
+      await Mente.interpret("faça", copia(), () => {}, somente ? { somente } : {});
+    } finally {
+      globalThis.fetch = original;
+    }
+    return (corpo.tools || []).map((t) => (t.function && t.function.name) || t.name).sort();
+  };
+
+  // NARRAR NÃO ENTRA NESTA LISTA porque não é tool: o turno acaba quando ela para
+  // de chamar, e a narração é outra chamada, depois. Uma fixture que pusesse
+  // `narrate` entre as tools do mundo certificaria um jogo que não existe.
+  assert.deepStrictEqual(await nomesDaChamada(["eat"]),
+    ["consultar_momento", "eat"],
+    "o recorte deixa o verbo do passo e as CONSULTAS — e nada mais");
+
+  // A GUARDA. Sem ela, um nome que a face não tem derruba a face inteira para as
+  // consultas e o turno morre sem ato possível — pensar, e nada mais.
+  assert.deepStrictEqual(await nomesDaChamada(["comer"]),
+    ["consultar_momento", "eat", "take"],
+    "nome que a cena não oferece NÃO pode recortar nada");
+
+  assert.deepStrictEqual(await nomesDaChamada(null),
+    ["consultar_momento", "eat", "take"],
+    "sem recorte pedido, a face é a inteira");
+});

@@ -160,7 +160,12 @@ class Laco {
     });
   }
 
-  async _turno(texto, contexto, origem, t) {
+  // `somente` (rodada 16/09, P4): os nomes a que a face desta pergunta se recorta.
+  // Vem de quem DECIDIU o sussurro — a reflexão o tem fixo, o tick autônomo o lê do
+  // passo atual do plano —, porque é lá que se sabe qual pergunta está sendo feita.
+  // O sussurro MANUAL nunca recorta: quem digitou é o jogador, e a vontade dele não
+  // se estreita pelo plano do personagem.
+  async _turno(texto, contexto, origem, t, somente) {
     this.numeroTurno += 1;
 
     let cena = { texto, contexto };
@@ -173,7 +178,8 @@ class Laco {
     try {
       intent = await this.mente.interpret(
         cena.texto, cena.contexto, (pedaco) => this._emite("intencao", { pedaco }),
-        origem === "reflexao" ? { somente: ["set_intention"] } : {});
+        origem === "reflexao" ? { somente: ["set_intention"] }
+        : (Array.isArray(somente) && somente.length ? { somente } : {}));
     } finally {
       this._emite("intencao_fim", {});
     }
@@ -748,7 +754,8 @@ class Laco {
         }
         this._emite("decidiu", { texto });
         if (t) t.sussurro(texto, origem, decidido && decidido.racional);
-        await this._turno(texto, contexto, origem, t);
+        await this._turno(texto, contexto, origem, t,
+                          decidido && decidido.somente);
       } catch (e) {
         this._emite("erro", { texto: `Algo interrompeu a cena: ${e.message}` });
         if (t) t.falha(e.message);

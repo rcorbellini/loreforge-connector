@@ -936,3 +936,52 @@ test("recusa de MÉRITO não ganha lista — não há o que corrigir", async () 
   assert.ok(!recebido.includes("só valem"),
     "recusa de mérito não convida retry: o mundo decidiu, e re-tentar é teimosia");
 });
+
+// --------------------------------------------------------------------------- //
+// P4 (rodada 16/09) — O RECORTE ATRAVESSA O FIO
+//
+// `deriveWhisper` decide o recorte e `interpret` o aplica, mas quem liga os dois é
+// ESTE arquivo: o `talvezAgirSozinho` passa o `somente` adiante. Sem este teste, tirar
+// a passagem deixaria os dois lados verdes e o recorte morto — a face inteira descendo
+// em toda volta do relógio, com a suíte inteira passando. É o modo de falha que já
+// matou o ramo de reflexão por uma semana.
+// --------------------------------------------------------------------------- //
+
+function menteQueDecide(decidido) {
+  const opts = [];
+  return {
+    opts,
+    interpret: async (_texto, _ctx, _onAction, o) => { opts.push(o); return null; },
+    narrate: async () => "prosa",
+    deriveWhisper: async () => decidido,
+  };
+}
+
+test("P4: o `somente` do tick autônomo chega ao `interpret`", async () => {
+  const mente = menteQueDecide({ texto: "come o pão", rotina: "autonomia",
+                                 racional: "fome", somente: ["eat"] });
+  const laco = new Laco({ mundo: mundoDe({ respostas: [] }), mente,
+                          extensoes: extVazio(), emitir: coletor().emitir });
+  await laco.talvezAgirSozinho();
+  assert.deepStrictEqual(mente.opts[0], { somente: ["eat"] },
+    "o recorte do passo atual não atravessou o laço — a face desce inteira");
+});
+
+test("P4: sem recorte decidido, o tick autônomo não inventa nenhum", async () => {
+  const mente = menteQueDecide({ texto: "olha em volta", rotina: "autonomia",
+                                 racional: "curiosidade" });
+  const laco = new Laco({ mundo: mundoDe({ respostas: [] }), mente,
+                          extensoes: extVazio(), emitir: coletor().emitir });
+  await laco.talvezAgirSozinho();
+  assert.deepStrictEqual(mente.opts[0], {});
+});
+
+test("P4: a REFLEXÃO continua recortando para `set_intention` (item 53.6)", async () => {
+  const mente = menteQueDecide({ texto: "pare e decida", rotina: "refletir",
+                                 racional: "sem compromisso" });
+  const laco = new Laco({ mundo: mundoDe({ respostas: [] }), mente,
+                          extensoes: extVazio(), emitir: coletor().emitir });
+  await laco.talvezAgirSozinho();
+  assert.deepStrictEqual(mente.opts[0], { somente: ["set_intention"] },
+    "o recorte medido em 8/12 foi atropelado pelo caminho novo");
+});
