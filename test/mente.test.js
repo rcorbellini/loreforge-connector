@@ -497,3 +497,52 @@ test("o que FICA de fato sobrevive ao recorte, e o que SAI de fato sai", () => {
   assert.ok(sai.inputSchema.properties.to.description,
     "e no lugar fica a dica de COMO chamar");
 });
+
+// ===========================================================================
+// O ID DE MEMÓRIA SAI — mas só quando há com que resolvê-lo (16/09)
+//
+// Era o maior enum que restava: 506 entradas para um personagem de história longa,
+// 32% de tudo o que vai no fio. Ficava porque a face mandava o candidato com `nome`
+// igual ao próprio id (`name_of` não acha memória), e sem nome não há o que resolver.
+//
+// Com o resumo descendo como nome, a memória vira o que todo o resto já é: A Mente
+// nomeia, o conector converte. Mas nomear memória é trabalho de EMBEDDING — o resumo
+// tem 99 chars em média e ela a chama de outro jeito. Medido, 811 candidatos:
+//   só literal (o config de hoje) .... 0/5
+//   com embedding .................... 2/5, e 3/5 contra o que a consulta evocou
+// Zero de cinco não é economia: é `sing`/`accuse`/`write` deixando de ser chamáveis.
+// ===========================================================================
+
+test("o enum de memória FICA enquanto não houver camada semântica", () => {
+  const m = require("../mente");
+  const cfg = configuracao.carregar(true);
+  cfg.embeddingModel = "";
+  configuracao.gravar(cfg);
+  const t = m._semIdDeCena({ name: "sing", inputSchema: { type: "object", properties: {
+    memoria_id: { type: "string", enum: ["mem-1", "mem-2"] } } } });
+  assert.deepStrictEqual(t.inputSchema.properties.memoria_id.enum, ["mem-1", "mem-2"],
+    "sem embedding o resolvedor mede 0/5 — tirar o enum tornaria a tool inchamável");
+});
+
+test("com a camada semântica ligada, o enum de memória SAI", () => {
+  const m = require("../mente");
+  const cfg = configuracao.carregar(true);
+  cfg.embeddingModel = "nomic-embed-text:latest";
+  configuracao.gravar(cfg);
+  const t = m._semIdDeCena({ name: "sing", inputSchema: { type: "object", properties: {
+    memoria_id: { type: "string", enum: ["mem-1", "mem-2"] } } } });
+  assert.ok(!t.inputSchema.properties.memoria_id.enum, "o enum de 506 ids tinha de sair");
+  assert.ok(t.inputSchema.properties.memoria_id.description,
+    "e no lugar fica a dica de COMO apontar");
+  cfg.embeddingModel = "";
+  configuracao.gravar(cfg);
+});
+
+test("`memoria_id` está classificado como SAI — não caiu no default mudo", () => {
+  const m = require("../mente");
+  for (const par of ["sing:memoria_id", "accuse:memoria_id", "write:memoria_id"]) {
+    assert.ok(m._ENUM_SAI.has(par), `${par} precisa estar em _ENUM_SAI`);
+    assert.ok(!m._ENUM_FICA.has(par), `${par} não pode estar nos dois`);
+    assert.ok(m._SO_COM_SEMANTICA.has(par), `${par} só sai com embedding`);
+  }
+});

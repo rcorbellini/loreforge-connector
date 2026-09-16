@@ -1045,14 +1045,33 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     "create_memory:intensity", "create_memory:domain",   // vocabulário fechado
     "travel_to:destino", "ask_about:sobre_lugar",// lugar que ele sabe alcançar
     "learn_routes:rotas",                        // rotas do MUNDO, não da cena
-    "accuse:memoria_id", "sing:memoria_id", "write:memoria_id",
   ]);
 
   // O QUE SAI, DITO EM VOZ ALTA. Só existe para o guarda do `mente.test.js`: ele
   // exige que todo par com candidatos esteja num dos dois conjuntos. Sem isto, um
   // parâmetro novo cairia no default — e o default é REMOVER, que foi exatamente
   // como `pronto_quando` sumiu do prompt sem ninguém decidir.
+  // OS QUE SÓ SAEM COM A CAMADA SEMÂNTICA LIGADA. Estão em `_ENUM_SAI` (é para lá que
+  // eles vão quando dá), e por isso o guarda exaustivo do `mente.test.js` continua
+  // satisfeito — o que muda é QUANDO o corte acontece, não a classificação.
+  const _SO_COM_SEMANTICA = new Set([
+    "accuse:memoria_id", "sing:memoria_id", "write:memoria_id",
+  ]);
+
   const _ENUM_SAI = new Set([
+    // O ID DE MEMÓRIA SAI (16/09). Ele era o maior enum que restava — 506 entradas
+    // para um personagem de história longa, 32% de tudo o que vai no fio — e estava
+    // em `_ENUM_FICA` por um motivo que deixou de valer: a face mandava o candidato
+    // com `nome` igual ao próprio id (`name_of` não acha memória), então não havia
+    // como resolver por nome e o enum era a única porta.
+    //
+    // Agora a face manda o RESUMO como nome, e a memória vira o que todo o resto do
+    // projeto já é: A Mente NOMEIA a lembrança com as palavras dela, o conector
+    // converte. Medido: contra as 811 memórias o resolvedor acerta 2/5; contra o
+    // conjunto que uma consulta acabou de evocar, 3/5 — e em NENHUMA configuração
+    // ele erra, só cala. É por isso que o pool importa, e é o que a `_poolDeMemoria`
+    // abaixo mantém.
+    "accuse:memoria_id", "sing:memoria_id", "write:memoria_id",
     "accuse:alvo", "ask_about:quem", "ask_directions:quem", "ask_wares:quem",
     "attack:alvo", "attack:arma", "brew:ingredientes", "brew:recipiente",
     "ask_wares:parceiro", "buy:parceiro", "buy:pagamento", "buy:mercadoria",
@@ -1071,13 +1090,38 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     "write:superficie",
   ]);
 
+  // O ID DE MEMÓRIA SÓ SAI SE HOUVER COMO RESOLVÊ-LO (16/09).
+  //
+  // Para toda outra referência, a Mente aponta por NOME e a camada LITERAL do
+  // resolvedor dá conta: "Frasco de Óleo" casa com `frasco-de-oleo` por normalização.
+  // Memória não tem nome — tem um RESUMO de 99 chars em média, e a Mente a nomeia com
+  // outras palavras ("a vez em que a Hulda tentou me roubar"). Isso é trabalho de
+  // embedding, e o `embeddingModel` nasce VAZIO no config.
+  //
+  // MEDIDO, 811 candidatos, 5 referências em paráfrase:
+  //   só literal (o config de hoje) .... 0/5   — todas mudas
+  //   com embedding, contra as 811 ..... 2/5
+  //   com embedding, contra o evocado .. 3/5   (e 3/3 com pool <= 19)
+  // Em NENHUMA configuração ele erra: ou acerta, ou cala.
+  //
+  // Zero de cinco não é economia, é `sing`/`accuse`/`write` deixando de ser
+  // chamáveis. Então o enum fica enquanto não houver com que resolver — é a mesma
+  // regra que o resolvedor já aplica a si mesmo (Princípio VIII: sem embedding não há
+  // mecanismo pior fingindo ser o mesmo, há uma camada A MENOS, declarada).
+  function _podeResolverPorSemantica() {
+    const cfg = config();
+    return !!(cfg && cfg.embeddingModel);
+  }
+
   function _semIdDeCena(tool) {
     const esq = tool.inputSchema || tool.parameters;
     if (!esq || !esq.properties) return tool;
     const props = {};
     let mexeu = false;
     for (const [nome, v] of Object.entries(esq.properties)) {
-      if (!v || typeof v !== "object" || _ENUM_FICA.has(`${tool.name}:${nome}`)) {
+      if (!v || typeof v !== "object" || _ENUM_FICA.has(`${tool.name}:${nome}`)
+          || (_SO_COM_SEMANTICA.has(`${tool.name}:${nome}`)
+              && !_podeResolverPorSemantica())) {
         props[nome] = v;
         continue;
       }
@@ -1735,7 +1779,7 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     _paradaFalsa,
     // expostas para o teste da US2 provar que o id não vaza
     _contextoPayload, _semIdDeCena, _cenaEmProsa,
-    _ENUM_FICA, _ENUM_SAI,
+    _ENUM_FICA, _ENUM_SAI, _SO_COM_SEMANTICA,
   };
 }
 
@@ -1765,6 +1809,7 @@ module.exports = {
   _semIdDeCena: _semEstado._semIdDeCena,
   // expostos SÓ para o guarda da suíte: ninguém os lê em produção.
   _ENUM_FICA: _semEstado._ENUM_FICA,
+  _SO_COM_SEMANTICA: _semEstado._SO_COM_SEMANTICA,
   _ENUM_SAI: _semEstado._ENUM_SAI,
   _cenaEmProsa: _semEstado._cenaEmProsa,
 };
