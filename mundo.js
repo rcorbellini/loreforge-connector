@@ -31,6 +31,36 @@ function _tabelaPorNome(tools) {
   return tabela;
 }
 
+// O MAPA POR PARÂMETRO, com os nomes — `{tool: {param: {id: nome}}}` (17/09).
+//
+// O `byName` sempre carregou isto; o conector lia só as CHAVES ("quais parâmetros são
+// referência") e jogava os valores fora, porque a decisão de 11/09 foi tirar o nome do
+// CONTEXTO. Continua certo para entidade: o contexto é mais fresco e diz o que existe
+// AGORA.
+//
+// O que mudou é que apareceu um parâmetro cujo conjunto NÃO está no contexto e não é a
+// cena: `memoria_id`. Resolver uma lembrança contra o dicionário inteiro dá 876
+// candidatos misturados — pessoas, itens, lugares e memórias no mesmo balaio — e a
+// margem do resolvedor colapsa: medido, 2/5 contra as 811 memórias, e pior ainda
+// misturando. O `byName` tem o ESCOPO exato, por parâmetro, e não custa um token: ele
+// morre no `traduzTools`, antes do corpo da requisição.
+//
+// Não é uma segunda fonte de verdade sobre nome de entidade: o contexto continua
+// mandando onde ele tem a resposta (ver `candidatosDe`, ordem 1-2-3).
+function _mapaPorParametro(tools) {
+  const mapa = {};
+  for (const t of tools || []) {
+    const marca = (t.annotations && t.annotations.byName) || null;
+    if (!marca || typeof marca !== "object" || Array.isArray(marca)) continue;
+    for (const [param, pares] of Object.entries(marca)) {
+      if (pares && typeof pares === "object" && Object.keys(pares).length) {
+        (mapa[t.name] = mapa[t.name] || {})[param] = pares;
+      }
+    }
+  }
+  return mapa;
+}
+
 // Os enums que SOBREVIVERAM no schema (vocabulário fechado, subconjunto calculado).
 // No braço B os de ENTIDADE já não chegam aqui — saíram na fonte, em `face.py`.
 function _tabelaDeCandidatos(tools) {
@@ -199,6 +229,7 @@ class Mundo {
     // O dado já chegava à máquina do jogador; só estava sendo jogado fora.
     this.candidatosDaCena = _tabelaDeCandidatos(tools);
     this.porNomeDaCena = _tabelaPorNome(tools);
+    this.paresPorParametro = _mapaPorParametro(tools);
     log("MCP tools/list", tools.map((t) => t.name).join(", "));
     return tools;
   }
@@ -228,9 +259,27 @@ class Mundo {
     const porParam = this.candidatosDaCena && this.candidatosDaCena[capacidade];
     const ids = porParam && porParam[parametro];
     if (ids && ids.length) return ids.map((id) => ({ id, nome: nomes[id] || id }));
-    // 2. o MAPA DO CONTEXTO, para os parâmetros que o mundo marcou como referência.
     const refs = this.porNomeDaCena && this.porNomeDaCena[capacidade];
     if (!refs || !refs.has(parametro)) return null;
+    // 2. o MAPA POR PARÂMETRO do `byName`, quando o CONTEXTO não sabe nomear aquilo.
+    //
+    // Só vale para o que não está no dicionário da cena — hoje, a memória. Para
+    // entidade o contexto continua mandando (ordem 3), porque ele é mais fresco: diz
+    // o que existe AGORA, e o `byName` tem a idade do último `tools/list`.
+    //
+    // A diferença é de ESCOPO, e ela é medida: resolver `memoria_id` contra o
+    // dicionário inteiro são 876 candidatos misturados; contra o mapa do parâmetro,
+    // as 510 que são memória. O resolvedor abstém-se por margem, e margem colapsa com
+    // vizinho parecido — quanto mais estreito o conjunto certo, mais ele resolve.
+    const pares = this.paresPorParametro && this.paresPorParametro[capacidade];
+    const doParametro = pares && pares[parametro];
+    if (doParametro) {
+      const fora = Object.entries(doParametro)
+        .filter(([id]) => !nomes[id])       // o que o contexto nomeia, o contexto nomeia
+        .map(([id, nome]) => ({ id, nome }));
+      if (fora.length) return fora;
+    }
+    // 3. o MAPA DO CONTEXTO, para os parâmetros que o mundo marcou como referência.
     const doContexto = Object.entries(nomes).map(([id, nome]) => ({ id, nome }));
     return doContexto.length ? doContexto : null;
   }

@@ -188,3 +188,58 @@ test("060/US2: candidatosOuConhecidos TAMBÉM devolve null quando não há lista
   assert.ok(Array.isArray(m.candidatosOuConhecidos("ask_directions", "quem")),
     "um parâmetro que TEM enum continua devolvendo a lista normalmente");
 });
+
+// ===========================================================================
+// O ESCOPO POR PARÂMETRO (17/09) — `byName` deixa de ter os valores jogados fora
+//
+// Tirar o enum de `memoria_id` do schema custou uma coisa que não estava à vista: o
+// enum era também o ESCOPO do parâmetro no conector. Sem ele, `candidatosDe` caía no
+// dicionário do contexto — 67 entidades, e NENHUMA memória. A resolução era
+// impossível por construção, e teria falhado em silêncio numa corrida de 2h.
+//
+// O `byName` sempre carregou `{param: {id: nome}}`; o conector lia só as chaves.
+// Agora os valores servem de escopo para o que o contexto não sabe nomear.
+// ===========================================================================
+
+test("o parâmetro de MEMÓRIA resolve contra as memórias, não contra a cena", () => {
+  const { Mundo } = require("../mundo");
+  const m = new Mundo("http://x", "alguem");
+  m.porNomeDaCena = { sing: new Set(["memoria_id"]) };
+  m.paresPorParametro = { sing: { memoria_id: {
+    "mem-1": "Vi Hulda furtar o pe de cabra.",
+    "mem-2": "Conversei com Elga sobre o tempo." } } };
+  m.candidatosDaCena = {};
+  m._nomesDaCena = { "elga-taverneira": "Elga, a Taverneira",
+                     "frasco-de-oleo": "Frasco de Oleo" };
+  const c = m.candidatosDe("sing", "memoria_id");
+  assert.strictEqual(c.length, 2, "tem de vir a lista do PARÂMETRO, não a da cena");
+  assert.ok(c.every((x) => x.id.startsWith("mem-")));
+  assert.ok(c.some((x) => x.nome.includes("Hulda")),
+    "e com o RESUMO como nome — sem ele o resolvedor não tem contra o que casar");
+});
+
+test("o parâmetro de ENTIDADE continua vindo do CONTEXTO, que é mais fresco", () => {
+  const { Mundo } = require("../mundo");
+  const m = new Mundo("http://x", "alguem");
+  m.porNomeDaCena = { examine: new Set(["alvo"]) };
+  // o `byName` de `alvo` traz gente que o contexto TAMBÉM nomeia: o contexto vence
+  m.paresPorParametro = { examine: { alvo: { "elga-taverneira": "Elga" } } };
+  m.candidatosDaCena = {};
+  m._nomesDaCena = { "elga-taverneira": "Elga, a Taverneira",
+                     "frasco-de-oleo": "Frasco de Oleo" };
+  const c = m.candidatosDe("examine", "alvo");
+  assert.strictEqual(c.length, 2, "o dicionário do contexto, inteiro, como antes");
+  assert.ok(c.some((x) => x.nome === "Elga, a Taverneira"),
+    "e com o nome do CONTEXTO, que diz o que existe agora");
+});
+
+test("parâmetro que NÃO é referência continua devolvendo null", () => {
+  const { Mundo } = require("../mundo");
+  const m = new Mundo("http://x", "alguem");
+  m.porNomeDaCena = { set_intention: new Set(["intention_id"]) };
+  m.paresPorParametro = {};
+  m.candidatosDaCena = {};
+  m._nomesDaCena = { "elga-taverneira": "Elga" };
+  assert.strictEqual(m.candidatosDe("set_intention", "content"), null,
+    "prosa livre resolvida contra entidades vira o teor do compromisso virando id");
+});
