@@ -580,12 +580,49 @@ RESTRIÇÕES SEVERAS:
 
   const OBSERVE_SYSTEM = `Você é a mente do personagem "observador", olhando para algo percebido. Escreva em 1-2 frases curtas, centrada nele, o que vê — TINGIDO pela vivência. NUNCA fale como narrador externo.`;
 
-  // === BLINDAGEM DE LIXO DO SERVIDOR (ORIENTADA AO TEMPO) ===
-  function _limparMemorias(memories) {
+  // Os ids que a cena põe diante dele: quem está aqui e onde ele está. A memória que
+  // envolve um deles volta sozinha, mesmo velha — é o que distingue "lembrar" de
+  // "estar lembrando".
+  function _quemEvoca(cena) {
+    const c = cena || {};
+    const ids = ((c.characters || []).map((x) => x && x.id)).filter(Boolean);
+    const lugar = (c.place && c.place.id) || (c.location && c.location.id);
+    if (lugar) ids.push(lugar);
+    return new Set(ids);
+  }
+
+  // === O QUE ESTÁ GRITANDO NA CABEÇA DELE AGORA ===
+  //
+  // Desde 2026-09-17 o `get_context` entrega o ALCANCE inteiro — tudo o que ele
+  // conseguiria lembrar se parasse para tentar, viva ou vencida (`docs/fluxo-do-
+  // contrato.md` § "O princípio, afiado"). Decidir o que está PRESENTE passou a ser
+  // daqui, e são três cortes, nesta ordem:
+  //
+  //   1. VIVA. A vencida é alcançável — é o que faz `consultar_memoria` poder ser
+  //      respondida sem voltar ao mundo —, mas não está na cabeça dele sozinha.
+  //   2. EVOCAÇÃO. Fica o que está vívido POR SI, mais o que envolve alguém presente
+  //      ou o lugar atual. A regra é da spec 013 e não mudou; mudou de lado. Os
+  //      insumos dela (`salience`, `recency`) continuam vindo do mundo, calculados do
+  //      relógio e da intensidade — são FATO.
+  //   3. TETO de 12. Quanto cabe depende do modelo, e é o BFF que sabe.
+  //
+  // `evocadoPor` são os ids presentes na cena mais o do lugar. Sem ele (chamada que
+  // não tem cena à mão), a evocação é pulada e só o corte de vida e o teto valem.
+  function _limparMemorias(memories, evocadoPor) {
     if (!memories || !memories.length) return [];
-    
+
+    const evoca = evocadoPor instanceof Set ? evocadoPor : new Set(evocadoPor || []);
+    const presentes = (memories || []).filter((m) => {
+      // `estado` só existe no contrato novo. Ausente = o servidor já filtrou (era o
+      // que ele fazia até 17/09), e aí não há o que cortar aqui.
+      if (m && m.estado && m.estado !== "viva") return false;
+      if (!evoca.size) return true;
+      if (m && m.salience === "vivida") return true;
+      return (m && m.involved || []).some((i) => evoca.has(i));
+    });
+
     // 1. Ordena explicitamente pelo tempo (mais recentes/maior timestamp primeiro)
-    const ordenadas = [...memories].sort((a, b) => 
+    const ordenadas = [...presentes].sort((a, b) => 
       (b.timestamp_start || 0) - (a.timestamp_start || 0)
     );
 
@@ -594,7 +631,12 @@ RESTRIÇÕES SEVERAS:
     
     // 2. Varre as mais recentes e desduplica
     for (const m of ordenadas) {
-      const text = (m.content || m.conteudo || "").trim();
+      // O ALCANCE NÃO CARREGA O CORPO — só o `summary`. Ler apenas `content` aqui
+      // devolveria lista VAZIA no contrato novo, em silêncio, e a Mente jogaria sem
+      // memória nenhuma com a suíte verde. É o modo de falha que o
+      // `docs/fluxo-do-contrato.md` existe para impedir; o fallback mantém o contrato
+      // ANTIGO funcionando, para um servidor mais velho não quebrar o conector.
+      const text = (m.summary || m.content || m.conteudo || "").trim();
       if (!text) continue;
       
       if (!seen.has(text)) {
@@ -751,7 +793,10 @@ RESTRIÇÕES SEVERAS:
         inventario: (_self.inventory || []).map((it) => it.name),
       },
       // Aplica a blindagem aqui:
-      memorias: _limparMemorias(_self.memories),
+      // QUEM EVOCA: os presentes na cena mais o lugar. É o que a spec 013 chama de
+      // "o antigo só volta se o contexto evoca" — a regra agora roda aqui, com os
+      // insumos (`salience`) vindos do mundo.
+      memorias: _limparMemorias(_self.memories, _quemEvoca(_scene)),
       rotas_disponiveis: (_scene.exits || []).map((r) => ({ nome: r.name, para: r.destination_name })),
       // `comCapacidades` é FALSE só na chamada de `interpret` que já manda `tools`
       // nativas (spec 043) — lá, repetir a mesma informação em prosa é DUPLICAÇÃO,
@@ -1693,7 +1738,10 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
       belongs_to: _pertenceA(_place.belongs_to),
       presentes: (_scene.characters || []).filter((c) => c.state !== "self").map((c) => ({ nome: c.name, fazendo: c.action })),
       // Aplica a blindagem nas memórias descritivas da narração:
-      memorias: _limparMemorias(_self.memories),
+      // QUEM EVOCA: os presentes na cena mais o lugar. É o que a spec 013 chama de
+      // "o antigo só volta se o contexto evoca" — a regra agora roda aqui, com os
+      // insumos (`salience`) vindos do mundo.
+      memorias: _limparMemorias(_self.memories, _quemEvoca(_scene)),
     };
     return (
       await callModel(
@@ -1778,7 +1826,7 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     // é distinguida do fim legítimo da vez, e a função é pura.
     _paradaFalsa,
     // expostas para o teste da US2 provar que o id não vaza
-    _contextoPayload, _semIdDeCena, _cenaEmProsa,
+    _contextoPayload, _semIdDeCena, _cenaEmProsa, _limparMemorias,
     _ENUM_FICA, _ENUM_SAI, _SO_COM_SEMANTICA,
   };
 }
@@ -1812,4 +1860,5 @@ module.exports = {
   _SO_COM_SEMANTICA: _semEstado._SO_COM_SEMANTICA,
   _ENUM_SAI: _semEstado._ENUM_SAI,
   _cenaEmProsa: _semEstado._cenaEmProsa,
+  _limparMemorias: _semEstado._limparMemorias,
 };

@@ -546,3 +546,71 @@ test("`memoria_id` está classificado como SAI — não caiu no default mudo", (
     assert.ok(m._SO_COM_SEMANTICA.has(par), `${par} só sai com embedding`);
   }
 });
+
+// ===========================================================================
+// O ALCANCE DESCE; QUEM CORTA É O CONECTOR (17/09)
+//
+// `docs/fluxo-do-contrato.md` § "O princípio, afiado": o mundo entrega o que é DELE
+// (todas as memórias que ele conseguiria puxar, viva ou vencida), o conector guarda,
+// e o payload leva só o que está gritando agora. Os três cortes que moraram no
+// servidor por um ano — vivas, evocação, teto — passaram para cá.
+// ===========================================================================
+
+const MEMS = [
+  { id: "m1", estado: "viva", salience: "vivida", recency: "agora",
+    intensity: "large", summary: "Vi Hulda furtar o pe de cabra.",
+    involved: ["hulda"], timestamp_start: 500 },
+  { id: "m2", estado: "viva", salience: "latente", recency: "ha meses",
+    intensity: "small", summary: "Conversei com Elga sobre o tempo.",
+    involved: ["elga"], timestamp_start: 400 },
+  { id: "m3", estado: "vencida", salience: "latente", recency: "ha meses",
+    intensity: "small", summary: "Perdi uma moeda na praca.",
+    involved: ["praca"], timestamp_start: 300 },
+];
+
+test("o corte lê `summary` — o alcance NÃO carrega `content`", () => {
+  const m = require("../mente");
+  const saiu = m._limparMemorias(MEMS, new Set());
+  assert.ok(saiu.length > 0,
+    "lendo só `content`, o contrato novo devolveria lista VAZIA em silêncio — a " +
+    "Mente jogaria sem memória nenhuma com a suíte verde");
+  assert.ok(saiu.some((x) => x.o_que.includes("Hulda")));
+});
+
+test("a VENCIDA é alcançável mas não vai ao payload", () => {
+  const m = require("../mente");
+  const saiu = m._limparMemorias(MEMS, new Set());
+  assert.ok(!saiu.some((x) => x.o_que.includes("moeda")),
+    "ela é dele e ele pode parar e lembrar — mas não está gritando na cabeça dele");
+});
+
+test("a EVOCAÇÃO: o vívido volta sozinho, o latente só se a cena o chamar", () => {
+  const m = require("../mente");
+  // ninguém presente: só o vívido por si sobrevive
+  const sozinho = m._limparMemorias(MEMS, new Set(["ninguem"]));
+  assert.deepStrictEqual(sozinho.map((x) => x.o_que),
+    ["Vi Hulda furtar o pe de cabra."],
+    "o latente não volta sem a cena o evocar (spec 013)");
+  // com a Elga presente, a lembrança dela volta junto
+  const comElga = m._limparMemorias(MEMS, new Set(["elga"]));
+  assert.strictEqual(comElga.length, 2,
+    "quem está presente traz de volta o que o envolve, mesmo latente");
+});
+
+test("sem `estado` no payload, o corte de vida é pulado — servidor antigo não quebra",
+     () => {
+  const m = require("../mente");
+  const velho = [{ id: "v1", content: "Uma lembranca do contrato antigo.",
+                   salience: "vivida", timestamp_start: 1 }];
+  const saiu = m._limparMemorias(velho, new Set());
+  assert.strictEqual(saiu.length, 1,
+    "o contrato antigo já vinha filtrado pelo servidor; aqui não há o que cortar");
+});
+
+test("o TETO de 12 continua, e é o último corte", () => {
+  const m = require("../mente");
+  const muitas = Array.from({ length: 40 }, (_, i) => ({
+    id: `x${i}`, estado: "viva", salience: "vivida", intensity: "small",
+    summary: `lembranca numero ${i}`, involved: [], timestamp_start: i }));
+  assert.strictEqual(m._limparMemorias(muitas, new Set()).length, 12);
+});
