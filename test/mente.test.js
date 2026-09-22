@@ -309,6 +309,24 @@ test("060/US2: o enum de referência sai; o CALCULADO e o VOCABULÁRIO ficam", (
 // capacidade de ação: ~320 chars × 40 = 30% do bloco de tools no mundo do marco.
 // O conector corta a explicação (e SÓ ela) porque o `ESCOLHER_SYSTEM` já a diz,
 // uma vez, no único caminho que vê estas tools.
+//
+// POR QUE A FORMA NÃO PODE IR JUNTO — medido em 21/09, e o número surpreendeu:
+// `ferramentas/sondagem-ref-openapi.js` rodou três variantes do bloco contra o
+// modelo real. Tirando o OBJETO `prosa` das capacidades (não a explicação: a chave),
+// das 11 chamadas que o modelo fez, **11 voltaram sem prosa nenhuma** — contra 0 de
+// 12 com o objeto presente. O `ESCOLHER_SYSTEM` manda preencher prosa em toda
+// chamada e o modelo IGNORA: quem faz a prosa existir é a FORMA no schema, não a
+// instrução no system.
+//
+// É a razão de este teste existir com esta forma. A explicação é repetição e sai de
+// graça; a chave é o que faz a Mente encenar, e sem ela o `laco.js` cai no fallback
+// que narra o PENSAMENTO da Mente no lugar do que o personagem faz — a régua
+// passaria a julgar raciocínio em vez de encenação, em silêncio.
+//
+// A mesma sondagem respondeu `$ref`/`$defs` ao estilo OpenAPI (-4,3%): o modelo não
+// resolve a referência. Ela se comportou IDÊNTICA a não ter prosa (0/15). Num OpenAPI
+// quem resolve `$ref` é um parser, antes de qualquer leitura; aqui o bloco é
+// serializado para dentro do prompt e o "parser" é a atenção de um 8B.
 // ===========================================================================
 
 test("P2: a explicação do `prosa` sai, a FORMA dele fica inteira", () => {

@@ -1341,7 +1341,16 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
           // O que FICA está em `_ENUM_QUE_FICA`: onde o enum não é a lista da
           // cena mas um subconjunto que só o mundo sabe calcular, ele é a ÚNICA
           // fonte daquele fato. Tirá-lo perderia conhecimento, não peso.
-          const tools = doMundo.concat(locais).map(_recorteDaMente);
+          // `recorteExtra` recebe o BLOCO, não a tool. O `_recorteDaMente` é por
+          // capacidade e não alcança transformação que precise de estado entre elas
+          // — uma definição hospedada numa e referenciada nas outras, por exemplo.
+          // Existe para SONDAGEM: nada em produção o define, e por isso o default é
+          // a identidade. Sem ele, medir uma forma nova de bloco obrigaria a forkar
+          // este arquivo, e o que se mediria seria o fork.
+          let tools = doMundo.concat(locais).map(_recorteDaMente);
+          if (_ext && typeof _ext.recorteExtra === "function") {
+            tools = _ext.recorteExtra(tools);
+          }
           const ehLocal = (nome) =>
             !nomesDoMundo.has(nome) && _ext && _ext.ehLocal(nome);
           // AS CONSULTAS DO MUNDO (spec 040), reconhecidas pela marca do PRÓPRIO
