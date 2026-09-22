@@ -1172,11 +1172,13 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
       }
       if (Array.isArray(v.enum)) {
         const { enum: _fora, ...resto } = v;
-        props[nome] = { ...resto, description: _DICA_DE_ALVO };
+        props[nome] = _SEM_DICA ? resto : { ...resto, description: _DICA_DE_ALVO };
         mexeu = true;
       } else if (v.items && Array.isArray(v.items.enum)) {
         const { enum: _fora, ...restoItens } = v.items;
-        props[nome] = { ...v, items: { ...restoItens, description: _DICA_DE_ALVO } };
+        props[nome] = _SEM_DICA
+          ? { ...v, items: restoItens }
+          : { ...v, items: { ...restoItens, description: _DICA_DE_ALVO } };
         mexeu = true;
       } else {
         props[nome] = v;
@@ -1192,6 +1194,13 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
   // A frase que substitui o enum. Curta de propósito: ela responde "como eu
   // chamo?", que é uma das duas perguntas que a Mente faz — e nada além disso.
   const _DICA_DE_ALVO = "o NOME daquilo, como aparece na cena";
+  // SOB MEDIÇÃO (21/09): a dica é a MESMA frase em todo parâmetro de referência, e
+  // vale 6% do que vai no fio. Tirá-la é o mesmo movimento que a P2 fez com a
+  // explicação do `prosa` — dizer uma vez, no system, em vez de quarenta. A diferença
+  // é que ali a frase JÁ ESTAVA no `ESCOLHER_SYSTEM`; aqui ela não está, então tirar
+  // daqui exige escrever lá, e linha nova é prompt. O flag existe para a sondagem
+  // medir as duas faces com o mesmo arnês, e sai quando a decisão for tomada.
+  const _SEM_DICA = process.env.LOREFORGE_SEM_DICA === "1";
 
   // A CHAMADA QUE VEIO COMO TEXTO (spec 060).
   //
