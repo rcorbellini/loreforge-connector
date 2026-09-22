@@ -849,6 +849,7 @@ As ferramentas disponíveis são TUDO o que ele pode tentar aqui e agora; o mund
 ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as ferramentas que cumprem essa sequência. Depois chame SOMENTE essas, na ordem pensada. A lista disponível não é um cardápio a percorrer: ferramenta que não faz parte da sequência não se chama. Se uma delas falhar, PARE — a cena mudou e o resto da sequência pode não valer mais; pense uma nova a partir do que aconteceu, e aja de novo.
 
 - Toda chamada leva "prosa.acao": o que ele FAZ, in-world e concreto. "prosa.fala" só se falar em voz alta.
+- Para apontar uma pessoa, um item ou um lugar, escreva o NOME dele como aparece na cena — nunca um código.
 - Descreva a TENTATIVA, nunca o desfecho: se convenceu, se acertou, se passou despercebido, quem decide é o mundo.
 - Se a instrução violar a personalidade dele, faça o que ele de fato faria — e a prosa conta a recusa.
 - Se nada couber exatamente, escolha a ferramenta MAIS PRÓXIMA do que ele quer e diga na prosa o que ele tenta. Quem decide se cabe é o mundo, não você — um "não" dele é jogo; ficar calado não é.
@@ -1194,13 +1195,24 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
   // A frase que substitui o enum. Curta de propósito: ela responde "como eu
   // chamo?", que é uma das duas perguntas que a Mente faz — e nada além disso.
   const _DICA_DE_ALVO = "o NOME daquilo, como aparece na cena";
-  // SOB MEDIÇÃO (21/09): a dica é a MESMA frase em todo parâmetro de referência, e
-  // vale 6% do que vai no fio. Tirá-la é o mesmo movimento que a P2 fez com a
-  // explicação do `prosa` — dizer uma vez, no system, em vez de quarenta. A diferença
-  // é que ali a frase JÁ ESTAVA no `ESCOLHER_SYSTEM`; aqui ela não está, então tirar
-  // daqui exige escrever lá, e linha nova é prompt. O flag existe para a sondagem
-  // medir as duas faces com o mesmo arnês, e sai quando a decisão for tomada.
-  const _SEM_DICA = process.env.LOREFORGE_SEM_DICA === "1";
+  // DECIDIDO (22/09): a dica SAI do parâmetro e é dita uma vez no `ESCOLHER_SYSTEM`.
+  //
+  // Era a MESMA frase em todo parâmetro de referência — o mesmo movimento que a P2 fez
+  // com a explicação do `prosa`. A diferença é que ali a frase já estava no system; aqui
+  // ela não estava, então tirar daqui exigiu escrever lá, e linha nova é prompt: por isso
+  // a linha acrescentada diz EXATAMENTE o que a dica dizia, nada além. Dizer mais teria
+  // trocado economia de token por instrução nova, e a medição compararia duas coisas.
+  //
+  // MEDIDO com a bateria das 43 capacidades, duas corridas de cada lado: 22/43 vivas
+  // com a dica (b4, b4bis) e 22/43 sem ela (b5, b6). O chão de ruído do instrumento é
+  // de ±1 capacidade por corrida — cada braço perde uma diferente e ganha o `craft` —,
+  // então o que se pode afirmar é que ela não custa nada GROSSO, não que não custe nada.
+  // Para 3,6% do bloco em toda chamada, embarca.
+  //
+  // `LOREFORGE_COM_DICA=1` devolve a dica ao parâmetro — braço de controle, não modo de
+  // uso. O default é o que se pretende embarcar, e não o inverso: um interruptor que
+  // precisasse ser LIGADO mediria um caminho que ninguém roda.
+  const _SEM_DICA = process.env.LOREFORGE_COM_DICA !== "1";
 
   // A PROSA EXPLICADA UMA VEZ, NÃO QUARENTA E CINCO (proposta P2 da rodada de
   // 16/09 — `ferramentas/ab/rodada-16-09-quatro-propostas.md`).

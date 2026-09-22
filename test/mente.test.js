@@ -266,8 +266,8 @@ test("060/US2: o enum de referência sai; o CALCULADO e o VOCABULÁRIO ficam", (
       properties: { item: { type: "string", enum: ["frasco-de-oleo", "cantil"] } } } });
   assert.ok(!take.inputSchema.properties.item.enum,
     "referência SAI: a Mente já vê isso em prosa, e o enum é a segunda cópia");
-  assert.ok(take.inputSchema.properties.item.description,
-    "e no lugar fica a dica de COMO chamar");
+  assert.ok(!take.inputSchema.properties.item.description,
+    "e NÃO fica dica no parâmetro: ela é dita uma vez no ESCOLHER_SYSTEM (22/09)");
 
   // O que o mundo NÃO marcou como referência fica intacto — é o subconjunto
   // calculado (quem está caído) ou o vocabulário fechado (ativa/concluida).
@@ -383,7 +383,8 @@ test("P2: o FUNIL aplica os dois recortes — é por ele que o jogo e a bancada 
                properties: { acao: { type: "string", description: "o que ele faz" } },
                required: ["acao"] } } } });
   assert.ok(!t.inputSchema.properties.to.enum, "o enum de cena sai (060)");
-  assert.ok(t.inputSchema.properties.to.description, "e a dica entra no lugar");
+  assert.ok(!t.inputSchema.properties.to.description,
+    "e nada entra no lugar — a dica mora no ESCOLHER_SYSTEM (22/09)");
   assert.ok(!t.inputSchema.properties.prosa.description, "e a prosa explicada sai (P2)");
   assert.ok(!t.inputSchema.properties.prosa.properties.acao.description);
   assert.deepStrictEqual(t.inputSchema.properties.prosa.required, ["acao"]);
@@ -641,8 +642,8 @@ test("o que FICA de fato sobrevive ao recorte, e o que SAI de fato sai", () => {
     properties: { to: { type: "string", enum: ["elga-taverneira"] } } } });
   assert.ok(!sai.inputSchema.properties.to.enum,
     "referência de cena SAI: a Mente já a lê em prosa e aponta por nome");
-  assert.ok(sai.inputSchema.properties.to.description,
-    "e no lugar fica a dica de COMO chamar");
+  assert.ok(!sai.inputSchema.properties.to.description,
+    "e nada fica no lugar — a dica mora no ESCOLHER_SYSTEM (22/09)");
 });
 
 // ===========================================================================
@@ -679,8 +680,8 @@ test("com a camada semântica ligada, o enum de memória SAI", () => {
   const t = m._semIdDeCena({ name: "sing", inputSchema: { type: "object", properties: {
     memoria_id: { type: "string", enum: ["mem-1", "mem-2"] } } } });
   assert.ok(!t.inputSchema.properties.memoria_id.enum, "o enum de 506 ids tinha de sair");
-  assert.ok(t.inputSchema.properties.memoria_id.description,
-    "e no lugar fica a dica de COMO apontar");
+  assert.ok(!t.inputSchema.properties.memoria_id.description,
+    "e nada fica no lugar — a dica mora no ESCOLHER_SYSTEM (22/09)");
   cfg.embeddingModel = "";
   configuracao.gravar(cfg);
 });
@@ -760,4 +761,41 @@ test("o TETO de 12 continua, e é o último corte", () => {
     id: `x${i}`, estado: "viva", salience: "vivida", intensity: "small",
     summary: `lembranca numero ${i}`, involved: [], timestamp_start: i }));
   assert.strictEqual(m._limparMemorias(muitas, new Set()).length, 12);
+});
+
+// ===========================================================================
+// A DICA MUDOU DE LUGAR, NÃO SUMIU (22/09) — teste de LIGAÇÃO.
+//
+// Até 21/09 todo parâmetro de referência carregava `"o NOME daquilo, como aparece
+// na cena"`: a mesma frase, quarenta vezes, 3,6% do bloco em toda chamada. Ela saiu
+// do schema e entrou UMA vez no `ESCOLHER_SYSTEM`.
+//
+// POR QUE ISTO PRECISA DE TESTE PRÓPRIO, e não basta o que afirma que o parâmetro
+// ficou nu: se a linha sumir do system, o corte continua passando e a Mente perde a
+// única instrução que lhe diz COMO apontar — a economia fica e a informação vai
+// embora, sem quebrar nada. É o modo de falha que o projeto chama de órfão com a
+// suíte verde, e a defesa é cobrar as DUAS pontas no mesmo teste.
+//
+// Provado quebrando de propósito: trocando a frase no `ESCOLHER_SYSTEM` por outra
+// qualquer, este teste falha; sem ele, a suíte inteira segue verde.
+// ===========================================================================
+
+test("a dica saiu do parâmetro E entrou no ESCOLHER_SYSTEM", () => {
+  const m = require("../mente");
+
+  // PONTA 1: não desce mais no parâmetro.
+  const t = m._recorteDaMente({ name: "give", inputSchema: { type: "object",
+    properties: { to: { type: "string", enum: ["elga-taverneira"] } },
+    annotations: undefined } });
+  assert.ok(!t.inputSchema.properties.to.enum, "o enum de cena tinha de sair");
+  assert.ok(!t.inputSchema.properties.to.description,
+    "e o parâmetro tinha de ficar NU — a dica não se repete mais por param");
+
+  // PONTA 2: está dita, uma vez, onde a Mente a lê.
+  const sys = m.promptsPadrao().interpretar;
+  assert.ok(/NOME dele como aparece na cena/.test(sys),
+    "a dica SUMIU do ESCOLHER_SYSTEM: o corte no parâmetro virou perda de "
+    + "informação, e nada mais no repositório avisa");
+  assert.ok(/nunca um c[óo]digo/.test(sys),
+    "a metade que impede o id inventado tinha de estar no system também");
 });
