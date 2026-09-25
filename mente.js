@@ -562,10 +562,9 @@ REGRA DE OURO (PONTO DE VISTA): A narração DEVE ser na 2ª pessoa ("você"), d
 HIERARQUIA DE EVENTOS:
 1. "nao_aconteceu" — a tentativa frustrada.
 2. "mudou_no_mundo" — a consequência DIRETA e fato consumado.
-3. "aconteceu_ao_redor" — eventos paralelos notados perifericamente. NUNCA diga que a sua ação os causou.
 
 NUNCA INVENTE FATO (a regra mais importante):
-- Narre SOMENTE o que vier em "acontecido", "mudou_no_mundo", "nao_aconteceu" e "aconteceu_ao_redor". Se um fato não está ali, ele NÃO ACONTECEU.
+- Narre SOMENTE o que vier em "acontecido", "mudou_no_mundo" e "nao_aconteceu". Se um fato não está ali, ele NÃO ACONTECEU.
 - É PROIBIDO narrar chegadas, partidas, portas, gestos de terceiros ou qualquer evento que os fatos não afirmem. Quem está na cena JÁ ESTÁ nela — não narre ninguém entrando, nem o personagem chegando a lugar nenhum.
 - Quando os fatos são poucos, a narração é CURTA. Uma frase fiel vale mais que um parágrafo bonito e falso. Preencher o vazio com cenário inventado é o pior erro possível: o jogador passa a decidir com base num mundo que não existe.
 - Se o único fato é uma tentativa FRUSTRADA, narre a tentativa e a frustração — e mais nada. NADA de completar com o que "talvez" houvesse: se você precisa escrever "talvez", "como se" ou "provavelmente", PARE — é sinal de que está inventando.
@@ -1521,6 +1520,14 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
                 id: c.id,             // é por ele que o resultado volta amarrado
                 capacidade: c.nome,
                 alvos,
+                // O CRU (achado 2026-09-29): `alvos` só carrega o ID já resolvido —
+                // ótimo pro mundo, ilegível pra tela. `crus` é a referência que A
+                // Mente ESCREVEU antes da resolução ("a bolsa malfeita"), e o prompt
+                // já a instrui a nomear como aparece na cena — é o material do
+                // título determinístico em `laco.js` (o "comando real", análogo ao
+                // `Read(arquivo)` de um harness — não depende de quão bem a Mente
+                // narrou a tentativa em `prosa.acao`).
+                alvosCru: crus,
                 prosa: (c.args || {}).prosa || null,
                 ...(falhas.length ? { naoResolvido: falhas } : {}),
               });
@@ -1572,6 +1579,15 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
                 devlog("SEM TOOL CALLS — turno sem decisão", r && r.texto);
                 _avisaSemTools(falsa ? `tool call em texto: ${falsa}`
                                      : "nenhuma tool call na resposta");
+                // ITEM 78 (docs/backlog.md) / spec 074: uma PARADA FALSA não pode
+                // mais devolver `null` em silêncio — até aqui esse dado nascia
+                // (devlog acima) e morria na mesma linha, e o turno virava
+                // indistinguível de "ela decidiu não agir" para quem olha de fora
+                // (`laco.js`/o jogador). Um objeto truthy e DISTINGUÍVEL de uma
+                // sessão de verdade (não tem `propostas`/`continuar`) deixa
+                // `laco.js._turno()` emitir a falha como tentativa, em vez de
+                // silêncio — sem abrir uma segunda forma de "sessão válida".
+                if (falsa) return { paradaFalsa: true, nomeSuspeito: falsa };
                 return null;
               }
               const resultados = [];
@@ -1620,7 +1636,11 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     return null;
   }
 
-  async function deriveWhisper(context) {
+  // `onRotina(nome)` é OPCIONAL (spec 074, FR-014) — quem chama (laco.js) pode
+  // observar qual das duas rotinas desta bifurcação foi escolhida, no instante em
+  // que é escolhida (antes da chamada de modelo da autonomia, que é a demorada).
+  // Puramente aditivo: nada aqui muda se ninguém passar o callback.
+  async function deriveWhisper(context, onRotina) {
     // Mesmo acesso defensivo do `_contextoPayload`: o contrato (spec 067) é lido, não
     // controlado, e `_self` é LOCAL de cada função — ele não existe no escopo do módulo.
     const _self = context.self || {};
@@ -1629,6 +1649,7 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     // A BIFURCAÇÃO DO TICK (spec 033): sem compromisso, o personagem para e faz um.
     // Ver `REFLECT_COMMAND` — inclusive por que ele não chama modelo aqui.
     if (!intencoesAtivas.length) {
+      if (onRotina) onRotina("refletir");
       return { texto: _sys("refletir", REFLECT_COMMAND), rotina: "refletir",
                // FATO, não inferência: este ramo é determinístico, e dizer no
                // registro por que ele disparou é o que evita a leitura "o
@@ -1666,7 +1687,8 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
       // pelo `_contextoPayload`, e a seção 2 do prompt raciocina sobre ela.
       itens_que_possuo: (_self.inventory || []).map((it) => ({ id: it.id, nome: it.name }))
     };
-    
+
+    if (onRotina) onRotina("autonomia");
     const raw = await callModel(
       _sys("autonomia", AUTONOMY_SYSTEM),
       "Avalie se há algo a fazer agora, a partir das memórias recentes, intenções e do contexto.\n\n" + JSON.stringify(payload, null, 2),
@@ -1782,7 +1804,16 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
   // `onToken` (spec 043): recebe cada pedaço da prosa conforme ela nasce, para a
   // tela mostrar a narração se formando em vez de um vazio até o fim. É a única
   // chamada que streama — as que devolvem JSON não ganham nada com isso.
-  async function narrate(narrativeHint, context, failedEffects, viradas, aconteceu, informes, reconhecimentos, eventosParalelos, material, onToken) {
+  // SEM `eventosParalelos` (achado 2026-09-29 — corrigido no mesmo dia): o
+  // "enquanto isso ao redor" tecido dentro desta MESMA prosa dependia da
+  // Mente escrever um marcador literal ("Enquanto isso, ao redor: ...") que
+  // o client reconhecesse pra separar visualmente — e ela nem sempre
+  // escrevia, então o recorte às vezes não disparava e tudo saía junto,
+  // sem divisor. O diff (`diffTextual`) é DADO determinístico, não carece de
+  // narração nenhuma: agora viaja pro client como evento PRÓPRIO
+  // (`laco.js._emite("paralelo", ...)`), fora desta chamada — narrar não é
+  // mais o canal dele.
+  async function narrate(narrativeHint, context, failedEffects, viradas, aconteceu, informes, reconhecimentos, material, onToken) {
     const failures = (failedEffects || []).filter(Boolean);
     const twists = (viradas || []).map((v) => v.o_que).filter(Boolean);
     // Ver `deriveWhisper`: `_self`/`_scene` são locais por função, nunca do módulo.
@@ -1796,7 +1827,6 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
       mudou_no_mundo: (aconteceu || []).length ? aconteceu : null,
       nao_aconteceu: failures.length ? failures : null,
       viradas_do_destino: twists.length ? twists : null,
-      aconteceu_ao_redor: (eventosParalelos || []).length ? eventosParalelos : null,
       perguntou_a_alguem: (informes || []).length ? informes : null,
       // ITEM 52.3: o MATERIAL das capacidades CONSULTIVAS. Vinha do server em canais
       // que o MCP não encaminhava — `lido` (o texto que o `examine` leu), `wares` (o

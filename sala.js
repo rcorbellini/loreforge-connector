@@ -17,6 +17,7 @@
 "use strict";
 
 const { log } = require("./log");
+const { Sessoes } = require("./acp/sessao");
 
 // Quantos 401 seguidos do mundo derrubam um membro. Dois, e não um: um 401 isolado pode
 // ser o server reiniciando no meio de um turno. O terceiro nunca chega — a partir do
@@ -71,6 +72,9 @@ class Assento {
     this.restanteMs = intervaloMs;
     this.semEfeito = 0;               // turnos autônomos seguidos sem passo aplicado
     this.custo = { entrada: 0, saida: 0, chamadas: 0 };
+    // A SESSÃO ACP deste assento (spec 074) — atribuída por `Sala.assentar()`, que é
+    // quem conhece o registro `Sessoes`. `null` até lá para o campo sempre existir.
+    this.sessionId = null;
   }
 
   // A vontade E o teto. Não inclui "está jogando" nem "está na fila": isso é tempo, e
@@ -109,6 +113,11 @@ class Assento {
       intervaloMs: this.intervaloMs, restanteMs: this.restanteMs,
       ocupado: !!(this.laco && this.laco.ocupado),
       custo: { ...this.custo },
+      // FR-009 (2026-09-23): qualquer cliente da sala pode abrir a sessão de
+      // qualquer assento presente — o roster já público carrega o `sessionId`
+      // direto, sem round-trip extra de `session/new` para descobrir o que já
+      // existe (a sessão nasce junto com o assento, `Sala.assentar()`).
+      sessionId: this.sessionId || null,
     };
   }
 
@@ -180,6 +189,10 @@ class Sala {
     this.credenciais = credenciais || { ler: () => null, gravar: () => {}, apagar: () => {} };
     this.fabricas = fabricas || {};
     this.emitir = emitir || (() => {});
+    // UMA SESSÃO ACP POR ASSENTO (spec 074, research.md Decisão 5) — o handle que o
+    // item 75 já previa sem construir. Vive e morre com o assento, não com o
+    // processo: `assentar()`/`desassentar()` abaixo são quem chama `criar`/`encerrar`.
+    this.sessoes = new Sessoes({ salaId: this.nome });
   }
 
   // --- consultas ---------------------------------------------------------- //
@@ -318,6 +331,11 @@ class Sala {
       a.intervaloMs = guardado.intervaloMs || a.intervaloMs;
       a.restanteMs = a.intervaloEfetivo();
     }
+    // A SESSÃO NASCE JUNTO COM O ASSENTO. `criar()` é idempotente — se este
+    // personagem já teve sessão nesta sala (reentrada, `_guardados`), o mesmo
+    // sessionId volta; a identidade de sessão sobrevive a sair-e-voltar do mesmo
+    // jeito que `autonomia`/`intervaloMs` já sobreviviam (FR-030).
+    a.sessionId = this.sessoes.criar(personagem);
     this.assentos.set(personagem, a);
     this.emitir("entrou", { personagem, dono: sub });
     this.emitir("sala", this.paraTela());
@@ -329,6 +347,11 @@ class Sala {
     if (!a) return { erro: "este personagem não está na sala" };
     this._lembrar(a);
     this.assentos.delete(personagem);
+    // A SESSÃO MORRE COM O ASSENTO. Reentrar mais tarde ganha um sessionId NOVO
+    // (`Sessoes.criar` nunca reaproveita um encerrado) — um cliente que guardou o
+    // antigo simplesmente para de receber updates por ele, o mesmo comportamento
+    // que `expulso` já tinha para o SSE de hoje.
+    this.sessoes.encerrar(personagem);
     this.emitir("saiu", { personagem, dono: a.dono });
     this.emitir("sala", this.paraTela());
     return { ok: true };

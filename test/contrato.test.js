@@ -163,7 +163,7 @@ test("narrate monta o payload sem estourar", async () => {
     // `narrate` lia `_self.needs` e `_self.memories` fora de escopo. Como ela só roda
     // quando o turno PRODUZ escolha, o defeito ficou invisível enquanto os turnos
     // morriam antes — o registro do mundo não tem narração bem-sucedida desde 03/09.
-    await Mente.narrate("ele bebeu", copia(), [], [], [], [], [], [], null);
+    await Mente.narrate("ele bebeu", copia(), [], [], [], [], [], null);
   } finally {
     espia.restaurar();
   }
@@ -259,7 +259,7 @@ test("a necessidade chega à Mente com rótulo em PORTUGUÊS", async () => {
     return originalFetch(u, o);
   };
   try {
-    await Mente.narrate("algo", copia(), [], [], [], [], [], [], null);
+    await Mente.narrate("algo", copia(), [], [], [], [], [], null);
   } finally {
     globalThis.fetch = originalFetch;
     espia.restaurar();
@@ -384,7 +384,7 @@ test("os consumidores aguentam um contexto MÍNIMO sem quebrar", async () => {
   const espia = fetchFalso("{}");
   try {
     await Mente.deriveWhisper({});
-    await Mente.narrate("algo", {}, [], [], [], [], [], [], null);
+    await Mente.narrate("algo", {}, [], [], [], [], [], null);
   } finally {
     espia.restaurar();
   }

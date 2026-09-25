@@ -19,6 +19,48 @@ const { log } = require("./log");
 // `take` da corda são duas propostas; `take` da faca duas vezes é uma repetida.
 const _chaveDe = (p) => `${p.capacidade}\u0000${JSON.stringify(p.alvos || {})}`;
 
+// O TÍTULO-COMANDO de uma tentativa (achado 2026-09-29, jogando): o balão do
+// turno prometia "comando + retorno" estilo Claude Code, mas o título vivia
+// de `prosa.acao` — texto que A MENTE escreve, e que ela às vezes reduz a um
+// verbo pelado ("olhar", "ver"), indistinguível entre tentativas diferentes.
+// O nome técnico da capacidade NÃO é vocabulário proibido aqui — Princípio
+// V/IX veta menu CLICÁVEL que decide algo no mundo; abrir/fechar um
+// `<details>` só READ-ONLY não decide nada, é o mesmo balde de um log de
+// depuração. `${capacidade}(${alvos})` é DETERMINÍSTICO — não depende de
+// quão bem a Mente narrou — e usa o texto CRU que ela mesma escreveu para
+// apontar o alvo (`alvosCru`, de `mente.js`), não o id resolvido (ilegível)
+// nem uma segunda consulta ao mundo.
+function _tituloComando(capacidade, alvosCru) {
+  const valores = Object.values(alvosCru || {})
+    .filter((v) => typeof v === "string" && v.trim())
+    .map((v) => v.trim());
+  return `${capacidade}(${valores.join(", ")})`;
+}
+
+// A TRILHA DO LUGAR — "Costa de Ferro › Porto Negro › Taverna do Gancho"
+// (achado 2026-09-29, pedido no client: mostrar discretamente onde o
+// personagem está, embaixo do nome, em cada balão de turno). `place.
+// belongs_to` é a MESMA estrutura aninhada que `client/app.js:
+// flattenLineage()` já achata pro `.scene` — mesmo cálculo, replicado aqui
+// (não há módulo partilhado entre conector e client) porque o CONECTOR já
+// tem `contexto.scene.place` fresco a cada turno (é dele que sai o diff de
+// `paralelos`); pedir de novo ao client seria um round-trip a mais pra um
+// dado que já passou por aqui.
+//
+// INCLUI o lugar ATUAL, ao contrário de `.scene .breadcrumb` (achado
+// 2026-09-29, corrigido no mesmo dia: o balão do turno não tem um `<h3>` de
+// cena ao lado pra completar o nome — sem o próprio lugar no fim, a trilha
+// parece cortada ANTES de chegar aonde o personagem de fato está).
+function _breadcrumbDoLugar(place) {
+  const cadeia = [];
+  let node = place;
+  while (node && (node.name || node.id)) {
+    cadeia.push(node.name || node.id);
+    node = node.belongs_to;
+  }
+  return cadeia.reverse();
+}
+
 // Quantos passos uma ÚNICA vez pode APLICAR antes de terminar (spec 060).
 //
 // NÃO é o teto de PROPOSTAS que o mantenedor recusou no 53.2 — aquele limitava o
@@ -101,6 +143,14 @@ class Laco {
     }
   }
 
+  // O RÓTULO LEGÍVEL de uma rotina (spec 074, FR-014) — `Mente.ROTINAS` já declara
+  // um `titulo` por nome (`mente.js:1887`); aqui só se lê, nunca se inventa texto novo.
+  _tituloDaRotina(nome) {
+    const lista = (this.mente && this.mente.ROTINAS) || [];
+    const r = lista.find((x) => x.nome === nome);
+    return (r && r.titulo) || nome;
+  }
+
   // A trava do conector. NÃO substitui a do mundo — a autoritativa é a do
   // processo do server, e é ela que impede corrida de verdade (Princípio III).
   // Esta aqui só evita que o próprio conector se atropele.
@@ -166,24 +216,61 @@ class Laco {
     let cena = { texto, contexto };
     cena = await this.extensoes.hook("antes_de_pensar", cena, t) || cena;
 
+    // ONDE ELE ESTÁ — uma vez por turno, cedo (é o primeiro sinal de atividade
+    // igual `intencao_inicio`, então o balão já nasce com a trilha pronta em
+    // vez de esperar a narração final pra saber onde o personagem estava).
+    // ÚNICO ponto de emissão: `_turno` atende tanto o sussurro humano
+    // (`sussurrar`) quanto o tick autônomo (`talvezAgirSozinho`), que chama
+    // `_turno` direto com o `contexto` que já buscou — não precisa duplicar
+    // nos dois lugares.
+    const breadcrumb = _breadcrumbDoLugar(cena.contexto && cena.contexto.scene
+      && cena.contexto.scene.place);
+    if (breadcrumb.length) this._emite("local", { breadcrumb });
+
     // 1) A Mente interpreta. O rascunho da ação sai palavra a palavra: é a parte
     //    que mais deixava a tela muda, e ver nascer é o que tira a inércia.
     let intent;
-    this._emite("intencao_inicio", {});
+    this._emite("intencao_inicio", { numeroTurno: this.numeroTurno });
+    this._emite("rotina_ativa",
+      { rotina: "interpretar", titulo: this._tituloDaRotina("interpretar") });
     try {
       intent = await this.mente.interpret(
-        cena.texto, cena.contexto, (pedaco) => this._emite("intencao", { pedaco }),
+        cena.texto, cena.contexto,
+        (pedaco) => this._emite("intencao", { pedaco, numeroTurno: this.numeroTurno }),
         origem === "reflexao" ? { somente: ["set_intention"] } : {});
     } finally {
-      this._emite("intencao_fim", {});
+      this._emite("intencao_fim", { numeroTurno: this.numeroTurno });
+      this._emite("rotina_ociosa", { stopReason: "end_turn" });
     }
     if (t) t.pensou(intent);
+
+    // ITEM 78 (spec 074): a PARADA FALSA agora chega aqui DISTINGUÍVEL de "ela não
+    // quis agir" (mente.js já não devolve `null` em silêncio para esse caso). Vira
+    // uma tentativa que nasce e já morre `failed` — nunca silêncio, nunca confundida
+    // com uma recusa do mundo (que passa por `_executar`/`recusa`, caminho
+    // completamente diferente).
+    if (intent && intent.paradaFalsa) {
+      this._emite("tentativa_falha_emissao", {
+        toolCallId: `falha-${this.numeroTurno}-${Math.random().toString(36).slice(2, 8)}`,
+        nomeSuspeito: intent.nomeSuspeito || null,
+      });
+      return this._fecharTurno([], cena.contexto, [], t);
+    }
 
     // A SESSÃO, não uma lista: o `interpret` devolve as propostas E o fio da
     // conversa (`continuar`), para o desfecho de cada uma voltar a ela sem
     // remontagem.
     const propostas = Array.isArray(intent && intent.propostas)
       ? intent.propostas : null;
+    // O PENSAMENTO JÁ EXTRAÍDO (spec 074, US2/FR-015) — `mente.js:1547` já calcula
+    // isto a cada proposta; até aqui só ia para `registro.js` (trace) ou virava
+    // fallback de `prosa.acao` (linha ~433 abaixo). Correlacionado ao PRIMEIRO
+    // `toolCallId` do lote: é o "por quê" da decisão que originou as tentativas
+    // deste turno, não de uma tentativa isolada.
+    if (propostas && propostas.length && intent.pensamento) {
+      this._emite("pensamento",
+        { pensamento: intent.pensamento, toolCallId: propostas[0].id });
+    }
     if (propostas) return this._porPropostas(intent, cena.contexto, t);
     // SEM PROPOSTAS (spec 045): antes, isto caía no caminho de prosa legado —
     // um SEGUNDO motor de decisão, medido menos confiável que este. A Mente já
@@ -433,6 +520,37 @@ class Laco {
         prosa: p.prosa || { acao: (intent && intent.pensamento) || "age" },
       };
 
+      // A TENTATIVA NASCE AQUI (spec 074, US1) — `p.id` já existe (de `_mapear` em
+      // `mente.js`), é o `toolCallId` que acompanha esta proposta do início ao
+      // desfecho. Direto em "in_progress": nesta granularidade não há uma janela de
+      // "pending" a reportar (o rascunho já virou `agent_thought_chunk` em
+      // `intencao_inicio/intencao`, lá em `_turno()`; FR-005 não tem aprovação).
+      // Chave `nome`, não `capacidade` (`test/laco.test.js`: a suíte já varre TODO
+      // evento emitido em busca da palavra "capacidade" — proxy histórico do defeito
+      // em que uma recusa tipo "não existe capacidade 'comprar'" vazava vocabulário
+      // de máquina para a tela, spec 045. Reaproveitar o mesmo nome de campo aqui
+      // dispararia essa guarda por coincidência de string, não por vazamento de
+      // verdade — `nome` é o termo que o próprio protocolo usa (`ToolCallUpdate.name`).
+      // O TÍTULO É O COMANDO REAL, não a prosa da tentativa (SUPERSEDE o
+      // achado de 2026-09-23 abaixo — o raciocínio dele continua certo,
+      // mudou só a fonte). Aquele achado corrigiu "sempre o mesmíssimo
+      // parágrafo genérico" trocando a description ESTÁTICA por
+      // `corpo.prosa.acao`; mas achado 2026-09-29, jogando: `prosa.acao`
+      // é texto livre que A MENTE escreve, e ela pode reduzir a um verbo
+      // pelado ("olhar", "ver") — de novo indistinguível entre tentativas
+      // diferentes, só que agora sem fallback nenhum. `_tituloComando`
+      // (acima) resolve as DUAS gerações do mesmo jeito que um harness
+      // real resolve: `capacidade(alvo)` é DETERMINÍSTICO — vem da
+      // CHAMADA, não de quão bem ela foi narrada. O nome técnico não é
+      // vocabulário proibido aqui (Princípio V/IX veta MENU clicável que
+      // decide algo no mundo; abrir/fechar um `<details>` read-only não
+      // decide nada — ver a nota em `_tituloComando`).
+      this._emite("tentativa", {
+        toolCallId: p.id, nome: p.capacidade,
+        tituloDinamico: _tituloComando(p.capacidade, p.alvosCru),
+        descricaoDoTool: this.mundo.descricaoDe ? this.mundo.descricaoDe(p.capacidade) : "",
+      });
+
       // O PLANO NASCE COM O COMPROMISSO (spec 073, T025/T027).
       //
       // Firmar e planejar são DUAS chamadas ao modelo, nunca uma: juntas mediram
@@ -506,16 +624,33 @@ class Laco {
       }
 
       if (!out.ok) {
-        if (out.erro) this._emite("recusa", { texto: out.erro });
+        if (out.erro) this._emite("recusa", { texto: out.erro, toolCallId: p.id });
         // PARA AQUI. O resto da sequência pressupunha este passo — insistir é
         // pedir ao mundo coisas cujo pré-requisito não aconteceu. Quem decide o
         // que fazer agora é A Mente, com a cena já atualizada.
         return { motivo: out.erro || "o mundo não deixou" };
       }
+      let algumBeat = false;
       for (const frase of out.aconteceu || []) {
         if (vistos.has(frase)) continue;
         vistos.add(frase);
-        this._emite("beat", { texto: frase });
+        this._emite("beat", { texto: frase, toolCallId: p.id });
+        algumBeat = true;
+      }
+      // TENTATIVA CONSULTIVA (recognize/examine/ask_directions/ask_about/
+      // ask_wares — `motor/conhecimento/declaracao.py`: "não mutam o mundo,
+      // só..."). Achado jogando (2026-09-29): esses executores nunca
+      // populam `narrativa.aconteceu` — não há fato de mundo, só material
+      // pra Mente ler (`lido`/`wares`/`falas`/`reconhecimentos`). Sem NENHUM
+      // `aconteceu`, o laço acima não emitia beat nenhum, e o `tool_call_
+      // update` nascido "in_progress" (a `tentativa` lá em cima) NUNCA
+      // fechava — ficava pulsando na tela pra sempre, `.passo-corpo` vazio
+      // ao clicar. O protocolo exige terminal (`completed`/`failed`/
+      // `cancelled`) pra toda tentativa — nunca ficar pendurada; sem fato de
+      // mundo pra mostrar, mostra o MESMO resumo que já ia pra Mente
+      // (`_desfechoEmPalavras`), não inventa texto novo.
+      if (!algumBeat) {
+        this._emite("beat", { texto: this._desfechoEmPalavras(out), toolCallId: p.id });
       }
     }
     return null;
@@ -611,6 +746,20 @@ class Laco {
       depois = await this.mundo.contexto();
     } catch (_) { /* sem diff; a narração segue com o que já tem */ }
 
+    // "ENQUANTO ISSO" — achado jogando (2026-09-29), corrigido no mesmo dia:
+    // isto ANTES viajava como `paralelos` dentro do payload de `narrate()`,
+    // e a Mente é quem decidia SE e COMO tecer na prosa (o marcador "Enquanto
+    // isso, ao redor:" que o client reconhecia). Nem sempre ela escrevia
+    // assim — às vezes saía tudo junto, sem divisor nenhum, porque o recorte
+    // dependia de comportamento de texto livre. `diffTextual` é DADO
+    // determinístico; não precisa de narração pra existir. Agora viaja
+    // SEPARADO, fora do `narrate()` — o client recebe pronto, já isolado,
+    // sem precisar reconhecer marcador nenhum no meio da prosa.
+    const paralelos = diffTextual(contexto, depois);
+    if (paralelos.length) {
+      this._emite("paralelo", { texto: paralelos.join(" "), numeroTurno: this.numeroTurno });
+    }
+
     await this._narrar({
       hint: hints.length ? hints[hints.length - 1] : null,
       contexto,
@@ -621,7 +770,6 @@ class Laco {
       reconhecimentos: juntar("reconhecimentos"),
       material: { lido: juntar("lido"), wares: juntar("wares"),
                   falas: juntar("falas") },
-      paralelos: diffTextual(contexto, depois),
     }, t);
   }
 
@@ -644,15 +792,18 @@ class Laco {
 
   async _narrar(arco, t) {
     const a = await this.extensoes.hook("antes_de_narrar", arco, t) || arco;
-    this._emite("narracao_inicio", {});
+    this._emite("narracao_inicio", { numeroTurno: this.numeroTurno });
+    this._emite("rotina_ativa",
+      { rotina: "narrar", titulo: this._tituloDaRotina("narrar") });
     let prosa = "";
     try {
       prosa = await this.mente.narrate(
         a.hint, a.contexto, a.falhas, a.viradas, a.aconteceu, a.informes,
-        a.reconhecimentos, a.paralelos, a.material,
-        (pedaco) => this._emite("narracao", { pedaco }));
+        a.reconhecimentos, a.material,
+        (pedaco) => this._emite("narracao", { pedaco, numeroTurno: this.numeroTurno }));
     } finally {
-      this._emite("narracao_fim", { texto: prosa });
+      this._emite("narracao_fim", { texto: prosa, numeroTurno: this.numeroTurno });
+      this._emite("rotina_ociosa", { stopReason: "end_turn" });
     }
     if (t) t.narrou(prosa);
   }
@@ -734,7 +885,10 @@ class Laco {
           if (t) t.descartar();
           return;
         }
-        const decidido = await this.mente.deriveWhisper(contexto);
+        const decidido = await this.mente.deriveWhisper(contexto,
+          (rotina) => this._emite("rotina_ativa",
+            { rotina, titulo: this._tituloDaRotina(rotina) }));
+        this._emite("rotina_ociosa", { stopReason: "end_turn" });
         const texto = decidido && decidido.texto;
         // A ORIGEM diz QUAL rotina produziu o sussurro, e não só que foi
         // automático: é ela que faz a reflexão ser respondida com a face

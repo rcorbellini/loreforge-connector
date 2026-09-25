@@ -230,8 +230,20 @@ class Mundo {
     this.candidatosDaCena = _tabelaDeCandidatos(tools);
     this.porNomeDaCena = _tabelaPorNome(tools);
     this.paresPorParametro = _mapaPorParametro(tools);
+    // A DESCRIÇÃO PLAYER-FACING, por nome (spec 074, FR-016) — a MESMA fonte que
+    // `loreforge-portal` já cura desde a spec 043/item 036. Guardada aqui porque é
+    // exatamente onde o `tools/list` já chega; sem isto, `acp/capacidade_kind.js`
+    // não teria de onde tirar o `title` sem inventar texto novo.
+    this.descricaoPorNome = {};
+    for (const t of tools) this.descricaoPorNome[t.name] = t.description || "";
     log("MCP tools/list", tools.map((t) => t.name).join(", "));
     return tools;
+  }
+
+  // O texto player-facing de UMA capacidade (spec 074, FR-016) — string vazia se
+  // `tools/list` ainda não rodou ou a capacidade não existe nesta cena.
+  descricaoDe(nomeCapacidade) {
+    return (this.descricaoPorNome && this.descricaoPorNome[nomeCapacidade]) || "";
   }
 
   // Os candidatos de um parâmetro, já emparelhados com o NOME que a Mente vê.

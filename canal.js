@@ -27,6 +27,8 @@ const os = require("os");
 const path = require("path");
 const { log } = require("./log");
 const pareamento = require("./pareamento");
+const { traduzir } = require("./acp/traducao");
+const { notificacao } = require("./acp/jsonrpc");
 
 function servir({ porta, sala, fila, cfg, expor, painel,
                   permitirConfigRemota, mundo, configuracao, authAtivo,
@@ -160,16 +162,36 @@ function servir({ porta, sala, fila, cfg, expor, painel,
   // ligado, o canal não sabe o que é uma narração. Se o canal tivesse de adivinhar a
   // faixa pelo NOME do evento, quebraria em silêncio no dia em que nascesse um evento
   // novo — que é o modo de falha real, não o vazamento deliberado.
+  // OS EVENTOS FORA DE BANDA (spec 074, research.md Decisão 2, última linha da
+  // tabela): estado da SALA, não de uma sessão — não viram `session/update`, porque
+  // não pertencem a nenhum `sessionId` (são sobre a mesa inteira). Continuam no
+  // formato bespoke de sempre.
+  const _FORA_DE_BANDA = new Set(
+    ["sala", "fila", "entrou", "saiu", "autonomia", "estado", "expulso"]);
+
+  // FR-008/FR-009 (2026-09-23): a privacidade por "dono" CAIU dentro da sala —
+  // qualquer cliente sentado à mesa pode abrir a sessão de qualquer assento
+  // presente. A guarda que sobra é só "está na sala" (G-MEMBRO, `/eventos` abaixo);
+  // não há mais filtro por `sub` aqui dentro. O que era `escopo: mesa|dono`
+  // (`laco.js`, `eventos-sse.md`) foi substituído por esta função inteira — ver
+  // `docs/backlog.md` item 95 e `specs/074-acp-connector-transport/`.
   function emitir(evento, dados) {
     const d = dados || {};
-    const bloco = `event: ${evento}\ndata: ${JSON.stringify(d)}\n\n`;
-    const paraMesa = d.escopo === "mesa";
-    const dono = d.personagem ? sala.dono(d.personagem) : null;
+    let bloco;
+    if (_FORA_DE_BANDA.has(evento)) {
+      bloco = `event: ${evento}\ndata: ${JSON.stringify(d)}\n\n`;
+    } else {
+      const sessionId = d.personagem && sala.sessoes
+        ? sala.sessoes.sessionIdDe(d.personagem) : null;
+      const params = traduzir(evento, d, sessionId);
+      // Evento sem tradução (sessão inexistente, ou evento que `acp/traducao.js`
+      // ainda não conhece): silêncio, não invenção — o mesmo princípio que já regia
+      // `escopoDe` antes desta spec.
+      if (!params) return;
+      const envelope = notificacao("session/update", params);
+      bloco = `event: session-update\ndata: ${JSON.stringify(envelope)}\n\n`;
+    }
     for (const o of ouvintes) {
-      // Faixa do DONO: só quem é o dono daquele personagem. Um evento sem personagem e
-      // sem escopo de mesa não tem destinatário definível — não vai para ninguém, em vez
-      // de ir para todos. Errar para o lado do silêncio é recuperável.
-      if (!paraMesa && (!dono || o.sub !== dono)) continue;
       try {
         o.res.write(bloco);
       } catch (_) {
@@ -369,19 +391,58 @@ function servir({ porta, sala, fila, cfg, expor, painel,
       const v = await gMembro(req, url);
       if (!v.ok) return responder(res, v.status, { erro: v.erro });
       const corpo = await corpoDe(req);
-      const personagem = String(corpo.personagem || "").trim();
+
+      // O ENVELOPE JSON-RPC REAL (`session/prompt`) — aditivo (spec 074, T021). O
+      // corpo antigo `{personagem, texto}` continua funcionando: nenhum client
+      // precisa migrar no mesmo instante em que o conector aprende o formato novo.
+      const ehJsonRpc = corpo && corpo.jsonrpc === "2.0" && corpo.method === "session/prompt";
+      let personagem, texto;
+      if (ehJsonRpc) {
+        const params = corpo.params || {};
+        personagem = sala.sessoes ? sala.sessoes.personagemDe(params.sessionId) : null;
+        if (!personagem) {
+          return responder(res, 404,
+            { jsonrpc: "2.0", id: corpo.id,
+              error: { code: -32602, message: "sessionId desconhecido ou encerrado" } });
+        }
+        const blocos = Array.isArray(params.prompt) ? params.prompt : [];
+        texto = blocos.filter((b) => b && b.type === "text")
+                       .map((b) => b.text || "").join(" ").trim();
+      } else {
+        personagem = String(corpo.personagem || "").trim();
+        texto = String(corpo.texto || "").trim();
+      }
+
       const p = gPosse(v.sub, personagem);
-      if (!p.ok) return responder(res, p.status, { erro: p.erro });
-      const texto = String(corpo.texto || "").trim();
-      if (!texto) return responder(res, 400, { erro: "informe 'texto'" });
+      if (!p.ok) {
+        return ehJsonRpc
+          ? responder(res, p.status,
+              { jsonrpc: "2.0", id: corpo.id, error: { code: -32000, message: p.erro } })
+          : responder(res, p.status, { erro: p.erro });
+      }
+      if (!texto) {
+        return ehJsonRpc
+          ? responder(res, 400,
+              { jsonrpc: "2.0", id: corpo.id,
+                error: { code: -32602, message: "prompt sem texto" } })
+          : responder(res, 400, { erro: "informe 'texto'" });
+      }
 
       // Responde JÁ: o turno corre e se conta pelo canal de eventos, não pela resposta
       // desta chamada — que ficaria pendurada por dezenas de segundos. O que mudou com a
       // sala é que agora há uma POSIÇÃO a devolver: o jogador precisa saber que está na
       // fila, senão lê a espera como travamento.
       const r = fila.enfileirar({ personagem, classe: "manual", texto, quem: v.sub });
-      if (r.erro && !r.jaTem) return responder(res, 409, { erro: r.erro });
-      return responder(res, 202, { aceito: true, posicao: r.posicao || null });
+      if (r.erro && !r.jaTem) {
+        return ehJsonRpc
+          ? responder(res, 409,
+              { jsonrpc: "2.0", id: corpo.id, error: { code: -32000, message: r.erro } })
+          : responder(res, 409, { erro: r.erro });
+      }
+      return ehJsonRpc
+        ? responder(res, 202,
+            { jsonrpc: "2.0", id: corpo.id, result: { aceito: true, posicao: r.posicao || null } })
+        : responder(res, 202, { aceito: true, posicao: r.posicao || null });
     }
 
     // Observar: a tela leu o pacote do mundo e nao tem com que narra-lo.

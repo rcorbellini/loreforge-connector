@@ -98,6 +98,189 @@ test("um turno feliz: proposta, beat e narração", async () => {
                          ["estado", "estado"], "o estado não abriu e fechou");
 });
 
+// ACHADO 2026-09-29 (corrigido no mesmo dia): "enquanto isso, ao redor" tinha
+// de viajar DENTRO da prosa de `narrate()`, e a Mente às vezes não escrevia o
+// marcador que o client reconhecia pra separar visualmente — saía tudo junto,
+// sem divisor. Agora `diffTextual` (dado determinístico, não precisa de
+// narração pra existir) vira um evento PRÓPRIO, `paralelo`, independente do
+// que a narração final diz.
+test("achado 2026-09-29 — 'enquanto isso' vira evento PRÓPRIO ('paralelo'), fora da narração", async () => {
+  const c = coletor();
+  const antes = { self: { id: "fulano", name: "Fulano" },
+                  scene: { place: {}, characters: [], items: [], objects: [], exits: [] } };
+  const depois = { self: { id: "fulano", name: "Fulano" },
+                    scene: { place: {}, characters: [{ name: "Draven" }],
+                              items: [], objects: [], exits: [] } };
+  const mundo = mundoDe({ respostas: [
+    { recusado: false, texto: "", narrativa: { aconteceu: ["Fulano pegou a corda."] } },
+  ] });
+  let chamada = 0;
+  mundo.contexto = async () => (chamada++ === 0 ? antes : depois);
+  const laco = new Laco({
+    mundo,
+    // A narração NÃO menciona Draven de propósito — prova que o "enquanto
+    // isso" não depende dela pra existir na tela.
+    mente: menteDe({ propostas: [{ capacidade: "take", alvos: { item: "corda" } }],
+                     narracao: "Você pega a corda." }),
+    extensoes: extVazio(), registro: null, emitir: c.emitir,
+  });
+
+  await laco.sussurrar("pegue a corda");
+
+  const paralelo = c.eventos.find((e) => e.ev === "paralelo");
+  assert.ok(paralelo, "o evento 'paralelo' não foi emitido");
+  assert.match(paralelo.texto, /Draven chegou ao local/);
+  const narracao = c.eventos.find((e) => e.ev === "narracao_fim");
+  assert.equal(narracao.texto, "Você pega a corda.",
+    "a narração final não deveria carregar o 'enquanto isso' embutido");
+});
+
+// ACHADO JOGANDO (2026-09-29): `recognize`/`examine`/`ask_*` são CONSULTIVAS —
+// não mutam o mundo, não gastam o turno, e por isso `narrativa.aconteceu` vem
+// SEMPRE vazio (`motor/conhecimento/declaracao.py`). Sem nenhum `aconteceu`, o
+// laço de beats não emitia NADA para aquele `toolCallId`, e o `tool_call_update`
+// nascido "in_progress" nunca fechava: na tela, o passo ficava pulsando pra
+// sempre, vazio ao clicar — mesmo depois de o turno inteiro (e a narração)
+// terminarem. Toda tentativa bem-sucedida tem de terminar em `completed`.
+test("tentativa CONSULTIVA (sem aconteceu) ainda assim fecha com um beat", async () => {
+  const c = coletor();
+  const laco = new Laco({
+    mundo: mundoDe({ respostas: [
+      { recusado: false, texto: "",
+        narrativa: { reconhecimentos: [{ nome: "a bolsa malfeita" }] } },
+    ] }),
+    mente: menteDe({ propostas: [{ id: "tc-1", capacidade: "recognize",
+                                   alvos: { alvo: "bolsa" },
+                                   prosa: { acao: "olha para a bolsa" } }] }),
+    extensoes: extVazio(), registro: null, emitir: c.emitir,
+  });
+
+  await laco.sussurrar("olhe para a bolsa");
+
+  const beats = c.eventos.filter((e) => e.ev === "beat");
+  assert.strictEqual(beats.length, 1,
+    "uma tentativa sem `aconteceu` precisa de exatamente um beat de fechamento");
+  assert.strictEqual(beats[0].toolCallId, "tc-1",
+    "o beat de fechamento tem de casar com o toolCallId da tentativa aberta");
+  assert.ok(beats[0].texto && beats[0].texto.trim().length,
+    "o passo não pode fechar com conteúdo vazio");
+});
+
+// ACHADO JOGANDO (2026-09-29): o mesmo turno de `recognize` tinha vários
+// passos com o TÍTULO IDÊNTICO ("ver", "ver", "ver"...) — `prosa.acao`,
+// texto livre da Mente, tinha virado um verbo pelado repetido, e não dava
+// pra distinguir uma tentativa da outra sem clicar. O título tem de ser
+// DETERMINÍSTICO — vem da chamada (`capacidade` + `alvosCru`, o texto que a
+// Mente escreveu ANTES de resolver pra id), não de quão bem ela narrou.
+test("o título da tentativa é o comando real, não a prosa (mesmo se a prosa for um verbo pelado)",
+async () => {
+  const c = coletor();
+  const laco = new Laco({
+    mundo: mundoDe({ respostas: [
+      { recusado: false, texto: "", narrativa: {} },
+      { recusado: false, texto: "", narrativa: {} },
+    ] }),
+    mente: menteDe({ propostas: [
+      { id: "tc-1", capacidade: "recognize", alvos: { alvo: "id-bolsa" },
+        alvosCru: { alvo: "a bolsa malfeita" }, prosa: { acao: "ver" } },
+      { id: "tc-2", capacidade: "recognize", alvos: { alvo: "id-boneco" },
+        alvosCru: { alvo: "o boneco de cera" }, prosa: { acao: "ver" } },
+    ] }),
+    extensoes: extVazio(), registro: null, emitir: c.emitir,
+  });
+
+  await laco.sussurrar("olhe ao redor");
+
+  const tentativas = c.eventos.filter((e) => e.ev === "tentativa");
+  assert.strictEqual(tentativas.length, 2);
+  assert.strictEqual(tentativas[0].tituloDinamico, "recognize(a bolsa malfeita)");
+  assert.strictEqual(tentativas[1].tituloDinamico, "recognize(o boneco de cera)");
+  assert.notStrictEqual(tentativas[0].tituloDinamico, tentativas[1].tituloDinamico,
+    "duas tentativas da mesma capacidade em alvos diferentes não podem ter o mesmo título");
+});
+
+// ACHADO 2026-09-29 (pedido no client): o balão do turno mostra, discreto,
+// embaixo do nome, "onde ele está" — a trilha INTEIRA, incluindo a location
+// atual (corrigido no mesmo dia: sem ela, jogando, a trilha parecia cortada
+// ANTES de chegar aonde o personagem de fato estava — o balão não tem um
+// `<h3>` de cena do lado pra completar, como `.scene .breadcrumb` tem).
+// `_turno` emite isso cedo, uma vez por turno, a partir do MESMO
+// `contexto.scene.place` que já buscou (nenhuma chamada extra ao mundo).
+test("achado 2026-09-29 — 'local' emite a trilha completa, INCLUINDO a location atual",
+async () => {
+  const c = coletor();
+  const cenaComLugar = {
+    self: { id: "fulano", name: "Fulano" },
+    scene: {
+      place: { id: "taverna", name: "Taverna do Gancho",
+               belongs_to: { id: "porto-negro", name: "Porto Negro",
+                             belongs_to: { id: "costa-de-ferro", name: "Costa de Ferro" } } },
+      characters: [], items: [], objects: [], exits: [],
+    },
+  };
+  const mundo = mundoDe({ respostas: [
+    { recusado: false, texto: "", narrativa: { aconteceu: ["Fulano olhou ao redor."] } },
+  ] });
+  mundo.contexto = async () => cenaComLugar;
+  const laco = new Laco({
+    mundo,
+    mente: menteDe({ propostas: [{ id: "1", capacidade: "examine",
+                                   alvos: { alvo: "algo" } }] }),
+    extensoes: extVazio(), registro: null, emitir: c.emitir,
+  });
+
+  await laco.sussurrar("olhe ao redor");
+
+  const local = c.eventos.find((e) => e.ev === "local");
+  assert.ok(local, "o evento 'local' não foi emitido");
+  assert.deepStrictEqual(local.breadcrumb, ["Costa de Ferro", "Porto Negro", "Taverna do Gancho"],
+    "a trilha vai de fora pra dentro e TERMINA na location atual");
+});
+
+test("achado 2026-09-29 — location na raiz do mundo (sem ancestrais) ainda emite só o próprio nome",
+async () => {
+  const c = coletor();
+  const cenaNaRaiz = {
+    self: { id: "fulano", name: "Fulano" },
+    scene: { place: { id: "clareira", name: "Clareira" },   // sem belongs_to
+             characters: [], items: [], objects: [], exits: [] },
+  };
+  const mundo = mundoDe({ respostas: [
+    { recusado: false, texto: "", narrativa: { aconteceu: ["fez."] } },
+  ] });
+  mundo.contexto = async () => cenaNaRaiz;
+  const laco = new Laco({
+    mundo,
+    mente: menteDe({ propostas: [{ id: "1", capacidade: "examine",
+                                   alvos: { alvo: "algo" } }] }),
+    extensoes: extVazio(), registro: null, emitir: c.emitir,
+  });
+
+  await laco.sussurrar("olhe ao redor");
+
+  const local = c.eventos.find((e) => e.ev === "local");
+  assert.ok(local, "mesmo sem ancestrais, o próprio lugar é a trilha");
+  assert.deepStrictEqual(local.breadcrumb, ["Clareira"]);
+});
+
+test("achado 2026-09-29 — sem NENHUM dado de lugar, 'local' não emite (silêncio, não 'undefined')",
+async () => {
+  const c = coletor();
+  const laco = new Laco({
+    mundo: mundoDe({ respostas: [
+      { recusado: false, texto: "", narrativa: { aconteceu: ["fez."] } },
+    ] }),   // CENA padrão: place: {} — sem name/id nenhum
+    mente: menteDe({ propostas: [{ id: "1", capacidade: "examine",
+                                   alvos: { alvo: "algo" } }] }),
+    extensoes: extVazio(), registro: null, emitir: c.emitir,
+  });
+
+  await laco.sussurrar("olhe ao redor");
+
+  assert.ok(!c.eventos.some((e) => e.ev === "local"),
+    "sem place.name/id não há trilha nenhuma pra mostrar — silêncio, não 'undefined'");
+});
+
 test("A RECUSA NÃO É SILENCIOSA: vira evento e chega à narração", async () => {
   const c = coletor();
   const mente = menteDe({ propostas: [{ capacidade: "give",
