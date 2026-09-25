@@ -190,7 +190,11 @@ function criarMente({ mundo, extensoes } = {}) {
                : cfg.runtime === "openrouter" ? cfg.openrouterModel
                : cfg.runtime === "gemini" ? (cfg.geminiModel || DEFAULTS.geminiModel)
                : cfg.model;
-    if (_daRotina.think !== undefined) opts = { ...opts, think: _daRotina.think };
+    // O `think` GERAL (2026-09-25) viaja também — o default da Mente passou a ser o
+    // `qwen3:8b`, e sem o campo no corpo TODA rotina pensaria (86 s, plano vazio). A
+    // rotina que declara o dela sobrepõe; a que não declara herda o geral.
+    const _think = _daRotina.think !== undefined ? _daRotina.think : _base.think;
+    if (_think !== undefined) opts = { ...opts, think: _think };
 
     devlog(`ENVIADO À MENTE — ${label}`, `[runtime] ${cfg.runtime} (${alvo})\n\n[system]\n${system}\n\n[user]\n${user}`);
 

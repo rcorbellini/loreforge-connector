@@ -21,7 +21,20 @@ const armazenamento = require("./armazenamento");
 const DEFAULTS = {
   runtime: "local",
   endpoint: "http://localhost:11434",
-  model: "llama3.1:8b",
+  // A MENTE NÃO RODA EM `llama3.1:8b` (2026-09-25). Nenhuma análise o recomendou: ele
+  // ficou porque era o default, e o Árbitro o divide (item 52.1, uma VRAM só). Toda
+  // medição de Mente depois disso é contra ele:
+  //
+  //   medição                                   llama3.1:8b   qwen3:8b (think:false)
+  //   ancorar a referência (item 79)            0/8           8/8
+  //   "coma e beba algo" vira duas ações        0/10          10/10
+  //   tool certa no top-3 (101 passos reais)    35%           84%
+  //
+  // `think:false` vai JUNTO, no geral: pensando, o `qwen3` gasta 86 s e devolve vazio.
+  // O Árbitro (servidor) segue no `llama3.1` por decisão do mantenedor — os dois
+  // modelos voltam a se revezar na VRAM, e isso é custo medido, não esquecido.
+  model: "qwen3:8b",
+  think: false,
   remoteModel: "claude-haiku-4-5-20251001",
   openrouterModel: "poolside/laguna-m.1:free",
   openrouterEndpoint: "https://openrouter.ai/api/v1",

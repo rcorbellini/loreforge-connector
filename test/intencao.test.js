@@ -213,16 +213,38 @@ test("a rotina `planejar` manda `think:false` no corpo da requisição", async (
 });
 
 test("as outras rotinas NÃO herdam o `think` de planejar", async () => {
-  configuracao.carregar(true);
+  const cfg = configuracao.carregar(true);
+  // Sem `think` geral, isola o que se quer provar: a sobreposição de `planejar` não
+  // vaza. (O default geral existe — ver o teste seguinte.)
+  const geral = cfg.think;
+  delete cfg.think;
+  const e = espia("{}");
+  try {
+    await Mente.deriveWhisper(copia());
+  } finally {
+    e.restaurar();
+    cfg.think = geral;
+  }
+  assert.ok(!("think" in e.chamadas[0].corpo),
+    "o `think` vazou para uma rotina que não o pediu — a sobreposição tem de ser "
+    + "por rotina, não global");
+});
+
+test("o `think` GERAL desce para a rotina que não declara o dela", async () => {
+  // O default da Mente é `qwen3:8b` (2026-09-25): se o `think:false` geral não
+  // descer, a autonomia roda PENSANDO — 86 s e resposta vazia, com a suíte verde.
+  const cfg = configuracao.carregar(true);
+  assert.strictEqual(cfg.think, false, "o default geral perdeu o `think:false`");
   const e = espia("{}");
   try {
     await Mente.deriveWhisper(copia());
   } finally {
     e.restaurar();
   }
-  assert.ok(!("think" in e.chamadas[0].corpo),
-    "o `think` vazou para uma rotina que não o pediu — a sobreposição tem de ser "
-    + "por rotina, não global");
+  assert.strictEqual(e.chamadas[0].corpo.think, false,
+    "o `think` geral não chegou ao CORPO da autonomia");
+  assert.strictEqual(e.chamadas[0].corpo.model, "qwen3:8b",
+    "a Mente não está no `qwen3:8b` — o `llama3.1` é desrecomendado para ela");
 });
 
 // --------------------------------------------------------------------------- //
