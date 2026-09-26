@@ -248,6 +248,9 @@ function criarMente({ mundo, extensoes } = {}) {
       let obj; try { obj = JSON.parse(linha); } catch (_) { return; }
       const delta = obj.message && obj.message.content;
       if (delta) { texto += delta; emit(delta); }
+      // o ÚLTIMO pedaço (`done`) traz a conta da chamada inteira — sem isto a narração,
+      // que é a única chamada streamada, sumia do custo do turno (C9 sem `custo_pago`)
+      if (obj.done) _contabiliza(obj.prompt_eval_count, obj.eval_count);
     });
     return texto;
   }

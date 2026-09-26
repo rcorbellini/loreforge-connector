@@ -234,3 +234,17 @@ test("o `think` GERAL desce para a rotina que não declara o dela (objetivos)", 
     "a Mente não está no `qwen3:8b` — o `llama3.1` é desrecomendado para ela");
   assert.ok(!("tools" in e.chamadas[0].corpo), "a conversa levou tools");
 });
+
+test("a narração STREAMADA também entra no custo do turno (o último pedaço traz a conta)", async () => {
+  const original = globalThis.fetch;
+  const linhas = [JSON.stringify({ message: { content: "Você " } }),
+                  JSON.stringify({ message: { content: "come." }, done: true, prompt_eval_count: 300, eval_count: 20 })];
+  globalThis.fetch = async () => ({ ok: true, body: new Response(linhas.join("\n") + "\n").body });
+  Mente.zerarCusto();
+  try {
+    await Mente.narrate("comeu", { self: { name: "X" }, scene: {} }, [], [], ["comeu"], [], [], null, () => {});
+  } finally { globalThis.fetch = original; }
+  const c = Mente.custoDoTurno();
+  assert.strictEqual(c.entrada, 300);
+  assert.strictEqual(c.saida, 20);
+});
