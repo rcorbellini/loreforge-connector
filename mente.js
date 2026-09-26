@@ -18,40 +18,8 @@
 "use strict";
 
 const configuracao = require("./config");
-const dialeto = require("./dialeto");
-const { criarResolvedor, normalizar, literal } = require("./resolucao");
+const HARNESS_PROMPTS = require("./harness/prompts");
 const { log: _logExterno } = require("./log");
-
-// Quantas voltas de RACIOCÍNIO uma vez pode ter — consultas e continuações somadas.
-// Não é limite sobre o que A Mente pode querer: é o fim do turno, senão uma conversa
-// que não converge pensa para sempre, queimando modelo e segurando a trava.
-//
-// DOBRADO (spec 045): antes, esgotar o orçamento aqui caía num SEGUNDO motor de
-// decisão (o caminho de prosa legado, /api/act) — medido menos confiável que
-// este caminho, não mais. Sem esse plano B, a resposta certa a "ela ainda não
-// decidiu nada" é dar mais uma chance DENTRO da mesma sessão, não trocar de
-// estratégia. O valor é um múltiplo modesto do original, não ilimitado — uma
-// conversa que não converge em 12 rodadas não vai convergir em 100.
-const MAX_RODADAS = 12;
-
-// AVISO ÚNICO E VISÍVEL quando o runtime não devolve tool call. Vai para o terminal de
-// verdade, não só para o devlog: degradar para prosa em silêncio é exatamente o defeito
-// que a 043 curou, e ele não pode voltar pela porta dos fundos (spec 044, Edge Cases).
-//
-// FICA NO MÓDULO, e isso é decisão da spec 072 (research R5). Ele é sobre o RUNTIME, não
-// sobre o assento: por instância, uma sala de cinco imprimiria o mesmo parágrafo cinco
-// vezes — que é justamente o ruído que esta flag existe para evitar.
-let _avisouSemTools = false;
-function _avisaSemTools(porque) {
-  if (_avisouSemTools) return;
-  _avisouSemTools = true;
-  process.stderr.write(
-    `\n⚠  O modelo não devolveu chamada de capacidade (${porque}).\n` +
-    `   O turno termina sem decisão: a spec 045 aposentou o caminho de prosa, e\n` +
-    `   não existe segundo motor para onde cair (Princípio VIII). Se isso se\n` +
-    `   repetir, o modelo provavelmente não suporta tool-calling — rode com\n` +
-    `   --verificar para confirmar.\n\n`);
-}
 
 // A MENTE É UMA POR ASSENTO (spec 072, FR-007).
 //
@@ -78,7 +46,20 @@ function criarMente({ mundo, extensoes } = {}) {
     _logExterno(`A Mente · ${label}`, content);
   }
 
+  // O RUNTIME QUE O JOGADOR TRAZ são DOIS agora (spec 075, Princípio VIII): a Mente e o
+  // decisor. Sem qualquer um deles não se joga, e é aqui — antes do turno — que isso se
+  // diz, em vez de o turno parar no meio.
   async function check() {
+    const mente = await _checkMente();
+    if (!mente.ok) return mente;
+    const { createDecider } = require("./harness/decider");
+    const d = await createDecider({ cfg: config() }).check();
+    if (!d.ok) return { ok: false, reason: `decisor: ${d.erro}` };
+    const dc = config().decisor || {};
+    return { ok: true, reason: `${mente.reason} · decisor ${dc.model || "?"}` };
+  }
+
+  async function _checkMente() {
     const cfg = config();
     if (cfg.runtime === "remote") {
       if (!cfg.apiKey) return { ok: false, reason: "falta a chave da Anthropic." };
@@ -108,15 +89,9 @@ function criarMente({ mundo, extensoes } = {}) {
 
 
   // O CLIENTE MCP saiu daqui (spec 044): mora em `mundo.js`, que é a única porta
-  // do conector para fora. A Mente deixou de conhecer endereço nenhum — ela
-  // pensa, e quem fala com o mundo é outro. Quem a usa injeta esse outro; sem
-  // injeção ela simplesmente não vê capacidade nenhuma, e cai na prosa.
-  //
-  // O que NÃO mudou, e é o que importa: com `tools/list` as capacidades vão ao
-  // modelo como TOOLS NATIVAS, e o schema passa a ser IMPOSTO pelo runtime em vez
-  // de pedido em prosa. As falhas medidas com llama3.1:8b — array onde se espera
-  // string, campo obrigatório omitido — são exatamente as que um schema imposto
-  // não deixa acontecer.
+  // do conector para fora. A Mente não conhece endereço nenhum — ela pensa, e quem
+  // fala com o mundo é outro. Desde a spec 075 ela nem vê as capacidades: quem as lê
+  // (`tools/list`) é o harness, e quem escolhe entre elas é o decisor (C6/C7).
   let _mundo = null;
   function usarMundo(m) { _mundo = m; }
   async function listarCapacidades() {
@@ -152,21 +127,11 @@ function criarMente({ mundo, extensoes } = {}) {
   function custoDoTurno() { return { ..._custo }; }
   function zerarCusto() { _custo = { entrada: 0, saida: 0, chamadas: 0 }; }
 
-  // (O aviso de "sem tool call" foi hoisted para o módulo — ver `_avisaSemTools`
-  // no topo do arquivo e o porquê em research R5.)
 
   // === O DIALETO DE CADA PROVEDOR ===========================================
-  // Saiu daqui para `dialeto.js` (2026-08-14). Eram quatro funções que traduziam
-  // METADE do problema — schema de tool e leitura da resposta — e nada do
-  // histórico, que é onde os provedores mais divergem. Juntar as três traduções num
-  // módulo só é o que permite acrescentar um provedor (a OpenAI, que hoje não temos)
-  // sem tocar no laço do turno.
-  //
-  // O `id` da chamada, que este código descartava, agora atravessa: sem ele não há
-  // como amarrar `tool_result` a `tool_use`, e sem isso não há histórico nenhum.
-  function _dial() {
-    return dialeto.de(config().runtime || "local");
-  }
+  // `dialeto.js` MORREU na spec 075. Ele traduzia o schema das TOOLS e o histórico de
+  // tool calling para cada provedor — e a Mente não recebe mais tool nenhuma: ela só
+  // conversa (objetivos, planejar, narrar). Cada runtime abaixo fala texto puro.
 
   async function callModel(system, user, opts = {}) {
     // A ROTINA PODE TROCAR O MODELO E AS OPÇÕES (item 79, spec 073 T026).
@@ -252,29 +217,18 @@ function criarMente({ mundo, extensoes } = {}) {
     try { return JSON.parse(corpo); } catch (_) { return null; }
   }
 
-  async function ollama(cfg, system, user, { forceJson = false, temperature = 0.4, onToken, tools, conversa, think } = {}) {
+  async function ollama(cfg, system, user, { forceJson = false, temperature = 0.4, onToken, think } = {}) {
     const emit = _safeToken(onToken);
     const body = {
       model: cfg.model,
-      // `opts.conversa` é o HISTÓRICO (user + assistant + tool), SEM o system —
-      // ele é sempre à parte, porque a Anthropic o quer fora de `messages` e
-      // uniformizar aqui é o que deixa o histórico igual nos três dialetos.
-      messages: [{ role: "system", content: system },
-                 ...(conversa || [{ role: "user", content: user }])],
+      messages: [{ role: "system", content: system }, { role: "user", content: user }],
       stream: !!emit,
       options: { temperature },
       // spec 073: `think:false` viaja no CORPO — `/no_think` no prompt não funciona
       // nesta versão do Ollama. Só desce quando a rotina pediu.
       ...(think !== undefined ? { think } : {}),
     };
-    // spec 043: com `tools`, o schema é IMPOSTO pelo runtime. Streaming e tools não
-    // combinam aqui (o Ollama entrega tool_calls no fim), e não faz falta: a chamada
-    // de escolha é curta; quem streama é a narração.
-    if (tools && tools.length) {
-      body.tools = dialeto.de("ollama").traduzTools(tools);
-      body.stream = false;
-    }
-    else if (forceJson) body.format = "json";
+    if (forceJson) body.format = "json";
     let res;
     try {
       res = await fetch(cfg.endpoint.replace(/\/$/, "") + "/api/chat", {
@@ -286,7 +240,6 @@ function criarMente({ mundo, extensoes } = {}) {
       const data = await res.json();
       _contabiliza(data.prompt_eval_count, data.eval_count);
       const msg = data.message || {};
-      if (tools && tools.length) return dialeto.de("ollama").leResposta(data);
       return msg.content || "";
     }
     // NDJSON: uma linha JSON por token, com o delta em `message.content`.
@@ -299,10 +252,10 @@ function criarMente({ mundo, extensoes } = {}) {
     return texto;
   }
 
-  async function anthropic(cfg, system, user, { forceJson = false, temperature = 0.4, onToken, tools, conversa } = {}) {
+  async function anthropic(cfg, system, user, { forceJson = false, temperature = 0.4, onToken } = {}) {
     if (!cfg.apiKey) throw new Error("configure sua chave da Anthropic no ⚙.");
-    const emit = tools && tools.length ? null : _safeToken(onToken);
-    const messages = conversa ? conversa.slice() : [{ role: "user", content: user }];
+    const emit = _safeToken(onToken);
+    const messages = [{ role: "user", content: user }];
     if (forceJson) messages.push({ role: "assistant", content: "{" });
     let res;
     try {
@@ -317,11 +270,6 @@ function criarMente({ mundo, extensoes } = {}) {
         body: JSON.stringify({
           model: cfg.remoteModel, max_tokens: 1024, temperature: Math.min(temperature, 1),
           system, messages, stream: !!emit,
-          // `tools` é parâmetro da REQUISIÇÃO, substituído a cada chamada: a cena
-          // mudou, a face mudou, e é a face de agora que vale. Só as mensagens
-          // acumulam.
-          ...(tools && tools.length
-              ? { tools: dialeto.de("anthropic").traduzTools(tools) } : {}),
         }),
       });
     } catch (_) { throw new Error("não foi possível falar com a Anthropic."); }
@@ -342,15 +290,14 @@ function criarMente({ mundo, extensoes } = {}) {
     }
     const data = await res.json();
     _contabiliza(data?.usage?.input_tokens, data?.usage?.output_tokens);
-    if (tools && tools.length) return dialeto.de("anthropic").leResposta(data);
     let text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
     if (forceJson) text = "{" + text;
     return text;
   }
 
-  async function openrouter(cfg, system, user, { temperature = 0.4, onToken, tools, conversa } = {}) {
+  async function openrouter(cfg, system, user, { temperature = 0.4, onToken } = {}) {
     if (!cfg.openrouterKey) throw new Error("configure sua chave do OpenRouter no ⚙.");
-    const emit = tools && tools.length ? null : _safeToken(onToken);
+    const emit = _safeToken(onToken);
     let res;
     const url = (cfg.openrouterEndpoint || DEFAULTS.openrouterEndpoint).replace(/\/$/, "") + "/chat/completions";
     try {
@@ -359,10 +306,7 @@ function criarMente({ mundo, extensoes } = {}) {
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + cfg.openrouterKey, "X-Title": "Loreforge" },
         body: JSON.stringify({
           model: cfg.openrouterModel, temperature, stream: !!emit,
-          ...(tools && tools.length
-              ? { tools: dialeto.de("openai").traduzTools(tools) } : {}),
-          messages: [{ role: "system", content: system },
-                     ...(conversa || [{ role: "user", content: user }])],
+          messages: [{ role: "system", content: system }, { role: "user", content: user }],
         }),
       });
     } catch (_) { throw new Error("não foi possível falar com o OpenRouter."); }
@@ -385,22 +329,13 @@ function criarMente({ mundo, extensoes } = {}) {
     const data = await res.json();
     _contabiliza(data?.usage?.prompt_tokens, data?.usage?.completion_tokens);
     const msg = data.choices?.[0]?.message || {};
-    if (tools && tools.length) return dialeto.de("openai").leResposta(data);
     return msg.content || "";
   }
 
-  async function gemini(cfg, system, user, { temperature = 0.4, onToken, tools, conversa } = {}) {
+  async function gemini(cfg, system, user, { temperature = 0.4, onToken } = {}) {
     if (!cfg.geminiKey) throw new Error("configure sua chave do Gemini no ⚙.");
-    const emit = tools && tools.length ? null : _safeToken(onToken);
-    // `opts.conversa` nasce no formato GENÉRICO do laço do turno ({role, content}
-    // — o mesmo que serve Anthropic e OpenRouter direto), e só passa a vir no
-    // formato do Gemini ({role, parts}) depois da primeira volta, quando é
-    // `dialeto.de("gemini").montaHistorico` quem a escreve. As duas formas
-    // precisam caber aqui: quem já tem `parts` passa como está; quem só tem
-    // `content` (a mensagem inicial) ganha o embrulho.
-    const contents = (conversa || [{ role: "user", content: user }]).map((m) => (
-      m.parts ? m : { role: m.role === "assistant" ? "model" : m.role,
-                      parts: [{ text: String(m.content ?? "") }] }));
+    const emit = _safeToken(onToken);
+    const contents = [{ role: "user", parts: [{ text: String(user ?? "") }] }];
     const modelo = cfg.geminiModel || DEFAULTS.geminiModel;
     const metodo = emit ? "streamGenerateContent" : "generateContent";
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:${metodo}`
@@ -416,8 +351,6 @@ function criarMente({ mundo, extensoes } = {}) {
         body: JSON.stringify({
           contents, systemInstruction: { parts: [{ text: system }] },
           generationConfig: { temperature: Math.min(temperature, 2) },
-          ...(tools && tools.length
-              ? { tools: dialeto.de("gemini").traduzTools(tools) } : {}),
         }),
       });
     } catch (_) { throw new Error("não foi possível falar com o Gemini."); }
@@ -441,123 +374,9 @@ function criarMente({ mundo, extensoes } = {}) {
     }
     const data = await res.json();
     _contabiliza(data?.usageMetadata?.promptTokenCount, data?.usageMetadata?.candidatesTokenCount);
-    if (tools && tools.length) return dialeto.de("gemini").leResposta(data);
     const cand = (data.candidates && data.candidates[0]) || {};
     return ((cand.content && cand.content.parts) || []).map((p) => p.text || "").join("");
   }
-
-  // spec 043: `consulteRules()` MORREU. Eram 13 frases escritas à mão aqui dentro,
-  // que não casavam com capacidade nenhuma do mundo — a Mente escolhia entre uma
-  // lista fictícia e o Árbitro tentava adivinhar o que ela queria dizer. A âncora
-  // passa a ser `context.capacidades`: o que o mundo DE FATO oferece nesta cena,
-  // com os alvos que existem, vindo no mesmo payload do contexto.
-
- const AUTONOMY_SYSTEM = `[Contexto Global do Jogo]
-Este é um mundo persistente onde as necessidades biológicas (fome, sede, cansaço) pioram com o passar do tempo (cada ação tomada é convertida em fração de tempo).
-
-Você é um motor de tomada de decisão para personagens de RPG. A cada turno, você receberá um objeto JSON contendo o estado psicológico do personagem, suas memórias, o que o corpo dele está pedindo, o ambiente atual e as capacidades disponíveis. 
-
-Sua missão é escolher as ações mais lógicas, coerentes e com alta fidelidade interpretativa (Roleplay) para o seu personagem executar a seguir.
-
-Para garantir que sua escolha seja perfeita, siga este fluxo de raciocínio:
-
-1. O Filtro de Personalidade e Inspiração (O "Quem sou eu?"):
-- Leia a \`personalidade\`. Identifique o modo de operar, fraquezas, preguiça, vícios ou código moral.
-- Regra da Inspiração: A IA deve pontuar alto em interpretação. Escolher a rota mais segura ou óbvia é uma FALHA de roleplay se o personagem for imprudente, apático, covarde ou teimoso. Valorize as falhas e traços do personagem!
-
-2. O Corpo vs a Personalidade:
-- Leia a \`necessidade\`: o que ele SENTE de fome e de cansaço, nas palavras dele.
-- Enquanto o corpo não incomoda, quem manda é a personalidade: ele age guiado por quem é, e desconforto pequeno não o desvia.
-- Quando a necessidade aperta, ela fala mais alto que a índole — e quanto mais aperta, mais ele abandona os próprios traços para resolvê-la. Um corpo em sofrimento faz qualquer um sair do seu jeito.
-- NÃO invente necessidade que a \`necessidade\` não afirma: se ela diz que ele não tem fome, ele não tem fome, por mais que a cena fale de comida.
-
-3. A Bússola de Intenções (O "O que eu planejo ou prometi?"):
-- Leia as \`intencoes\`. Intenções são desejos ou planos, NÃO são obrigações absolutas.
-- Personagens proativos e leais farão de tudo para cumpri-las. Personagens preguiçosos, caóticos ou egoístas podem (e devem) ignorar suas próprias intenções se cumpri-las der muito trabalho e a recompensa não for uma urgência biológica atual.
-
-3b. O PASSO QUE FALTA — leia antes de escolher o que fazer:
-- Cada compromisso traz o plano no \`o_que\` e, em \`passos_cumpridos\`, QUANTOS passos dele já foram feitos.
-- ANTES DE AGIR, separe duas listas: o que JÁ FOI FEITO — esses passos estão cumpridos e NÃO se repetem — e o que FALTA. Destes, qual é o PRIMEIRO.
-- Faça o primeiro passo que ainda falta. NUNCA refaça um passo já cumprido: repetir o que já está feito não aproxima do objetivo, desperdiça a vez, e o tempo do mundo passa do mesmo jeito.
-- \`parada\` diz há quanto tempo aquele compromisso não anda. Um compromisso que não rende há muitas voltas pode ser abandonado (\`set_intention\` com status \`abandonada\`) — largar o que não leva a lugar nenhum é decisão de personagem, não fracasso.
-
-3c. O QUE O CORPO PEDE:
-- \`carencias\` é o que o corpo está pedindo agora, e cada uma traz o \`pronto_quando\` que a encerraria.
-- Se uma carência aperta e não há compromisso sobre ela, FIRME UM: \`set_intention\` com o \`pronto_quando\` da carência, e o plano em passos no \`content\`. Um corpo que pede e não vira plano vira nada — o personagem lê "faminto" a cada volta e nunca come.
-
-4. A Leitura de Cenário e Enquadramento:
-- Avalie o \`contexto\` (e, dentro dele, \`contexto.presentes\`) e consulte as \`capacidades\`.
-- Pense na SEQUÊNCIA de ações que ele quer realizar e declare SOMENTE as \`capacidades\` que cumprem essa sequência, na ordem pensada. A lista não é um cardápio a percorrer: ação que não faz parte da sequência não se declara. Se uma delas não der certo, o resto da sequência pode não valer mais — você repensa a partir do que aconteceu.
-- TRAVA DE INVENTÁRIO / o que tenho: Você é estritamente proibido de consumir, vestir, vender ou usar itens que não estejam explicitamente listados no SEU array \`itens_que_possuo\`.
-- Não invente ações fora das \`capacidades\`.
-
-Formato de Saída Exigido:
-Responda EXCLUSIVAMENTE com um objeto JSON válido. Use a chave "sussurro" para enviar a ação narrada final, que será usada pela engine:
-{
-  "agir": true,
-  "racional": "[1. Racional: Explique como o filtro de personalidade, status e intenções ditaram a escolha]",
-  "acoes_declaradas": [
-    "- [2. Ações Declaradas: Frase EXATA de uma das \`capacidades\` 1]",
-    "- [2. Ações Declaradas: Frase EXATA de uma das \`capacidades\` 2]"
-  ],
-  "sussurro": "[3. Ação Narrada: Descreva em um parágrafo fluido de roleplay como essa sequência de regras se traduz fisicamente na cena. Descreva a TENTATIVA e SÓ ela: o que ele faz e diz. Nunca escreva o que os outros respondem, o que sentem ou como reagem, nem se ele conseguiu — nada disso é seu para decidir, e o mundo ainda não julgou.]"
-}`;
-
-  // O RAMO DE CRIAR do tick autônomo (spec 033). Cada volta do relógio bifurca:
-  // quem TEM compromisso decide se age por ele; quem não tem PARA e faz um.
-  //
-  // Não chama modelo aqui de propósito: isto é um SUSSURRO, e entra no `interpret`
-  // como qualquer coisa que o jogador digitasse. É lá que a fundamentação em
-  // personalidade, memórias e cena acontece — duplicar isso aqui seria decidir
-  // duas vezes, com metade do contexto.
-  //
-  // ESTEVE MORTO POR UMA SEMANA. Nasceu ligado (spec 035, 30/07) e o refactor de
-  // prompts de 06/08 apagou o `if` e deixou a constante órfã — nada a referenciava.
-  // Falha em SILÊNCIO: um personagem sem intenção simplesmente nunca fazia
-  // nenhuma, e isso parece apatia, não defeito. Custou caro: o Irmão Tobias ficou
-  // três horas perguntando o mesmo caminho porque, sem intenção e sem urgência
-  // biológica, a única bússola que lhe restava era a memória — e ela só tinha
-  // repetições do próprio fracasso.
-  //
-  // O texto foi reescrito para o formato de HOJE: o de antes mandava descrever a
-  // 'action', campo do JSON que o caminho de tool-calling aposentou.
-  const REFLECT_COMMAND = "Pare o que estiver fazendo: você não tem compromisso "
-    + "nenhum, e precisa de um. Olhe o que você lembra e quem está à sua volta, e "
-    + "escolha UMA coisa que você quer que seja verdade daqui a alguns dias e "
-    + "ainda não é.\n\n"
-    + "O compromisso tem de ser SEU e CONCRETO: diga o que você vai fazer, e com "
-    + "quem ou com o quê. Nomeie a pessoa, o lugar ou a coisa — um compromisso que "
-    + "não aponta para nada de específico não é um compromisso, é uma vontade "
-    + "vaga.\n\n"
-    + "Não repita nem reformule esta instrução: ela é o que o fez parar para "
-    + "pensar, não o que você decidiu. Também não firme como compromisso algo que "
-    + "você já tentou muitas vezes sem render nada — se as suas lembranças mostram "
-    + "que aquele caminho não leva a lugar nenhum, escolha outro.\n\n"
-    + "O que você faz AGORA é decidir. Cumprir vem depois.";
-
-  // O PROMPT DE PLANEJAR (spec 073, T024). Nasce aqui, e o texto é MEDIDO —
-  // `specs/073-intention-cycle/medicoes.md` §4. Não reescrever de cabeça.
-  //
-  // POR QUE UMA CHAMADA SÓ PARA ISTO. Firmar o compromisso e planejá-lo na MESMA
-  // chamada mediu 0/9 (item 38): o modelo funde dever e plano numa pose. Separadas,
-  // o plano mínimo sai correto — inclusive no caso difícil, com alvo ausente e
-  // destino não adjacente.
-  //
-  // E O MODELO IMPORTA MAIS QUE O TEXTO: em quatro formatos de plano, o
-  // `llama3.1:8b` deu 0/56. Com `qwen3:8b` e `think:false`, o plano sai em 12s e
-  // ancora a referência 8/8. Pensando, o mesmo modelo gasta 86s e devolve plano
-  // VAZIO em 6 de 8 — o bloco de raciocínio come o orçamento de saída inteiro.
-  const PLANEJAR_SYSTEM = `Você é A Mente de um personagem de RPG num mundo persistente.
-
-O personagem acabou de assumir um compromisso. Sua tarefa agora NÃO é agir — é PLANEJAR: escrever a sequência de passos que leva do estado atual ao compromisso cumprido.
-
-Regras do plano:
-- Cada passo é UMA ação concreta, na ordem em que será feita.
-- Só existem os verbos que o mundo oferece. Nenhum passo pode usar outro.
-- O plano é o CAMINHO MAIS CURTO que funciona. Passo que não aproxima do objetivo não entra.
-- Se algo que o compromisso exige não tiver verbo no mundo, escreva o passo assim mesmo e marque com (SEM VERBO) — é melhor saber que falta do que fingir que dá.
-
-Responda com o plano e nada mais: um passo por linha, começando com um hífen, e cada passo COMEÇANDO por um dos verbos do mundo, seguido do alvo.`;
 
   const NARRATE_SYSTEM = `Você é o narrador de um RPG. Sua única função é narrar as consequências da última ação do personagem ("personagem").
 
@@ -801,23 +620,11 @@ RESTRIÇÕES SEVERAS:
       // insumos (`salience`) vindos do mundo.
       memorias: _limparMemorias(_self.memories, _quemEvoca(_scene)),
       rotas_disponiveis: (_scene.exits || []).map((r) => ({ nome: r.name, para: r.destination_name })),
-      // `comCapacidades` é FALSE só na chamada de `interpret` que já manda `tools`
-      // nativas (spec 043) — lá, repetir a mesma informação em prosa é DUPLICAÇÃO,
-      // não reforço. Medido ao vivo em 2026-08-17 (18 chamadas reais ao llama3.1:8b,
-      // 3 casos × com/sem o bloco × 3 repetições): com o bloco duplicado, 4 de 9
-      // chamadas saíam SEM tool_call nenhuma — o modelo "pensava em voz alta" sobre
-      // qual tool usar em vez de chamar uma (o padrão que o devlog marca como "SEM
-      // TOOL CALLS — caindo no caminho de prosa" / "TOOLS DESCRITAS EM PROSA"). Sem
-      // o bloco: 9 de 9 saíram certas, com 35-65% menos tokens de prompt e 2-10x
-      // mais rápido; quando a chamada saía nas duas variantes, o id vinha certo nas
-      // duas — o enum de `tools` já basta. Se cogitar tirar o bloco também de
-      // `deriveWhisper`/`AUTONOMY_SYSTEM` (o único outro caminho que ainda lê
-      // `capacidades` em prosa, spec 045 — o caminho de prosa do `interpret`
-      // morreu junto com o Fluxo B), NÃO copie esta conclusão sem novo teste:
-      // `AUTONOMY_SYSTEM` não tem `tools` nativas — lá o `capacidades` em prosa é
-      // a ÚNICA fonte do que existe, não uma duplicata. Script do teste, pra
-      // rodar de novo antes de mexer aqui:
-      // `specs/043-tools-exposed-to-mind/testar_duplicacao_capacidades.py`.
+      // `comCapacidades` é FALSE no harness por objetivos (spec 075): a Mente diz o que
+      // quer SEM ver a face — escolher a capacidade é do decisor. Repetir as
+      // capacidades em prosa já era medido como nocivo (2026-08-17: 4 de 9 chamadas sem
+      // tool_call com o bloco duplicado; `specs/043-tools-exposed-to-mind/
+      // testar_duplicacao_capacidades.py`). O parâmetro fica para a bancada.
       ...(comCapacidades ? { capacidades: (context.capacidades || []).map((c) => ({
         nome: c.nome,
         o_que_faz: c.descricao,
@@ -836,47 +643,6 @@ RESTRIÇÕES SEVERAS:
     };
   }
 
-  // `onAction` (spec 043): recebe a `action` — e SÓ ela — enquanto o JSON ainda está
-  // sendo escrito. É a primeira chamada do turno e a que mais tempo deixava a tela
-  // muda; mostrar o personagem decidindo, palavra a palavra, é o maior ganho de
-  // percepção do turno inteiro. A estrutura do JSON nunca aparece: o extrator abre no
-  // valor da string e fecha na aspa.
-  // O SYSTEM do caminho por TOOL NATIVA — o ÚNICO caminho de ação agora (spec 045
-  // aposentou o caminho de prosa e o prompt longo que o formato dele exigia).
-  // Curto de propósito: o schema das capacidades já vai estruturado, então este
-  // texto não precisa ensinar formato — só quem o personagem é e o que NÃO fazer.
-  const ESCOLHER_SYSTEM = `Você é A Mente de um personagem de RPG num mundo persistente. A instrução do jogador é uma sugestão de vontade — o personagem NÃO é um robô: tem índole e personalidade inegociáveis.
-
-As ferramentas disponíveis são TUDO o que ele pode tentar aqui e agora; o mundo já filtrou pela cena.
-
-ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as ferramentas que cumprem essa sequência. Depois chame SOMENTE essas, na ordem pensada. A lista disponível não é um cardápio a percorrer: ferramenta que não faz parte da sequência não se chama. Se uma delas falhar, PARE — a cena mudou e o resto da sequência pode não valer mais; pense uma nova a partir do que aconteceu, e aja de novo.
-
-- Toda chamada leva "prosa.acao": o que ele FAZ, in-world e concreto. "prosa.fala" só se falar em voz alta.
-- Para apontar uma pessoa, um item ou um lugar, escreva o NOME dele como aparece na cena — nunca um código.
-- Descreva a TENTATIVA, nunca o desfecho: se convenceu, se acertou, se passou despercebido, quem decide é o mundo.
-- Se a instrução violar a personalidade dele, faça o que ele de fato faria — e a prosa conta a recusa.
-- Se nada couber exatamente, escolha a ferramenta MAIS PRÓXIMA do que ele quer e diga na prosa o que ele tenta. Quem decide se cabe é o mundo, não você — um "não" dele é jogo; ficar calado não é.
-- CONFIRME ANTES DE AGIR. Algumas ferramentas só PERGUNTAM (a sua memória, o momento do dia) — não mudam nada e não gastam a vez. Se o que ele pretende depende de uma CONDIÇÃO ("se aquele ali roubou", "quem é ladrão aqui") ou de um MOMENTO ("ao anoitecer", "no fim do dia"), pergunte primeiro e decida depois. Agir sobre palpite é como se acusa e se fere quem não devia. Nunca cite o nome de uma ferramenta na prosa.`;
-
-  // A CENA EM PROSA (spec 060, US3).
-  //
-  // MEDIDO, cinco formatos da MESMA informação, em token E em acerto:
-  //
-  //   JSON indentado (o de antes)  18.306 cobrado · 19/20 tool · 19/20 alvo
-  //   JSON compacto                17.983 · 19/20 · 19/20
-  //   linhas `chave: valor`        17.851 · 16/20 · 15/20
-  //   tabular                      17.847 · 19/20 · 19/20
-  //   PROSA CORRIDA                17.818 · 20/20 · 20/20
-  //
-  // A prosa é a mais barata E a mais certeira. E o resultado NÃO é "menos
-  // estrutura é melhor": as linhas `chave: valor` são quase tão baratas e foram
-  // as PIORES. A forma específica importa — por isso este texto é o que foi
-  // medido, e mudá-lo pede medir de novo.
-  //
-  // Só o caminho do SUSSURRO usa isto. O de AUTONOMIA continua em JSON de
-  // propósito: lá o bloco `capacidades` em prosa é a ÚNICA fonte do que existe
-  // (não há `tools` nativas), e trocar o formato sem medir aquele caminho seria
-  // exatamente o que a regra da 058 proíbe.
   // O RÓTULO DA NECESSIDADE VAI EM PORTUGUÊS PARA A MENTE — e esta função existe
   // porque a fronteira aqui é a do projeto inteiro: o CONTRATO é API e fala inglês
   // (`hunger`/`thirst`/`fatigue`/`sleep`, spec 067, e está certo); a PROSA é para um
@@ -1010,801 +776,6 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     return linhas.join("\n");
   }
 
-  // O RESOLVEDOR (spec 060, US2), criado sob demanda e reusado.
-  //
-  // A camada semântica só existe se o jogador tiver apontado um modelo de
-  // embedding (`embeddingModel`, vazio por padrão). Sem ele o conector resolve
-  // pela literal e REJEITA o resto, dizendo isso — não é o fallback silencioso
-  // que o Princípio VIII proíbe, é uma camada a menos, declarada.
-  let _resolvedorCache = null;
-  let _resolvedorPara = null;
-  function _resolvedor() {
-    const cfg = config();
-    const modelo = (cfg && cfg.embeddingModel) || "";
-    if (_resolvedorCache && _resolvedorPara === modelo) return _resolvedorCache;
-    const embedder = modelo ? async (textos) => {
-      const r = await fetch(`${cfg.endpoint}/api/embed`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: modelo, input: textos }) });
-      if (!r.ok) throw new Error(`embed ${r.status}`);
-      return (await r.json()).embeddings;
-    } : null;
-    _resolvedorPara = modelo;
-    _resolvedorCache = criarResolvedor({ embedder });
-    return _resolvedorCache;
-  }
-
-  // OS ENUMS QUE FICAM (spec 060, research R6).
-  //
-  // O critério não é o tipo do dado, é a ORIGEM da informação:
-  //   · lista da CENA (itens, pessoas, objetos, rotas) -> SAI. A Mente já vê
-  //     tudo isso em prosa; o enum é a segunda cópia, e a cópia é que custa.
-  //   · subconjunto CALCULADO (quem está caído, o que dá para empunhar, que
-  //     trabalho está em processo) -> FICA. O contexto não diz isso de um jeito
-  //     que ela use: o enum é a única fonte, e ali ele INFORMA em vez de
-  //     restringir.
-  //   · vocabulário FECHADO (ativa/concluida/abandonada) -> FICA. Não é id.
-  //   · id de MEMÓRIA -> FICA. Não tem "nome" para ela apontar, e a description
-  //     já lista cada um com o resumo.
-  //   · lugar que ele SABE alcançar -> FICA. Deriva de memória de rota, e o
-  //     contexto não traz essa lista.
-  // O RECORTE PARA A LLM MORA AQUI, e é aqui que ele pertence.
-  //
-  // O conector é o BFF da Mente: o mundo entrega o dado COMPLETO (todo parâmetro,
-  // todo candidato com id e nome) sem se preocupar com onde será usado, e quem
-  // formata para ESTE modelo é este arquivo. Recorte é presentação, e presentação se
-  // mede contra um modelo — não se crava no contrato da API, onde um host MCP de
-  // terceiro também bebe.
-  //
-  // O QUE SAI, e por quê (spec 060, medido): o enum que REPETE o que a cena já
-  // mostra em prosa. Ele custava 35% do bloco de capacidades, não restringia nada
-  // (um id fora dele saiu em 4 de 5 chamadas), PARALISAVA no alvo ambíguo e fazia o
-  // modelo SUBSTITUIR em silêncio no alvo ausente. A Mente aponta por NOME, e a
-  // tabela de resolução do `mundo.js` converte.
-  //
-  // O QUE FICA está em `_ENUM_FICA` abaixo: onde o enum não é a lista da cena, mas
-  // um RECORTE que só o mundo sabe calcular (quem está caído, o que dá para
-  // empunhar, que trabalho está em processo) ou um VOCABULÁRIO da própria tool
-  // (`ativa`, `hunger`, `posse`). Ali o enum INFORMA em vez de restringir, e tirá-lo
-  // perderia conhecimento, não peso.
-  //
-  // ISTO É UMA LISTA À MÃO, E ELA JÁ APODRECEU DUAS VEZES — no cliente (item 77) e
-  // depois no servidor, quando `set_intention:pronto_quando` nasceu e ninguém a
-  // atualizou: a Mente nunca viu o vocabulário, chutou um id parecido, e duas
-  // corridas A/B de quatro horas morreram na recusa.
-  //
-  // Mover de lado não curou, e ter duas cópias (uma em Python, outra aqui) foi pior:
-  // duplicata em OUTRA LINGUAGEM, onde nem um grep junta as duas. Tentou-se DERIVAR
-  // a regra — "enum igual a um conjunto que a cena já lista = repetição" — e deu 75
-  // divergências: quase todo enum de cena é subconjunto estrito de algo, então o
-  // critério classifica quase tudo como conhecimento. A distinção é um JUÍZO sobre o
-  // que a Mente infere da prosa, e juízo não sai de igualdade de conjuntos.
-  //
-  // A cura que sobrou é a honesta: a lista fica, mas o DEFAULT DEIXA DE SER MUDO.
-  // `test/mente.test.js` exige que TODO par `tool:parâmetro` com candidatos esteja
-  // classificado — em `_ENUM_FICA` ou em `_ENUM_SAI`. Um parâmetro novo não escolhe
-  // sozinho: ele quebra a suíte até alguém decidir.
-  const _ENUM_FICA = new Set([
-    "heal:alvo", "butcher:alvo",                 // subconjunto calculado
-    "write:instrumento", "sing:instrumento",     // o que dá para empunhar
-    "craft:peca", "forge_weapon:peca", "forge_armor:peca", "cook:peca",
-    "brew:peca",                                 // trabalho em processo
-    "set_intention:status", "set_intention:pronto_quando",
-    "promise:intention_id", "set_intention:intention_id",
-    "create_memory:intensity", "create_memory:domain",   // vocabulário fechado
-    "travel_to:destino", "ask_about:sobre_lugar",// lugar que ele sabe alcançar
-    "learn_routes:rotas",                        // rotas do MUNDO, não da cena
-  ]);
-
-  // O QUE SAI, DITO EM VOZ ALTA. Só existe para o guarda do `mente.test.js`: ele
-  // exige que todo par com candidatos esteja num dos dois conjuntos. Sem isto, um
-  // parâmetro novo cairia no default — e o default é REMOVER, que foi exatamente
-  // como `pronto_quando` sumiu do prompt sem ninguém decidir.
-  // OS QUE SÓ SAEM COM A CAMADA SEMÂNTICA LIGADA. Estão em `_ENUM_SAI` (é para lá que
-  // eles vão quando dá), e por isso o guarda exaustivo do `mente.test.js` continua
-  // satisfeito — o que muda é QUANDO o corte acontece, não a classificação.
-  const _SO_COM_SEMANTICA = new Set([
-    "accuse:memoria_id", "sing:memoria_id", "write:memoria_id",
-  ]);
-
-  const _ENUM_SAI = new Set([
-    // O ID DE MEMÓRIA SAI (16/09). Ele era o maior enum que restava — 506 entradas
-    // para um personagem de história longa, 32% de tudo o que vai no fio — e estava
-    // em `_ENUM_FICA` por um motivo que deixou de valer: a face mandava o candidato
-    // com `nome` igual ao próprio id (`name_of` não acha memória), então não havia
-    // como resolver por nome e o enum era a única porta.
-    //
-    // Agora a face manda o RESUMO como nome, e a memória vira o que todo o resto do
-    // projeto já é: A Mente NOMEIA a lembrança com as palavras dela, o conector
-    // converte. Medido: contra as 811 memórias o resolvedor acerta 2/5; contra o
-    // conjunto que uma consulta acabou de evocar, 3/5 — e em NENHUMA configuração
-    // ele erra, só cala. É por isso que o pool importa, e é o que a `_poolDeMemoria`
-    // abaixo mantém.
-    "accuse:memoria_id", "sing:memoria_id", "write:memoria_id",
-    "accuse:alvo", "ask_about:quem", "ask_directions:quem", "ask_wares:quem",
-    "attack:alvo", "attack:arma", "brew:ingredientes", "brew:recipiente",
-    "ask_wares:parceiro", "buy:parceiro", "buy:pagamento", "buy:mercadoria",
-    "carry:alvo", "carry:rota", "craft:materiais",
-    "chop:ferramenta", "chop:onde", "close:target", "cobrar:de_quem", "cobrar:item",
-    "cook:ingredientes", "cook:fonte_calor", "cura:alvo", "drink:alvo",
-    "drop:item", "eat:item", "enter_route:route", "equip:item", "examine:alvo",
-    "expulsar:alvo", "expulsar:rota", "forage:onde", "forge_armor:materiais",
-    "forge_armor:fonte_calor", "forge_weapon:materiais", "forge_weapon:fonte_calor",
-    "give:item", "give:to", "kindle_fire:materiais", "learn_routes:com_quem",
-    "mine:ferramenta", "mine:onde", "persuade:personagem", "persuade:rota",
-    "persuade_give:alvo", "persuade_give:item", "persuade_give:para",
-    "promise:para", "recognize:alvo", "shove:item", "shove:to", "steal:alvo",
-    "steal:item", "stow:item", "stow:container", "take:item", "trade:parceiro",
-    "trade:ofereco", "trade:quero", "unequip:item", "unequip:to", "write:alvo",
-    "write:superficie",
-  ]);
-
-  // O ID DE MEMÓRIA SÓ SAI SE HOUVER COMO RESOLVÊ-LO (16/09).
-  //
-  // Para toda outra referência, a Mente aponta por NOME e a camada LITERAL do
-  // resolvedor dá conta: "Frasco de Óleo" casa com `frasco-de-oleo` por normalização.
-  // Memória não tem nome — tem um RESUMO de 99 chars em média, e a Mente a nomeia com
-  // outras palavras ("a vez em que a Hulda tentou me roubar"). Isso é trabalho de
-  // embedding, e o `embeddingModel` nasce VAZIO no config.
-  //
-  // MEDIDO, 811 candidatos, 5 referências em paráfrase:
-  //   só literal (o config de hoje) .... 0/5   — todas mudas
-  //   com embedding, contra as 811 ..... 2/5
-  //   com embedding, contra o evocado .. 3/5   (e 3/3 com pool <= 19)
-  // Em NENHUMA configuração ele erra: ou acerta, ou cala.
-  //
-  // Zero de cinco não é economia, é `sing`/`accuse`/`write` deixando de ser
-  // chamáveis. Então o enum fica enquanto não houver com que resolver — é a mesma
-  // regra que o resolvedor já aplica a si mesmo (Princípio VIII: sem embedding não há
-  // mecanismo pior fingindo ser o mesmo, há uma camada A MENOS, declarada).
-  function _podeResolverPorSemantica() {
-    const cfg = config();
-    return !!(cfg && cfg.embeddingModel);
-  }
-
-  function _semIdDeCena(tool) {
-    const esq = tool.inputSchema || tool.parameters;
-    if (!esq || !esq.properties) return tool;
-    const props = {};
-    let mexeu = false;
-    for (const [nome, v] of Object.entries(esq.properties)) {
-      if (!v || typeof v !== "object" || _ENUM_FICA.has(`${tool.name}:${nome}`)
-          || (_SO_COM_SEMANTICA.has(`${tool.name}:${nome}`)
-              && !_podeResolverPorSemantica())) {
-        props[nome] = v;
-        continue;
-      }
-      if (Array.isArray(v.enum)) {
-        const { enum: _fora, ...resto } = v;
-        props[nome] = _SEM_DICA ? resto : { ...resto, description: _DICA_DE_ALVO };
-        mexeu = true;
-      } else if (v.items && Array.isArray(v.items.enum)) {
-        const { enum: _fora, ...restoItens } = v.items;
-        props[nome] = _SEM_DICA
-          ? { ...v, items: restoItens }
-          : { ...v, items: { ...restoItens, description: _DICA_DE_ALVO } };
-        mexeu = true;
-      } else {
-        props[nome] = v;
-      }
-    }
-    if (!mexeu) return tool;
-    const novo = { ...tool };
-    const alvo = { ...esq, properties: props };
-    if (tool.inputSchema) novo.inputSchema = alvo; else novo.parameters = alvo;
-    return novo;
-  }
-
-  // A frase que substitui o enum. Curta de propósito: ela responde "como eu
-  // chamo?", que é uma das duas perguntas que a Mente faz — e nada além disso.
-  const _DICA_DE_ALVO = "o NOME daquilo, como aparece na cena";
-  // DECIDIDO (22/09): a dica SAI do parâmetro e é dita uma vez no `ESCOLHER_SYSTEM`.
-  //
-  // Era a MESMA frase em todo parâmetro de referência — o mesmo movimento que a P2 fez
-  // com a explicação do `prosa`. A diferença é que ali a frase já estava no system; aqui
-  // ela não estava, então tirar daqui exigiu escrever lá, e linha nova é prompt: por isso
-  // a linha acrescentada diz EXATAMENTE o que a dica dizia, nada além. Dizer mais teria
-  // trocado economia de token por instrução nova, e a medição compararia duas coisas.
-  //
-  // MEDIDO com a bateria das 43 capacidades, duas corridas de cada lado: 22/43 vivas
-  // com a dica (b4, b4bis) e 22/43 sem ela (b5, b6). O chão de ruído do instrumento é
-  // de ±1 capacidade por corrida — cada braço perde uma diferente e ganha o `craft` —,
-  // então o que se pode afirmar é que ela não custa nada GROSSO, não que não custe nada.
-  // Para 3,6% do bloco em toda chamada, embarca.
-  //
-  // `LOREFORGE_COM_DICA=1` devolve a dica ao parâmetro — braço de controle, não modo de
-  // uso. O default é o que se pretende embarcar, e não o inverso: um interruptor que
-  // precisasse ser LIGADO mediria um caminho que ninguém roda.
-  const _SEM_DICA = process.env.LOREFORGE_COM_DICA !== "1";
-
-  // A PROSA EXPLICADA UMA VEZ, NÃO QUARENTA E CINCO (proposta P2 da rodada de
-  // 16/09 — `ferramentas/ab/rodada-16-09-quatro-propostas.md`).
-  //
-  // `mcp_core.input_schema` pendura em TODA capacidade de ação o mesmo objeto
-  // `prosa` com as mesmas três frases de explicação ("o que o personagem FAZ e
-  // DIZ...", "o que ele faz. Obrigatório.", "o que diz em voz alta, se disser").
-  // São ~320 chars idênticos × 40 capacidades: MEDIDO em 12.920 chars do bloco de
-  // tools, e 14.244 (30% do bloco, ~3.000 tok por chamada) no mundo do marco da
-  // corrida A/B. O modelo relê a mesma lição quarenta vezes por chamada.
-  //
-  // E ela JÁ ESTÁ dita, uma vez, onde devia: o `ESCOLHER_SYSTEM` abre com
-  // *"Toda chamada leva prosa.acao ... Descreva a TENTATIVA, nunca o desfecho"*.
-  // Este é o único caminho que vê estas tools — a autonomia não tem `tools`
-  // nativas. Então aqui não se perde informação: para de repetir.
-  //
-  // POR QUE NO CONECTOR, e não no `input_schema` (onde o plano da rodada a tinha
-  // posto): o recorte é do BFF. O `mcp_core` é a API, e um host que não seja o
-  // nosso conector (Claude Desktop) não tem `ESCOLHER_SYSTEM` nenhum — para ele a
-  // descrição é a ÚNICA fonte. O próprio `input_schema` diz isso na primeira
-  // linha do corpo ("O SCHEMA É COMPLETO... quem recorta para a LLM é o
-  // conector"), e a spec 060 abriu o precedente com o enum.
-  //
-  // TIRA SÓ `description`, nunca uma chave. A FORMA é o que o schema de fato
-  // entrega (tipo, campo obrigatório presente — medido na 043), então `type`,
-  // `properties` e `required` passam intactos. Um campo novo em `prosa` continua
-  // descendo: perder campo em silêncio já custou duas corridas.
-  function _semProsaExplicada(tool) {
-    const esq = tool.inputSchema || tool.parameters;
-    const prosa = esq && esq.properties && esq.properties.prosa;
-    if (!prosa || typeof prosa !== "object" || !prosa.properties) return tool;
-    const { description: _foraDoObjeto, ...restoDoObjeto } = prosa;
-    const campos = {};
-    for (const [nome, v] of Object.entries(prosa.properties)) {
-      if (!v || typeof v !== "object") { campos[nome] = v; continue; }
-      const { description: _foraDoCampo, ...restoDoCampo } = v;
-      campos[nome] = restoDoCampo;
-    }
-    const novo = { ...tool };
-    const alvo = { ...esq, properties: { ...esq.properties,
-      prosa: { ...restoDoObjeto, properties: campos } } };
-    if (tool.inputSchema) novo.inputSchema = alvo; else novo.parameters = alvo;
-    return novo;
-  }
-
-  // O FUNIL ÚNICO do recorte para a Mente.
-  //
-  // Existe para que haja UM lugar por onde tudo o que o modelo vê passa: o laço do
-  // `interpret` e a `ferramentas/bancada.py` chamam este, e não os pedaços. Uma
-  // bancada que passasse só por um dos recortes mostraria um prompt que o jogo não
-  // usa — e a bancada é o instrumento com que se confere o que de fato desce.
-  // `LOREFORGE_COM_PROSA=1` devolve a explicação repetida — é o braço de CONTROLE
-  // da medição, não um modo de uso. Fica assim, e não o inverso, porque o recorte é
-  // o que se pretende embarcar: um interruptor que precisasse ser LIGADO mediria um
-  // caminho que ninguém roda, e foi assim que a P4 passou por boa até alguém
-  // perguntar o que acontece com quem está com fome e tem plano.
-  function _recorteDaMente(tool) {
-    const sem = process.env.LOREFORGE_COM_PROSA === "1";
-    return sem ? _semIdDeCena(tool) : _semProsaExplicada(_semIdDeCena(tool));
-  }
-
-  // A CHAMADA QUE VEIO COMO TEXTO (spec 060).
-  //
-  // Reconhece pela FORMA, não por adivinhação: o conteúdo parseia como JSON (ou
-  // traz um objeto JSON embutido) e o nome que ele declara é de uma capacidade
-  // que a cena de fato oferece. Nome desconhecido não conta — seria confundir
-  // "falhou em emitir" com "inventou capacidade", que já tem tratamento próprio
-  // no `_peneira` do laço.
-  //
-  // Devolve o nome da capacidade, para o registro, ou `null`.
-  function _paradaFalsa(texto, tools) {
-    if (!texto || typeof texto !== "string") return null;
-    const nomes = new Set((tools || []).map((t) => t && t.name).filter(Boolean));
-    if (!nomes.size) return null;
-    const bruto = texto.trim();
-    const inicio = bruto.indexOf("{");
-    const fim = bruto.lastIndexOf("}");
-    if (inicio < 0 || fim <= inicio) return null;
-    let obj;
-    try {
-      obj = JSON.parse(bruto.slice(inicio, fim + 1));
-    } catch (_) {
-      return null;
-    }
-    if (!obj || typeof obj !== "object") return null;
-    const nome = obj.name || obj.nome
-                 || (obj.function && (obj.function.name || obj.function.nome));
-    return (typeof nome === "string" && nomes.has(nome)) ? nome : null;
-  }
-
-
-  async function interpret(instruction, context, onAction, opts = {}) {
-    const charId = (context.self && context.self.id) || context.character_id;
-    // CAMINHO NOVO (spec 043): as capacidades vão como TOOLS NATIVAS. O schema é
-    // imposto pelo runtime — o modelo não tem como devolver array onde se espera
-    // string nem esquecer um campo obrigatório, que eram as duas falhas medidas.
-    if (charId) {
-      try {
-        let doMundo = await listarCapacidades(charId);
-        // RECORTE DE FACE POR ROTINA (item 53.6). Quando a pergunta que A Mente
-        // está respondendo é UMA — "a que eu me comprometo?" —, oferecer os 27
-        // verbos da cena é convidá-la a fazer outra coisa. Medido: com a face
-        // inteira, o comando de reflexão produzia `set_intention` em 8 de 12
-        // tentativas, e sempre no FIM de uma cadeia atrás de tools que podem
-        // recusar — com a regra de que a recusa mata a fila, a intenção morria
-        // junto. As CONSULTAS continuam: ela lê a própria memória antes de
-        // decidir, e é justamente esse raciocínio que dá conteúdo à decisão.
-        //
-        // Isto NÃO é um teto sobre o que A Mente pode querer (aquele foi
-        // rejeitado, e com razão): é o escopo da PERGUNTA que a rotina faz. Ela
-        // segue escrevendo o compromisso — é lá que a agência dela vive.
-        if (Array.isArray(opts.somente) && opts.somente.length) {
-          doMundo = doMundo.filter(
-            (x) => opts.somente.includes(x.name)
-                   || (x.annotations && x.annotations.readOnlyHint));
-        }
-        if (doMundo.length) {
-          // AS DUAS ORIGENS, e o roteamento por ORIGEM — nunca por nome.
-          //
-          // Uma tool local declarada com o nome de uma capacidade do mundo NÃO a
-          // sequestra: o nome do mundo ganha, sempre. É o que torna o harness
-          // seguro de abrir — quem tuna acrescenta raciocínio, jamais efeito.
-          const nomesDoMundo = new Set(doMundo.map((t) => t.name));
-          const locais = (_ext ? _ext.toolsLocais() : [])
-                           .filter((t) => !nomesDoMundo.has(t.name));
-          // O ID NÃO DESCE À MENTE (spec 060, US2).
-          //
-          // O enum dos parâmetros que são LISTA DE CENA sai do que vai ao modelo
-          // e fica na tabela de resolução do `mundo` — ela aponta por NOME, o
-          // conector converte. Três razões, todas medidas:
-          //   · o enum NÃO era imposto pelo runtime (um id fora dele saiu 4/5);
-          //   · ele PARALISAVA no ambíguo (três moedas iguais: mudo 5/5);
-          //   · e SUBSTITUÍA em silêncio no ausente (pediram destilador, o mundo
-          //     examinou o fogão 5/5) — ação errada com cara de sucesso.
-          // Sai também 35% do peso do bloco de capacidades, mas isso é
-          // consequência, não motivo.
-          //
-          // O que FICA está em `_ENUM_QUE_FICA`: onde o enum não é a lista da
-          // cena mas um subconjunto que só o mundo sabe calcular, ele é a ÚNICA
-          // fonte daquele fato. Tirá-lo perderia conhecimento, não peso.
-          // `recorteExtra` recebe o BLOCO, não a tool. O `_recorteDaMente` é por
-          // capacidade e não alcança transformação que precise de estado entre elas
-          // — uma definição hospedada numa e referenciada nas outras, por exemplo.
-          // Existe para SONDAGEM: nada em produção o define, e por isso o default é
-          // a identidade. Sem ele, medir uma forma nova de bloco obrigaria a forkar
-          // este arquivo, e o que se mediria seria o fork.
-          let tools = doMundo.concat(locais).map(_recorteDaMente);
-          if (_ext && typeof _ext.recorteExtra === "function") {
-            tools = _ext.recorteExtra(tools);
-          }
-          const ehLocal = (nome) =>
-            !nomesDoMundo.has(nome) && _ext && _ext.ehLocal(nome);
-          // AS CONSULTAS DO MUNDO (spec 040), reconhecidas pela marca do PRÓPRIO
-          // MCP — `readOnlyHint`. São do mundo (o nome vem de lá, o corpo roda lá),
-          // mas NÃO são proposta: perguntar a hora ou a própria memória não muda
-          // nada e não gasta a vez. Entram no mesmo laço das tools locais, por isso
-          // a pergunta que o laço faz deixou de ser "é local?" e passou a ser "isto
-          // ainda é só pensar?".
-          const nomesDeConsulta = new Set(
-            doMundo.filter((t) => t.annotations && t.annotations.readOnlyHint)
-                   .map((t) => t.name));
-          const ehConsulta = (nome) => nomesDeConsulta.has(nome);
-
-          // `comCapacidades: false` — `tools` (abaixo) já manda a mesma informação
-          // estruturada; ver o comentário em `_contextoPayload` sobre por que
-          // repeti-la aqui é o que estava atrapalhando.
-          const base = "O que ele faz?\n\nINSTRUÇÃO: " + instruction + "\n\n"
-                     + _cenaEmProsa(await _contextoPayload(context,
-                                      { comCapacidades: false }));
-
-          // O RACIOCÍNIO É UMA CONVERSA, e não uma sequência de perguntas amnésicas.
-          //
-          // Antes daqui, cada volta remontava `base + observacoes` — o resultado da
-          // consulta voltava como TEXTO colado no fim do pedido. Três consequências,
-          // e nenhuma óbvia:
-          //   · a Mente NÃO SABIA o que já tinha pedido (o pedido dela não estava na
-          //     conversa, só o nosso resumo dele), então repetia;
-          //   · como o `user` mudava a cada volta, o prefixo mudava e o cache de
-          //     prompt não pegava — cada volta custava o contexto inteiro;
-          //   · e o vínculo pedido↔resultado era prosa nossa, não o protocolo.
-          //
-          // Agora a conversa CRESCE: `assistant` com o que ela pediu, `tool` com o que
-          // o mundo respondeu, amarrados pelo id da chamada. O `dialeto` cuida de cada
-          // provedor falar isso do seu jeito. O bloco `tools` NÃO entra na conversa —
-          // é parâmetro da requisição, substituído a cada chamada, porque a cena muda
-          // e é a face de agora que vale.
-          const dial = _dial();
-          let conversa = [{ role: "user", content: base }];
-          let ultima = null;          // a última resposta dela, para o histórico
-          let rodadas = 0;
-          // A MEMÓRIA DO DESEMPATE (spec 062, US1). Empatada uma referência, o
-          // resolvedor escolhe um id — mas não pode escolher o MESMO sempre: se a
-          // Mente insistir na mesma referência (o id escolhido foi recusado por
-          // outro motivo), repetir a escolha faria a retentativa cair filtrada
-          // por `tentadas` (laco.js) como proposta já-dispachada, e a vez
-          // morreria calada. Vive AQUI, não no laço: `_resolverAlvos` já está
-          // dentro do escopo que `continuar()` reentra sem sair (mesma vez,
-          // várias rodadas) — nenhum dado precisa atravessar arquivo (research
-          // R2). Nasce vazio a cada vez; nunca sobrevive para o turno seguinte.
-          const oferecidosPorChave = new Map();   // chave -> Set<id>
-
-          // O CONTRATO DO MUNDO É O SCHEMA, e quem tem de honrá-lo é ESTE lado.
-          //
-          // O `tools/list` do MCP entrega o `inputSchema` de cada capacidade —
-          // então o conector SABE que `cook.ingredientes` é `array`. O modelo
-          // pequeno às vezes manda a lista como texto com vírgulas
-          // ("moeda-cobre-025, moeda-cobre-026"), e nós repassávamos verbatim.
-          //
-          // O mundo então tratava a string INTEIRA como um id só e respondia
-          // "'moeda-cobre-025, moeda-cobre-026' não está ao alcance" — apontando
-          // para ALCANCE quando o defeito era FORMATO. A Elga leu isso como "os
-          // ingredientes é que estão errados" e enumerou 20 combinações de moedas
-          // em 49 tentativas (2026-08-20), todas recusadas pelo mesmo motivo.
-          //
-          // Corrigir aqui, e não no mundo: o contrato está certo, é o cliente que
-          // precisa mandar certo. Ids são slugs e nunca contêm vírgula, então a
-          // separação é inequívoca — mesma régua que o mundo já aplica na direção
-          // inversa (lista de um elemento onde se espera escalar), e pelo mesmo
-          // motivo: recusar seria perder o turno por uma vírgula.
-          const _tipos = new Map(
-            tools.map((t) => [t.name,
-              ((t.inputSchema || t.parameters || {}).properties) || {}]));
-          const _lista = (v) => {
-            if (Array.isArray(v)) return v;
-            if (typeof v !== "string") return v;
-            const partes = v.split(",").map((s) => s.trim()).filter(Boolean);
-            return partes.length ? partes : v;
-          };
-          const _conforme = (nome, args) => {
-            const props = _tipos.get(nome) || {};
-            return Object.fromEntries(Object.entries(args).map(([k, v]) =>
-              [k, (props[k] || {}).type === "array" ? _lista(v) : v]));
-          };
-          // A REFERÊNCIA VIRA ID AQUI (spec 060, US2). A Mente apontou por nome;
-          // o conector converte com a tabela que o mundo já lhe deu. O que NÃO
-          // resolve viaja como `naoResolvido` — e o laço não o manda ao mundo:
-          // falta o mínimo que a capacidade exige, e isso é um 400 deste lado.
-          const _resolverAlvos = async (nomeCap, alvos) => {
-            const out = {}, falhas = [];
-            for (const [param, valor] of Object.entries(alvos)) {
-              // RESOLVE CONTRA O CONJUNTO MAIOR: os candidatos do parâmetro MAIS
-              // quem ele sabe nomear de fora da cena (spec 060). Sem isso, uma
-              // referência legítima a alguém AUSENTE morria como "não corresponde
-              // a nada", que soa como falha de nomear — quando o certo é o mundo
-              // dizer "ela não está aqui", que é fato e diz o que fazer a seguir.
-              const cands = _mundo.candidatosOuConhecidos
-                ? _mundo.candidatosOuConhecidos(nomeCap, param)
-                : (_mundo.candidatosDe ? _mundo.candidatosDe(nomeCap, param) : null);
-              if (!cands || typeof valor !== "string") { out[param] = valor; continue; }
-              // A CHAVE DO DESEMPATE (spec 062, US1): mesma capacidade, mesmo
-              // parâmetro, mesma referência normalizada — é o que faz a segunda
-              // tentativa da MESMA pergunta receber um id diferente da primeira.
-              const chaveDesempate = `${nomeCap} ${param} ${normalizar(valor)}`;
-              const jaOferecidos = oferecidosPorChave.get(chaveDesempate);
-              const r = await _resolvedor().resolver(valor, cands, jaOferecidos);
-              if (r.id) {
-                out[param] = r.id;
-                if (!oferecidosPorChave.has(chaveDesempate)) {
-                  oferecidosPorChave.set(chaveDesempate, new Set());
-                }
-                oferecidosPorChave.get(chaveDesempate).add(r.id);
-                if (r.via && r.via !== "id-exato") {
-                  devlog(`ALVO RESOLVIDO — ${nomeCap}.${param}`,
-                         `"${valor}" -> ${r.id} (${r.via})`);
-                }
-              } else {
-                out[param] = valor;
-                // "ISSO É ROTA, NÃO DESTINO" (spec 062, US4). `travel_to.destino`
-                // só aceita LUGARES que ele sabe alcançar; um vizinho adjacente é
-                // ROTA (`enter_route`), outro enum. Quando a referência não casa
-                // em `destino` mas casa em `route`, o recado de hoje ("não
-                // corresponde a nada que esteja ao alcance agora") é FALSO — está
-                // ao alcance, só que por outro verbo — e a Mente repetia. Checa
-                // só neste caso específico: não é o resolvedor tentando de novo
-                // (não varia com `jaOferecidos`, é diagnóstico, não escolha).
-                let porqueFinal = r.porque;
-                if (nomeCap === "travel_to" && param === "destino"
-                    && r.porque === "nada-casou" && _mundo.candidatosOuConhecidos) {
-                  const candsRota = _mundo.candidatosOuConhecidos("enter_route", "route");
-                  if (candsRota && literal(valor, candsRota).id) {
-                    porqueFinal = "e-rota";
-                  }
-                }
-                // OS CANDIDATOS VIAJAM JUNTO. Sem eles, a linha de log diz o que
-                // ela pediu mas não CONTRA O QUE foi comparado — e aí diagnosticar
-                // exige reconstruir a tabela à mão. Foi o que custou caro ao achar
-                // o defeito do `registrarNomes`: "Nerissa" casava e "Nerissa, a
-                // Boticária" não, e a linha não mostrava que o candidato era o id
-                // cru em vez do nome. Teto de 8 para uma cena grande não virar
-                // parede de texto no log.
-                falhas.push({ param, referencia: valor, porque: porqueFinal,
-                              entre: r.entre || null,
-                              candidatos: cands.slice(0, 8).map((c) => c.nome) });
-              }
-            }
-            return { alvos: out, falhas };
-          };
-
-          const _mapear = async (calls) => {
-            const saida = [];
-            for (const c of calls) {
-              const crus = _conforme(c.nome, Object.fromEntries(
-                Object.entries(c.args || {}).filter(([k]) => k !== "prosa")));
-              const { alvos, falhas } = await _resolverAlvos(c.nome, crus);
-              saida.push({
-                id: c.id,             // é por ele que o resultado volta amarrado
-                capacidade: c.nome,
-                alvos,
-                // O CRU (achado 2026-09-29): `alvos` só carrega o ID já resolvido —
-                // ótimo pro mundo, ilegível pra tela. `crus` é a referência que A
-                // Mente ESCREVEU antes da resolução ("a bolsa malfeita"), e o prompt
-                // já a instrui a nomear como aparece na cena — é o material do
-                // título determinístico em `laco.js` (o "comando real", análogo ao
-                // `Read(arquivo)` de um harness — não depende de quão bem a Mente
-                // narrou a tentativa em `prosa.acao`).
-                alvosCru: crus,
-                prosa: (c.args || {}).prosa || null,
-                ...(falhas.length ? { naoResolvido: falhas } : {}),
-              });
-            }
-            return saida;
-          };
-
-          async function pensar() {
-            while (rodadas++ < MAX_RODADAS) {
-              const r = await callModel(_sys("interpretar", ESCOLHER_SYSTEM), base,
-                { temperature: 0.4, tools, conversa,
-                  label: `ESCOLHER (rodada ${rodadas})` });
-              ultima = r;
-              const calls = (r && r.toolCalls) || [];
-              const pedidosLocais = calls.filter((c) => ehLocal(c.nome));
-              const consultas = calls.filter((c) => ehConsulta(c.nome));
-              const propostas = calls.filter((c) => !ehLocal(c.nome)
-                                                   && !ehConsulta(c.nome));
-              if (propostas.length) {
-                if (typeof onAction === "function") {
-                  const p1 = (propostas[0].args || {}).prosa;
-                  if (p1 && p1.acao) onAction(p1.acao);
-                }
-                return { pensamento: (r.texto || "").trim(),
-                         propostas: await _mapear(propostas), continuar };
-              }
-              if (!consultas.length && !(pedidosLocais.length && _ext)) {
-                // sem tool_calls: ou o runtime não suporta, ou ela decidiu não agir.
-                // Spec 045: NÃO cai mais num segundo motor — o laço (`laco.js`)
-                // trata sessão nula como "nada aconteceu", com o recado honesto.
-                // A PARADA FALSA (spec 060). Nem todo silêncio é decisão.
-                //
-                // Medido: às vezes o modelo escreve a chamada como TEXTO no
-                // `content` — `{"name": "ask", "parameters": {...}}` — em vez de
-                // emitir tool call. Isso chega aqui exatamente como "ela não quis
-                // mais agir", e com o turno passando a continuar no sucesso (spec
-                // 060) a diferença deixou de ser acadêmica: um é o fim natural da
-                // vez, o outro é falha de emissão. Confundir os dois faria a
-                // próxima medição de campo mentir, que é o mesmo estrago que o
-                // item 52.5 registrou.
-                //
-                // NUNCA executar o que vier assim. Executar seria reabrir o
-                // caminho de proposta em prosa que a spec 045 aposentou de
-                // propósito — e por medição, não por gosto.
-                const falsa = _paradaFalsa(r && r.texto, tools);
-                if (falsa) {
-                  devlog("PARADA FALSA — tool call veio como TEXTO", falsa);
-                }
-                devlog("SEM TOOL CALLS — turno sem decisão", r && r.texto);
-                _avisaSemTools(falsa ? `tool call em texto: ${falsa}`
-                                     : "nenhuma tool call na resposta");
-                // ITEM 78 (docs/backlog.md) / spec 074: uma PARADA FALSA não pode
-                // mais devolver `null` em silêncio — até aqui esse dado nascia
-                // (devlog acima) e morria na mesma linha, e o turno virava
-                // indistinguível de "ela decidiu não agir" para quem olha de fora
-                // (`laco.js`/o jogador). Um objeto truthy e DISTINGUÍVEL de uma
-                // sessão de verdade (não tem `propostas`/`continuar`) deixa
-                // `laco.js._turno()` emitir a falha como tentativa, em vez de
-                // silêncio — sem abrir uma segunda forma de "sessão válida".
-                if (falsa) return { paradaFalsa: true, nomeSuspeito: falsa };
-                return null;
-              }
-              const resultados = [];
-              for (const c of consultas) {
-                // a consulta roda NO MUNDO, pelo mesmo caminho de qualquer
-                // capacidade — o conector não reimplementa leitura de memória nem
-                // de relógio (era a tabela `CONSULT_TOOLS[]` que dessincronizou e
-                // sumiu no `17b9a41`; agora o nome e o corpo vêm ambos de lá).
-                const saida = await _mundo.chamarCapacidade(c.nome, c.args || {});
-                devlog(`CONSULTA AO MUNDO — ${c.nome}`, saida);
-                resultados.push({ id: c.id, conteudo: saida.texto || "(nada)" });
-              }
-              for (const c of pedidosLocais) {
-                const saida = await _ext.executarLocal(c.nome, c.args);
-                devlog(`FERRAMENTA LOCAL — ${c.nome}`, saida);
-                resultados.push({ id: c.id,
-                  conteudo: JSON.stringify(saida.resultado ?? saida.erro) });
-              }
-              conversa = dial.montaHistorico(conversa, r, resultados);
-            }
-            devlog("ORÇAMENTO DE RODADAS ESGOTADO", `${MAX_RODADAS} rodadas`);
-            return null;
-          }
-
-          // O QUE O LAÇO CHAMA depois de levar as propostas ao mundo. O resultado de
-          // cada uma entra na MESMA conversa — então a Mente recebe o "não" (ou o que
-          // aconteceu) sabendo o que pediu, e segue de onde parou em vez de recomeçar.
-          // É isto que aposenta o replanejamento por remontagem.
-          async function continuar(resultados) {
-            conversa = dial.montaHistorico(conversa, ultima, resultados || []);
-            return pensar();
-          }
-
-          const sessao = await pensar();
-          if (sessao) return sessao;
-        }
-      } catch (e) {
-        // Spec 045: NÃO existe mais um segundo motor pra cair. Uma falha aqui
-        // (runtime sem tools, server velho, rede) termina o turno sem decisão —
-        // o laço (`laco.js`) trata isso como "nada aconteceu", com o recado
-        // honesto (Princípio VIII: nunca há substituição automática).
-        devlog("MCP/tools indisponível — turno sem decisão", String(e && e.message || e));
-        _avisaSemTools(String((e && e.message) || e));
-      }
-    }
-    return null;
-  }
-
-  // `onRotina(nome)` é OPCIONAL (spec 074, FR-014) — quem chama (laco.js) pode
-  // observar qual das duas rotinas desta bifurcação foi escolhida, no instante em
-  // que é escolhida (antes da chamada de modelo da autonomia, que é a demorada).
-  // Puramente aditivo: nada aqui muda se ninguém passar o callback.
-  async function deriveWhisper(context, onRotina) {
-    // Mesmo acesso defensivo do `_contextoPayload`: o contrato (spec 067) é lido, não
-    // controlado, e `_self` é LOCAL de cada função — ele não existe no escopo do módulo.
-    const _self = context.self || {};
-    const intencoesAtivas = _self.intentions || [];
-
-    // A BIFURCAÇÃO DO TICK (spec 033): sem compromisso, o personagem para e faz um.
-    // Ver `REFLECT_COMMAND` — inclusive por que ele não chama modelo aqui.
-    if (!intencoesAtivas.length) {
-      if (onRotina) onRotina("refletir");
-      return { texto: _sys("refletir", REFLECT_COMMAND), rotina: "refletir",
-               // FATO, não inferência: este ramo é determinístico, e dizer no
-               // registro por que ele disparou é o que evita a leitura "o
-               // personagem resolveu filosofar do nada".
-               racional: "sem compromisso ativo: o tick parou para criar um" };
-    }
-
-
-    // O payload original é incrementado para expor as chaves exatas que o prompt cobra:
-    const payload = {
-      ...(await _contextoPayload(context)),
-      // O COMPROMISSO, COM O PROGRESSO (spec 073, T022).
-      //
-      // `passos_cumpridos` é a CONTAGEM que o prompt de executar lê para separar o
-      // feito do faltante; `parada` é o RÓTULO da estagnação (o número é segredo do
-      // mundo, Princípio V) e vem AUSENTE quando o compromisso acabou de andar.
-      //
-      // MEDIDO (§8): sem a informação de parada, o abandono é 0/32 — o personagem
-      // nunca larga nada, que é exatamente o que 425 turnos de jogo mostraram. Com
-      // ela, 8/8 no extremo e 0/8 no controle (a intenção velha que AVANÇOU).
-      intencoes: intencoesAtivas.map((i) => ({
-        id: i.id, o_que: i.content,
-        ...(i.passos_cumpridos != null ? { passos_cumpridos: i.passos_cumpridos } : {}),
-        ...(i.parada ? { parada: i.parada } : {}),
-      })),
-      // O QUE O CORPO PEDE, e que pode virar compromisso (spec 073, T021). Vem do
-      // mundo já com o `pronto_quando` que encerraria cada uma — é o que o
-      // `set_intention` cobra ao criar.
-      carencias: (_self.carencias || []),
-      // `status_sobrevivencia: survival_level || 0` MORREU aqui. O campo nunca
-      // existiu em lugar nenhum do mundo, então era constante ZERO para todo
-      // personagem desde sempre — e o modelo lia o zero como urgência ("com o
-      // status de sobrevivência em 0, ele está focado em resolver problemas
-      // imediatos, como encontrar comida"). A necessidade agora vem em RÓTULO,
-      // pelo `_contextoPayload`, e a seção 2 do prompt raciocina sobre ela.
-      itens_que_possuo: (_self.inventory || []).map((it) => ({ id: it.id, nome: it.name }))
-    };
-
-    if (onRotina) onRotina("autonomia");
-    const raw = await callModel(
-      _sys("autonomia", AUTONOMY_SYSTEM),
-      "Avalie se há algo a fazer agora, a partir das memórias recentes, intenções e do contexto.\n\n" + JSON.stringify(payload, null, 2),
-      { forceJson: true, temperature: 0.4, label: "AUTONOMIA (intenção → sussurro?)" }
-    );
-    const parsed = parseAutonomyJson(raw);
-    
-    // AUDITORIA — e ela NÃO pode derrubar o turno.
-    //
-    // Isto era `parsed.acoes_declaradas?.join(', ')`. O `?.` protege contra ausente e
-    // não contra FORMA: o prompt pede um array, o modelo às vezes devolve string, e aí
-    // `.join` não existe. Medido no Draven: 3 turnos perdidos em 265 (~1%), cada um
-    // morto INTEIRO por uma linha de log — a exceção sobe pelo `deriveWhisper` e o laço
-    // a registra como falha.
-    //
-    // A regra é a mesma do resto do conector ao ler o contrato: o que vem de fora é
-    // dado, não promessa de forma. Aqui vale em dobro, porque a fonte é o modelo.
-    if (parsed.agir && parsed.racional) {
-      const acoes = Array.isArray(parsed.acoes_declaradas)
-        ? parsed.acoes_declaradas.join(", ")
-        : (parsed.acoes_declaradas == null ? "" : String(parsed.acoes_declaradas));
-      devlog("RACIONAL AUTÔNOMO", `Racional: ${parsed.racional}\nAções: ${acoes}`);
-    }
-
-    return parsed.agir
-      ? { texto: parsed.sussurro || null, rotina: "autonomia",
-          racional: parsed.racional || null }
-      : null;
-  }
-
-  // TRAÇAR O PLANO DE UM COMPROMISSO (spec 073, T025).
-  //
-  // CHAMADA SEPARADA da que firma, e isso é medição, não estilo: empacotar dever e
-  // plano na mesma chamada deu 0/9 (item 38) — o modelo funde os dois numa pose.
-  //
-  // Devolve o `content` novo da intenção: a prosa do compromisso com o plano abaixo,
-  // em passos. O plano é PROSA dentro de `content` (FR-008) — campos por passo
-  // empataram 19/30 com prosa livre (§7), e contrato mais caro por ganho nenhum não
-  // se paga. O que fica estruturado é só a CONTAGEM de passos riscados, que o mundo
-  // mantém.
-  // Os verbos que ENCERRAM ou DECLARAM, nunca um passo do caminho: firmar o
-  // compromisso é o que acabou de acontecer, e narrar é o fim do turno.
-  const _NAO_SAO_PASSO = new Set(["set_intention", "narrate"]);
-
-  async function planejar(compromisso, context) {
-    const charId = (context.self && context.self.id) || context.character_id;
-    if (!charId || !compromisso) return null;
-    // OS VERBOS SAEM DA FACE, e da face DESTE personagem nesta cena — não de uma
-    // lista escrita aqui. Um plano cujos passos o mundo não sabe executar é o
-    // defeito do Tobias ("inventário completo dos frascos"): nasce impossível e
-    // nada percebe. `listarCapacidades` é a mesma porta que `interpret` usa.
-    //
-    // SEM `try` AO REDOR DISTO. A primeira versão embrulhava a busca num
-    // `catch (_) { return null; }` e chamava uma função que não existia — o
-    // `ReferenceError` virava "sem plano", `planejar` devolvia `null` desde que
-    // nasceu, e a suíte ficou verde o tempo todo. Um erro de programação tem de
-    // estourar; o que pode falhar sem culpa (o transporte) é problema de quem
-    // chama, e `laco.js` já trata.
-    const capacidades = await listarCapacidades(charId);
-    if (!capacidades || !capacidades.length) return null;
-    // O PLANO É FEITO DE ATOS — e por isso os verbos que DECLARAM não entram na
-    // lista (medido ao vivo, T031: o `qwen3` fechou o plano com
-    // `set_intention "Fome saciada"`, a Mente planejando declarar o próprio
-    // desfecho, que é o Princípio IX pelo avesso).
-    //
-    // A restrição desce como DADO, não como proibição em prosa: o verbo
-    // simplesmente não é oferecido. Proibir por escrito vaza para a cena e faz o
-    // modelo recusar o que não devia — foi medido antes, e é caro.
-    const verbos = capacidades.map((t) => t.name)
-      .filter((n) => !_NAO_SAO_PASSO.has(n)).sort().join(", ");
-    const base = "O COMPROMISSO: " + compromisso + "\n\n"
-               + _cenaEmProsa(await _contextoPayload(context)) + "\n\n"
-               + "Os verbos que o mundo oferece são EXATAMENTE estes:\n" + verbos;
-    const resp = await callModel(_sys("planejar", PLANEJAR_SYSTEM), base,
-                                 { temperature: 0.4, rotina: "planejar",
-                                   label: "PLANEJAR (o caminho)" });
-    const texto = typeof resp === "string" ? resp
-                : (resp && typeof resp.texto === "string" ? resp.texto : "");
-    // SÓ AS LINHAS QUE SÃO PASSO. O que vier de enfeite (títulos, "aqui está o
-    // plano:") morre aqui — o `content` da intenção é o compromisso e os passos,
-    // nada mais.
-    const crus = texto.split("\n")
-      .map((l) => l.trim())
-      .filter((l) => /^[-*\d.)]+\s*\S/.test(l))
-      .map((l) => l.replace(/^[-*\d.)]+\s*/, "").trim())
-      .filter((l) => l.length > 2);
-    // O PLANO NÃO ANDA EM CÍRCULO — nem por dentro (medido ao vivo, T031).
-    //
-    // Dirigindo o Draven real, o `qwen3` devolveu "take Macieira / eat Macieira"
-    // QUATRO vezes seguidas e encheu os oito lugares com o mesmo par. Um plano
-    // assim nasce com o defeito que esta spec existe para curar: o personagem
-    // riscaria o passo 1, e o passo 3 seria o passo 1 de novo.
-    //
-    // A dedup é DETERMINÍSTICA e por texto normalizado (sem acento, sem
-    // pontuação, caixa baixa) — repetição de verbo com alvo diferente ("take
-    // pão", "take queijo") sobrevive, que é plano legítimo. O que morre é o passo
-    // IDÊNTICO, que nunca é trabalho novo.
-    const vistos = new Set();
-    const passos = [];
-    for (const passo of crus) {
-      const chave = passo.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-                         .toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-      if (!chave || vistos.has(chave)) continue;
-      if ([..._NAO_SAO_PASSO].some((v) => chave.includes(v.replace("_", " ")))) continue;
-      vistos.add(chave);
-      passos.push(passo);
-      if (passos.length >= 8) break;   // oito passos já é longo demais para um dia
-    }
-    if (!passos.length) return null;
-    return compromisso + "\n" + passos.map((p) => "- " + p).join("\n");
-  }
-
   // `onToken` (spec 043): recebe cada pedaço da prosa conforme ela nasce, para a
   // tela mostrar a narração se formando em vez de um vazio até o fim. É a única
   // chamada que streama — as que devolvem JSON não ganham nada com isso.
@@ -1820,7 +791,7 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
   async function narrate(narrativeHint, context, failedEffects, viradas, aconteceu, informes, reconhecimentos, material, onToken) {
     const failures = (failedEffects || []).filter(Boolean);
     const twists = (viradas || []).map((v) => v.o_que).filter(Boolean);
-    // Ver `deriveWhisper`: `_self`/`_scene` são locais por função, nunca do módulo.
+    // `_self`/`_scene` são locais por função, nunca do módulo (o defeito de 06/09).
     const _self = context.self || {};
     const _scene = context.scene || {};
     const _place = _scene.place || {};
@@ -1897,44 +868,36 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
     ).trim();
   }
 
-  function parseAutonomyJson(raw) {
-    try { return JSON.parse(raw); } catch (_) {
-      const s = raw.indexOf("{"), e = raw.lastIndexOf("}");
-      if (s !== -1 && e > s) { try { return JSON.parse(raw.slice(s, e + 1)); } catch (_) {} }
-      return { agir: false, sussurro: null };
-    }
-  }
 
   // Os textos PADRÃO de cada rotina, para a página de configuração mostrar o que
-  // está em uso e o que se está substituindo. Chamado tarde (depois dos `const`
-  // acima), então não há problema de ordem.
+  // está em uso e o que se está substituindo. Os do harness (objetivos, planejar,
+  // querer, e os do decisor) vivem em `harness/prompts.js` — um lugar só, com versão.
   function promptsPadrao() {
-    return {
-      interpretar: ESCOLHER_SYSTEM,
-      autonomia: AUTONOMY_SYSTEM,
-      refletir: REFLECT_COMMAND,
-      planejar: PLANEJAR_SYSTEM,
-      narrar: NARRATE_SYSTEM,
-    };
+    return { narrar: NARRATE_SYSTEM, ...HARNESS_PROMPTS.PADRAO };
   }
 
+  // AS ROTINAS (spec 075). Saíram `interpretar` (a escolha de tool por tool calling),
+  // `autonomia` e `refletir`: a Mente agora só DIZ o que quer (objetivos), PLANEJA e
+  // NARRA — escolher a capacidade e os ids é do decisor local, de graça.
   const ROTINAS = [
-    { nome: "interpretar",
-      titulo: "Escolher a ação",
-      quando: "a cada sussurro — o único caminho de ação (spec 045)" },
-    { nome: "planejar",
-      titulo: "Traçar o caminho de um compromisso",
-      quando: "uma vez, quando o compromisso nasce — nunca junto de firmá-lo" },
-    { nome: "autonomia",
-      titulo: "Decidir agir sozinho",
-      quando: "a cada volta do relógio, COM um compromisso em mente" },
-    { nome: "refletir",
-      titulo: "Criar um compromisso",
-      quando: "a cada volta do relógio, quando ele não tem nenhum" },
+    ...HARNESS_PROMPTS.ROTINAS_HARNESS,
     { nome: "narrar",
-      titulo: "Narrar o desfecho",
+      titulo: "Narrar o desfecho (C9)",
       quando: "ao fim de todo turno" },
   ];
+
+  // UMA CONVERSA SEM TOOLS — a única forma de chamar a Mente no harness por objetivos.
+  //
+  // O schema das tools nunca desce (invariante 1 do contrato 01): o que ela devolve é
+  // prosa, e quem aponta tool e ids é o decisor. `rotina` escolhe o modelo por
+  // `porRotina` e entra no rótulo do log. Devolve o TEXTO.
+  async function conversar(system, user, { rotina, label, temperature = 0.4, maxTokens } = {}) {
+    const r = await callModel(system, user, {
+      rotina, label: label || rotina || "conversa", temperature,
+      ...(maxTokens ? { maxTokens } : {}) });
+    if (typeof r === "string") return r;
+    return (r && (r.texto || r.text)) || "";
+  }
 
   // As dependências podem vir na construção (o caminho da sala) ou depois, pelos
   // setters (o caminho que os testes e o `bin/conector.js` já usavam).
@@ -1942,24 +905,18 @@ ANTES DE AGIR, pense na SEQUÊNCIA de ações que ele quer realizar e escolha as
   if (extensoes) usarExtensoes(extensoes);
 
   return {
-    promptsPadrao, ROTINAS, MAX_RODADAS,
-    config, saveConfig, check, usarMundo, usarExtensoes, interpret,
-    deriveWhisper, narrate, narrateObservation, planejar, log: devlog, DEFAULTS,
-    custoDoTurno, zerarCusto,
-    // exposta só para teste: a spec 060 precisa provar que a parada FALSA
-    // é distinguida do fim legítimo da vez, e a função é pura.
-    _paradaFalsa,
-    // expostas para o teste da US2 provar que o id não vaza
-    _contextoPayload, _semIdDeCena, _semProsaExplicada, _recorteDaMente,
-    _cenaEmProsa, _limparMemorias,
-    _ENUM_FICA, _ENUM_SAI, _SO_COM_SEMANTICA,
+    promptsPadrao, ROTINAS,
+    config, saveConfig, check, usarMundo, usarExtensoes, conversar,
+    narrate, narrateObservation, log: devlog, DEFAULTS,
+    custoDoTurno, zerarCusto, listarCapacidades,
+    get extensoes() { return _ext; },
+    _contextoPayload, _cenaEmProsa, _limparMemorias,
   };
 }
 
 // A PORTA DO MÓDULO PARA O QUE NÃO TEM ESTADO.
 //
-// `_cenaEmProsa`, `_contextoPayload`, `_recorteDaMente` (e os dois recortes que ele
-// compõe), `_paradaFalsa`, os quatro prompts
+// `_cenaEmProsa`, `_contextoPayload`, `_limparMemorias`, os prompts
 // padrão e as constantes são PUROS — não dependem de assento nenhum. Uma instância criada
 // uma vez serve de porta para eles, e é isso que mantém `require("./mente")._cenaEmProsa`
 // funcionando exatamente como antes (é assim que os testes da 060 os alcançam).
@@ -1973,20 +930,11 @@ module.exports = {
   // constantes e funções puras — o mesmo contrato de antes da spec 072
   promptsPadrao: _semEstado.promptsPadrao,
   ROTINAS: _semEstado.ROTINAS,
-  MAX_RODADAS: _semEstado.MAX_RODADAS,
   DEFAULTS: _semEstado.DEFAULTS,
   config: _semEstado.config,
   saveConfig: _semEstado.saveConfig,
   check: _semEstado.check,
-  _paradaFalsa: _semEstado._paradaFalsa,
   _contextoPayload: _semEstado._contextoPayload,
-  _semIdDeCena: _semEstado._semIdDeCena,
-  _semProsaExplicada: _semEstado._semProsaExplicada,
-  _recorteDaMente: _semEstado._recorteDaMente,
-  // expostos SÓ para o guarda da suíte: ninguém os lê em produção.
-  _ENUM_FICA: _semEstado._ENUM_FICA,
-  _SO_COM_SEMANTICA: _semEstado._SO_COM_SEMANTICA,
-  _ENUM_SAI: _semEstado._ENUM_SAI,
   _cenaEmProsa: _semEstado._cenaEmProsa,
   _limparMemorias: _semEstado._limparMemorias,
 };

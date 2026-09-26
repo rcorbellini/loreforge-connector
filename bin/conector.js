@@ -71,8 +71,15 @@ function saidaDeTerminal() {
   let narrando = false;
   return (evento, d) => {
     switch (evento) {
-      case "decidiu":
-        process.stdout.write(`\n· ele decide: “${d.texto}”\n`);
+      case "objetivos":
+        process.stdout.write(`\n· ele quer:\n${d.texto}\n`);
+        break;
+      case "plano":
+        process.stdout.write(`\n· o caminho: ${(d.entries || []).map((e) =>
+          (e.status === "completed" ? "✓ " : e.status === "in_progress" ? "▸ " : "  ") + e.content).join(" | ")}\n`);
+        break;
+      case "bloqueio":
+        process.stdout.write(`\n  ⟲ ${d.texto}\n`);
         break;
       case "beat":
         process.stdout.write(`\n  — ${d.texto}\n`);

@@ -1,10 +1,11 @@
-// O LAÇO DO TURNO, de ponta a ponta, contra um mundo simulado.
+// O LAÇO DO TURNO (spec 075), de ponta a ponta, contra um mundo, uma Mente e um decisor
+// simulados.
 //
-// O que mais importa aqui não é o caminho feliz — é a RECUSA. Um turno em que o
-// mundo diz não já chegou à Mente com NADA (nem beat, nem falha, nem hint), e ela
-// inventou a cena inteira a partir da descrição do lugar: uma entrega recusada
-// virou uma narração de chegada a um lugar onde ninguém chegou. Recusa nunca é
-// silenciosa — nem na tela, nem na narração, nem no registro.
+// O que mais importa aqui não é o caminho feliz — é o que NÃO pode acontecer:
+//   · a troca SILENCIOSA (pediram a caneca que não existe, e ele bebeu do cantil);
+//   · o objetivo que SOME (todo objetivo termina no mundo OU numa subida narrada);
+//   · a recusa silenciosa (o mundo disse não e a narração não soube);
+//   · o schema das tools descendo à Mente (invariante 1 do contrato 01).
 
 "use strict";
 
@@ -16,56 +17,114 @@ const path = require("path");
 
 process.env.LOREFORGE_CONFIG =
   path.join(fs.mkdtempSync(path.join(os.tmpdir(), "laco-")), "conector.json");
+process.env.LOREFORGE_HARNESS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "harness-"));
 process.env.LOREFORGE_LOG = "0";
 
-const { Laco, diffTextual, sanitizeMovement } = require("../laco");
+const { Laco, diffTextual } = require("../laco");
 const extensoes = require("../extensoes");
-
-const CENA = { self: { id: "fulano", name: "Fulano" },
-               scene: { place: {}, characters: [], items: [], objects: [], exits: [] } };
+const registroMod = require("../registro");
 
 function extVazio() {
-  const raiz = fs.mkdtempSync(path.join(os.tmpdir(), "ext-"));
-  return extensoes.criar(raiz);
+  return extensoes.criar(fs.mkdtempSync(path.join(os.tmpdir(), "ext-")));
 }
 
-function mundoDe({ respostas, capacidades }) {
+// --- o mundo ---------------------------------------------------------------- //
+
+const TOOLS = [
+  { name: "take", description: "Pega um item para a mão do personagem que age.",
+    inputSchema: { type: "object", properties: { item: { type: "string", enum: ["corda", "cantil"] },
+                   prosa: { type: "object" } }, required: ["item", "prosa"] },
+    annotations: { byName: { item: { corda: "Corda de Cânhamo", cantil: "Cantil de Água" } } } },
+  { name: "drink", description: "Bebe de um recipiente presente ou na sua mão.",
+    inputSchema: { type: "object", properties: { item: { type: "string", enum: ["corda", "cantil"] },
+                   prosa: { type: "object" } }, required: ["item", "prosa"] },
+    annotations: { byName: { item: { corda: "Corda de Cânhamo", cantil: "Cantil de Água" } } } },
+  { name: "recognize", description: "Olha com atenção algo presente, lembrando o que sabe.",
+    inputSchema: { type: "object", properties: { alvo: { type: "string", enum: ["corda", "cantil"] },
+                   prosa: { type: "object" } }, required: ["alvo", "prosa"] },
+    annotations: { readOnlyHint: true, byName: { alvo: { corda: "Corda de Cânhamo", cantil: "Cantil de Água" } } } },
+  { name: "sleep", description: "Dorme onde está.",
+    inputSchema: { type: "object", properties: { prosa: { type: "object" } }, required: ["prosa"] } },
+];
+
+const CENA = {
+  self: { id: "fulano", name: "Fulano", inventory: [], needs: { hunger: "sem fome" }, memories: [],
+          intentions: [] },
+  scene: { place: { id: "praca", name: "Praça" }, characters: [],
+           items: [{ id: "corda", name: "Corda de Cânhamo" }, { id: "cantil", name: "Cantil de Água" }],
+           objects: [], exits: [] },
+};
+
+function mundoDe({ respostas = [], contextos } = {}) {
   const chamadas = [];
-  const conhecidas = capacidades ? new Set(capacidades) : null;
+  const intencoes = [];
+  let n = 0;
   return {
-    chamadas,
+    personagem: "fulano",
+    chamadas, intencoes,
     turnoId: null,
-    conhece: (nome) => (conhecidas ? conhecidas.has(nome) : null),
-    contexto: async () => CENA,
+    conhece: (nome) => TOOLS.some((t) => t.name === nome),
+    listarCapacidades: async () => TOOLS,
+    descricaoDe: (nome) => (TOOLS.find((t) => t.name === nome) || {}).description || "",
+    contexto: async () => (contextos ? contextos[Math.min(n++, contextos.length - 1)] : CENA),
     chamarCapacidade: async (nome, args) => {
       chamadas.push({ nome, args });
       const r = respostas.shift();
       if (!r) throw new Error("o teste não previu mais chamadas");
       return r;
     },
+    criarIntencao: async (content) => { intencoes.push({ op: "create", content }); return { ok: true, id: "int-1" }; },
+    atualizarIntencao: async (id, content) => { intencoes.push({ op: "update", id, content }); return { ok: true }; },
+    fecharIntencao: async (id, status, o) => { intencoes.push({ op: "close", id, status, ...(o || {}) }); return { ok: true }; },
+    registrar: async (l) => { (mundoDe.registrados = mundoDe.registrados || []).push(l); return true; },
   };
 }
 
-// O `interpret` real devolve uma SESSÃO: as propostas MAIS o fio da conversa
-// (`continuar`), para o desfecho de cada proposta voltar à Mente sem remontar o
-// contexto. `depois` é o que ela propõe quando recebe esse desfecho; `recebeu`
-// guarda os resultados que chegaram, que é o que estes testes precisam inspecionar.
-function menteDe({ propostas, narracao = "prosa", depois = null }) {
-  const sessao = (props, resto) => ({
-    pensamento: "penso",
-    propostas: props,
-    continuar: async (resultados) => {
-      menteDe.recebeu = (menteDe.recebeu || []).concat(resultados);
-      return resto && resto.length ? sessao(resto, null) : null;
+// --- a Mente ---------------------------------------------------------------- //
+
+function menteDe({ objetivos = "- Pegar a Corda de Cânhamo", narracao = "prosa", porRotina = {} } = {}) {
+  const m = {
+    conversas: [],
+    custo: { entrada: 0, saida: 0, chamadas: 0 },
+    config: () => ({ harness: { abordagens: 3, repeticoes: 3, tetoTokensDesejo: 8000,
+                                janelaIntervencaoTicks: 1, losangosJev: "desligado" } }),
+    ROTINAS: [{ nome: "objetivos", titulo: "Dizer o que quer" }, { nome: "narrar", titulo: "Narrar" }],
+    _contextoPayload: async () => ({}),
+    _cenaEmProsa: () => "A CENA EM PROSA",
+    custoDoTurno() { return { ...m.custo }; },
+    async conversar(system, user, opts) {
+      m.conversas.push({ system, user, opts });
+      m.custo.entrada += 100; m.custo.saida += 20; m.custo.chamadas += 1;
+      const r = porRotina[opts && opts.rotina];
+      if (r !== undefined) return typeof r === "function" ? r(user) : r;
+      return objetivos;
     },
-  });
-  return {
-    interpret: async () => sessao(propostas, depois),
-    narrate: async (hint, ctx, falhas, viradas, aconteceu) => {
-      menteDe.ultimo = { hint, falhas, viradas, aconteceu };
+    async narrate(hint, ctx, falhas, viradas, aconteceu) {
+      m.ultimo = { hint, falhas, viradas, aconteceu };
+      m.custo.entrada += 50; m.custo.chamadas += 1;
       return narracao;
     },
-    deriveWhisper: async () => null,
+  };
+  return m;
+}
+
+// --- o decisor -------------------------------------------------------------- //
+
+// Escolhe a opção cujo id está em `prefere` (na ordem), senão a primeira.
+function deciderDe(prefere = []) {
+  const perguntas = [];
+  const escolher = async (evid, crit, ops) => {
+    perguntas.push({ evid, crit, ops: ops.map(([id]) => id) });
+    const ids = ops.map(([id]) => id);
+    const v = prefere.find((p) => ids.includes(p)) || ids[0];
+    return { vencedora: v, margem: 2, ranking: [[v, 0.9, -0.1]].concat(ids.filter((i) => i !== v).map((i) => [i, 0.01, -5])) };
+  };
+  return {
+    perguntas,
+    choose: escolher,
+    tournament: async (evid, crit, ops, extra) => escolher(evid, crit, extra ? ops.concat([extra]) : ops),
+    custoLocal: () => ({ chamadas: perguntas.length, tokens_prompt: 0 }),
+    modelo: () => "fake/decisor",
   };
 }
 
@@ -74,1048 +133,272 @@ function coletor() {
   return { eventos, emitir: (ev, d) => eventos.push({ ev, ...d }) };
 }
 
-test("um turno feliz: proposta, beat e narração", async () => {
+function lacoDe({ mundo, mente, decider, emitir, registro }) {
+  return new Laco({ mundo, mente, decider: decider || deciderDe(), extensoes: extVazio(),
+                    registro: registro || null, emitir: emitir || (() => {}) });
+}
+
+// --------------------------------------------------------------------------- //
+
+test("um turno feliz: objetivo → pista do verbo → id pelo NOME citado → mundo → narração", async () => {
   const c = coletor();
-  const laco = new Laco({
-    mundo: mundoDe({ respostas: [
-      { recusado: false, texto: "",
-        narrativa: { aconteceu: ["Fulano pegou a corda."],
-                     narrative_hint: "ele guarda a corda" } },
-    ] }),
-    mente: menteDe({ propostas: [{ capacidade: "take", alvos: { item: "corda" },
-                                   prosa: { acao: "pega a corda" } }] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
+  const mundo = mundoDe({ respostas: [
+    { recusado: false, texto: "", narrativa: { aconteceu: ["Fulano pegou a corda."] } }] });
+  const mente = menteDe();
+  await lacoDe({ mundo, mente, emitir: c.emitir }).sussurrar("pegue a corda");
 
-  await laco.sussurrar("pegue a corda");
-
+  assert.deepStrictEqual(mundo.chamadas.map((x) => [x.nome, x.args.item]), [["take", "corda"]]);
+  assert.strictEqual(mundo.chamadas[0].args.prosa.acao, "Pegar a Corda de Cânhamo");
   const tipos = c.eventos.map((e) => e.ev);
-  assert.ok(tipos.includes("beat"), "o fato não virou beat");
-  assert.strictEqual(c.eventos.find((e) => e.ev === "beat").texto,
-                     "Fulano pegou a corda.");
-  assert.ok(tipos.includes("narracao_fim"), "não narrou");
-  assert.deepStrictEqual([tipos[0], tipos[tipos.length - 1]],
-                         ["estado", "estado"], "o estado não abriu e fechou");
+  assert.ok(tipos.includes("beat"));
+  assert.ok(tipos.includes("narracao_fim"));
+  assert.deepStrictEqual([tipos[0], tipos[tipos.length - 1]], ["estado", "estado"]);
 });
 
-// ACHADO 2026-09-29 (corrigido no mesmo dia): "enquanto isso, ao redor" tinha
-// de viajar DENTRO da prosa de `narrate()`, e a Mente às vezes não escrevia o
-// marcador que o client reconhecia pra separar visualmente — saía tudo junto,
-// sem divisor. Agora `diffTextual` (dado determinístico, não precisa de
-// narração pra existir) vira um evento PRÓPRIO, `paralelo`, independente do
-// que a narração final diz.
-test("achado 2026-09-29 — 'enquanto isso' vira evento PRÓPRIO ('paralelo'), fora da narração", async () => {
-  const c = coletor();
-  const antes = { self: { id: "fulano", name: "Fulano" },
-                  scene: { place: {}, characters: [], items: [], objects: [], exits: [] } };
-  const depois = { self: { id: "fulano", name: "Fulano" },
-                    scene: { place: {}, characters: [{ name: "Draven" }],
-                              items: [], objects: [], exits: [] } };
-  const mundo = mundoDe({ respostas: [
-    { recusado: false, texto: "", narrativa: { aconteceu: ["Fulano pegou a corda."] } },
-  ] });
-  let chamada = 0;
-  mundo.contexto = async () => (chamada++ === 0 ? antes : depois);
-  const laco = new Laco({
-    mundo,
-    // A narração NÃO menciona Draven de propósito — prova que o "enquanto
-    // isso" não depende dela pra existir na tela.
-    mente: menteDe({ propostas: [{ capacidade: "take", alvos: { item: "corda" } }],
-                     narracao: "Você pega a corda." }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("pegue a corda");
-
-  const paralelo = c.eventos.find((e) => e.ev === "paralelo");
-  assert.ok(paralelo, "o evento 'paralelo' não foi emitido");
-  assert.match(paralelo.texto, /Draven chegou ao local/);
-  const narracao = c.eventos.find((e) => e.ev === "narracao_fim");
-  assert.equal(narracao.texto, "Você pega a corda.",
-    "a narração final não deveria carregar o 'enquanto isso' embutido");
+test("LIGAÇÃO (invariante 1): a Mente NUNCA recebe schema de tool — nem nome de capacidade", async () => {
+  const mente = menteDe();
+  const mundo = mundoDe({ respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["ok"] } }] });
+  await lacoDe({ mundo, mente }).sussurrar("pegue a corda");
+  for (const cv of mente.conversas) {
+    assert.ok(!("tools" in (cv.opts || {})), "tools desceu à Mente");
+    for (const t of TOOLS) {
+      assert.ok(!new RegExp(`\\b${t.name}\\b`).test(cv.system + cv.user),
+                `o nome '${t.name}' desceu à Mente`);
+    }
+  }
 });
 
-// ACHADO JOGANDO (2026-09-29): `recognize`/`examine`/`ask_*` são CONSULTIVAS —
-// não mutam o mundo, não gastam o turno, e por isso `narrativa.aconteceu` vem
-// SEMPRE vazio (`motor/conhecimento/declaracao.py`). Sem nenhum `aconteceu`, o
-// laço de beats não emitia NADA para aquele `toolCallId`, e o `tool_call_update`
-// nascido "in_progress" nunca fechava: na tela, o passo ficava pulsando pra
-// sempre, vazio ao clicar — mesmo depois de o turno inteiro (e a narração)
-// terminarem. Toda tentativa bem-sucedida tem de terminar em `completed`.
-test("tentativa CONSULTIVA (sem aconteceu) ainda assim fecha com um beat", async () => {
-  const c = coletor();
-  const laco = new Laco({
-    mundo: mundoDe({ respostas: [
-      { recusado: false, texto: "",
-        narrativa: { reconhecimentos: [{ nome: "a bolsa malfeita" }] } },
-    ] }),
-    mente: menteDe({ propostas: [{ id: "tc-1", capacidade: "recognize",
-                                   alvos: { alvo: "bolsa" },
-                                   prosa: { acao: "olha para a bolsa" } }] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("olhe para a bolsa");
-
-  const beats = c.eventos.filter((e) => e.ev === "beat");
-  assert.strictEqual(beats.length, 1,
-    "uma tentativa sem `aconteceu` precisa de exatamente um beat de fechamento");
-  assert.strictEqual(beats[0].toolCallId, "tc-1",
-    "o beat de fechamento tem de casar com o toolCallId da tentativa aberta");
-  assert.ok(beats[0].texto && beats[0].texto.trim().length,
-    "o passo não pode fechar com conteúdo vazio");
+test("TROCA SILENCIOSA: alvo que não existe SOBE — nunca vira outro item da cena", async () => {
+  const mente = menteDe({ objetivos: "- Beber da Caneca de Peltre" });
+  const mundo = mundoDe();
+  await lacoDe({ mundo, mente }).sussurrar("beba da caneca");
+  assert.strictEqual(mundo.chamadas.length, 0, "foi ao mundo com outro recipiente");
+  const falhas = (mente.ultimo && mente.ultimo.falhas) || [];
+  assert.ok(falhas.some((f) => /Caneca de Peltre/.test(f.o_que_falhou)),
+            "o que não aconteceu não chegou à narração");
 });
 
-// ACHADO JOGANDO (2026-09-29): o mesmo turno de `recognize` tinha vários
-// passos com o TÍTULO IDÊNTICO ("ver", "ver", "ver"...) — `prosa.acao`,
-// texto livre da Mente, tinha virado um verbo pelado repetido, e não dava
-// pra distinguir uma tentativa da outra sem clicar. O título tem de ser
-// DETERMINÍSTICO — vem da chamada (`capacidade` + `alvosCru`, o texto que a
-// Mente escreveu ANTES de resolver pra id), não de quão bem ela narrou.
-test("o título da tentativa é o comando real, não a prosa (mesmo se a prosa for um verbo pelado)",
-async () => {
-  const c = coletor();
-  const laco = new Laco({
-    mundo: mundoDe({ respostas: [
-      { recusado: false, texto: "", narrativa: {} },
-      { recusado: false, texto: "", narrativa: {} },
-    ] }),
-    mente: menteDe({ propostas: [
-      { id: "tc-1", capacidade: "recognize", alvos: { alvo: "id-bolsa" },
-        alvosCru: { alvo: "a bolsa malfeita" }, prosa: { acao: "ver" } },
-      { id: "tc-2", capacidade: "recognize", alvos: { alvo: "id-boneco" },
-        alvosCru: { alvo: "o boneco de cera" }, prosa: { acao: "ver" } },
-    ] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("olhe ao redor");
-
-  const tentativas = c.eventos.filter((e) => e.ev === "tentativa");
-  assert.strictEqual(tentativas.length, 2);
-  assert.strictEqual(tentativas[0].tituloDinamico, "recognize(a bolsa malfeita)");
-  assert.strictEqual(tentativas[1].tituloDinamico, "recognize(o boneco de cera)");
-  assert.notStrictEqual(tentativas[0].tituloDinamico, tentativas[1].tituloDinamico,
-    "duas tentativas da mesma capacidade em alvos diferentes não podem ter o mesmo título");
-});
-
-// ACHADO 2026-09-29 (pedido no client): o balão do turno mostra, discreto,
-// embaixo do nome, "onde ele está" — a trilha INTEIRA, incluindo a location
-// atual (corrigido no mesmo dia: sem ela, jogando, a trilha parecia cortada
-// ANTES de chegar aonde o personagem de fato estava — o balão não tem um
-// `<h3>` de cena do lado pra completar, como `.scene .breadcrumb` tem).
-// `_turno` emite isso cedo, uma vez por turno, a partir do MESMO
-// `contexto.scene.place` que já buscou (nenhuma chamada extra ao mundo).
-test("achado 2026-09-29 — 'local' emite a trilha completa, INCLUINDO a location atual",
-async () => {
-  const c = coletor();
-  const cenaComLugar = {
-    self: { id: "fulano", name: "Fulano" },
-    scene: {
-      place: { id: "taverna", name: "Taverna do Gancho",
-               belongs_to: { id: "porto-negro", name: "Porto Negro",
-                             belongs_to: { id: "costa-de-ferro", name: "Costa de Ferro" } } },
-      characters: [], items: [], objects: [], exits: [],
-    },
-  };
-  const mundo = mundoDe({ respostas: [
-    { recusado: false, texto: "", narrativa: { aconteceu: ["Fulano olhou ao redor."] } },
-  ] });
-  mundo.contexto = async () => cenaComLugar;
-  const laco = new Laco({
-    mundo,
-    mente: menteDe({ propostas: [{ id: "1", capacidade: "examine",
-                                   alvos: { alvo: "algo" } }] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("olhe ao redor");
-
-  const local = c.eventos.find((e) => e.ev === "local");
-  assert.ok(local, "o evento 'local' não foi emitido");
-  assert.deepStrictEqual(local.breadcrumb, ["Costa de Ferro", "Porto Negro", "Taverna do Gancho"],
-    "a trilha vai de fora pra dentro e TERMINA na location atual");
-});
-
-test("achado 2026-09-29 — location na raiz do mundo (sem ancestrais) ainda emite só o próprio nome",
-async () => {
-  const c = coletor();
-  const cenaNaRaiz = {
-    self: { id: "fulano", name: "Fulano" },
-    scene: { place: { id: "clareira", name: "Clareira" },   // sem belongs_to
-             characters: [], items: [], objects: [], exits: [] },
-  };
-  const mundo = mundoDe({ respostas: [
-    { recusado: false, texto: "", narrativa: { aconteceu: ["fez."] } },
-  ] });
-  mundo.contexto = async () => cenaNaRaiz;
-  const laco = new Laco({
-    mundo,
-    mente: menteDe({ propostas: [{ id: "1", capacidade: "examine",
-                                   alvos: { alvo: "algo" } }] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("olhe ao redor");
-
-  const local = c.eventos.find((e) => e.ev === "local");
-  assert.ok(local, "mesmo sem ancestrais, o próprio lugar é a trilha");
-  assert.deepStrictEqual(local.breadcrumb, ["Clareira"]);
-});
-
-test("achado 2026-09-29 — sem NENHUM dado de lugar, 'local' não emite (silêncio, não 'undefined')",
-async () => {
-  const c = coletor();
-  const laco = new Laco({
-    mundo: mundoDe({ respostas: [
-      { recusado: false, texto: "", narrativa: { aconteceu: ["fez."] } },
-    ] }),   // CENA padrão: place: {} — sem name/id nenhum
-    mente: menteDe({ propostas: [{ id: "1", capacidade: "examine",
-                                   alvos: { alvo: "algo" } }] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("olhe ao redor");
-
-  assert.ok(!c.eventos.some((e) => e.ev === "local"),
-    "sem place.name/id não há trilha nenhuma pra mostrar — silêncio, não 'undefined'");
+test("NADA SOME: dois objetivos, um resolve e o outro sobe — os dois chegam à narração", async () => {
+  const mente = menteDe({ objetivos: "- Pegar a Corda de Cânhamo\n- Beber da Caneca de Peltre" });
+  const mundo = mundoDe({ respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["Fulano pegou a corda."] } }] });
+  await lacoDe({ mundo, mente }).sussurrar("pegue a corda e beba da caneca");
+  assert.strictEqual(mundo.chamadas.length, 1);
+  assert.deepStrictEqual(mente.ultimo.aconteceu, ["Fulano pegou a corda."]);
+  assert.ok(mente.ultimo.falhas.some((f) => /Caneca/.test(f.o_que_falhou)));
 });
 
 test("A RECUSA NÃO É SILENCIOSA: vira evento e chega à narração", async () => {
   const c = coletor();
-  const mente = menteDe({ propostas: [{ capacidade: "give",
-                                        alvos: { to: "ninguem" },
-                                        prosa: { acao: "entrega" } }] });
-  const laco = new Laco({
-    mundo: mundoDe({ respostas: [
-      { recusado: true, texto: "não há ninguém com esse nome aqui",
-        narrativa: {} },
-    ] }),
-    mente, extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("entregue a corda");
-
-  const recusa = c.eventos.find((e) => e.ev === "recusa");
-  assert.ok(recusa, "a recusa não virou evento");
-  assert.match(recusa.texto, /ninguém/);
-  // e a Mente PRECISA receber a recusa como matéria — senão ela inventa a cena
-  assert.ok(menteDe.ultimo.falhas.length,
-            "a narração foi chamada sem saber que houve recusa");
+  const mente = menteDe();
+  const mundo = mundoDe({ respostas: [{ recusado: true, texto: "A corda está presa ao poste.", narrativa: {} }] });
+  await lacoDe({ mundo, mente, emitir: c.emitir }).sussurrar("pegue a corda");
+  const r = c.eventos.find((e) => e.ev === "recusa");
+  assert.ok(r && /presa ao poste/.test(r.texto));
+  assert.ok(mente.ultimo.falhas.some((f) => /presa ao poste/.test(f.o_que_falhou)));
 });
 
-// SPEC 045 — FALHA HONESTA EM VEZ DE DEGRADAÇÃO SILENCIOSA (US2).
-//
-// Quando a Mente esgota o orçamento de rodadas sem produzir nenhuma chamada de
-// ferramenta (`interpret()` devolve `null` — nem exceção, nem sessão), o turno
-// NÃO pode cair num segundo motor (o Fluxo B morreu) nem travar sem explicação.
-// Ele tem de terminar exatamente como "nenhuma proposta chegou ao mundo": um
-// recado de sistema honesto, sem narração inventada e sem propostas fantasmas.
-test("interpret() sem sessão (orçamento esgotado) termina no recado honesto, nunca em erro", async () => {
+test("tentativa CONSULTIVA (sem aconteceu) ainda assim fecha com um beat", async () => {
   const c = coletor();
-  const laco = new Laco({
-    mundo: mundoDe({ respostas: [] }),  // nenhuma capacidade deveria ser chamada
-    mente: {
-      interpret: async () => null,       // a Mente não decidiu nada, mesmo com retry
-      narrate: async () => { throw new Error("narrate não deveria ser chamado sem fato nenhum"); },
-      deriveWhisper: async () => null,
-    },
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("faça alguma coisa");
-
-  const sistema = c.eventos.find((e) => e.ev === "sistema");
-  assert.ok(sistema && sistema.texto && sistema.texto.trim().length,
-    "sessão nula devia terminar num recado de sistema honesto, não em silêncio");
-  assert.ok(!c.eventos.some((e) => e.ev === "erro"),
-    "sessão nula não é uma falha de transporte — não deve virar 'erro'");
-  assert.ok(!c.eventos.some((e) => e.ev === "beat"),
-    "sem desfecho nenhum, não pode haver beat (nada aconteceu de verdade)");
+  const mente = menteDe({ objetivos: "- Olhar com atenção o Cantil de Água" });
+  const decider = deciderDe(["recognize"]);
+  const mundo = mundoDe({ respostas: [{ recusado: false, texto: "", narrativa: { reconhecimentos: [{ name: "Cantil" }] } }] });
+  await lacoDe({ mundo, mente, decider, emitir: c.emitir }).sussurrar("olhe o cantil");
+  const t = c.eventos.find((e) => e.ev === "tentativa");
+  assert.ok(c.eventos.some((e) => e.ev === "beat" && e.toolCallId === t.toolCallId));
 });
 
-// ITEM 53.2 — O PLANO MORRE COM O PASSO QUE FALHOU.
-// Este teste afirmava o CONTRÁRIO ("recusa no meio não interrompe as propostas
-// seguintes"), e o mantenedor virou a decisão: uma sequência é encadeada, e os
-// passos de trás pressupõem os da frente. Se o do meio não aconteceu, o de depois
-// pede ao mundo algo cujo pré-requisito não existe. O turno CONTINUA — mas com um
-// plano NOVO, pensado a partir do que barrou.
-test("a recusa mata o resto da fila, e o desfecho volta à MENTE", async () => {
+test("o título da tentativa é o comando com o NOME do alvo, não o id", async () => {
   const c = coletor();
-  delete menteDe.recebeu;
-  const mundo = mundoDe({ respostas: [
-    { recusado: true, texto: "isso não está ao seu alcance", narrativa: {} },
-    { recusado: false, texto: "",
-      narrativa: { aconteceu: ["Fulano pegou a faca."] } },
-  ] });
-  const laco = new Laco({
-    mundo,
-    mente: menteDe({
-      // o plano: pegar a lua (o mundo recusa) e então a faca
-      propostas: [
-        { id: "c0", capacidade: "take", alvos: { item: "lua" }, prosa: { acao: "tenta" } },
-        { id: "c1", capacidade: "take", alvos: { item: "faca" }, prosa: { acao: "pega" } },
-      ],
-      // o que ela propõe DEPOIS de saber que a lua não deu
-      depois: [
-        { id: "c2", capacidade: "take", alvos: { item: "faca" }, prosa: { acao: "pega" } },
-      ],
-    }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("pegue as coisas");
-
-  // a 2ª do plano ORIGINAL não foi ao mundo: ela pressupunha a 1ª
-  assert.deepStrictEqual(mundo.chamadas.map((ch) => ch.args.item), ["lua", "faca"]);
-  // e o motivo chegou à Mente como RESULTADO, em linguagem de mundo — é isto que a
-  // faz seguir de onde parou em vez de recomeçar às cegas
-  assert.ok(menteDe.recebeu && menteDe.recebeu.length, "o desfecho não voltou à Mente");
-  assert.strictEqual(menteDe.recebeu[0].id, "c0");
-  assert.match(menteDe.recebeu[0].conteudo, /alcance/);
-  assert.ok(c.eventos.some((e) => e.ev === "recusa"));
-  assert.ok(c.eventos.some((e) => e.ev === "beat"));
+  const mundo = mundoDe({ respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["ok"] } }] });
+  await lacoDe({ mundo, mente: menteDe(), emitir: c.emitir }).sussurrar("pegue a corda");
+  const t = c.eventos.find((e) => e.ev === "tentativa");
+  assert.strictEqual(t.tituloDinamico, "take(Corda de Cânhamo)");
 });
 
-test("replanejar não reenvia ao mundo o passo que acabou de ser barrado", async () => {
+test("'enquanto isso' vira evento PRÓPRIO ('paralelo'), fora da narração", async () => {
   const c = coletor();
-  const mundo = mundoDe({ respostas: [
-    { recusado: true, texto: "isso não está ao seu alcance", narrativa: {} },
-  ] });
-  const laco = new Laco({
-    mundo,
-    // A Mente teimosa: replaneja e devolve EXATAMENTE o mesmo passo
-    mente: menteDe({ propostas: [
-      { capacidade: "take", alvos: { item: "lua" }, prosa: { acao: "tenta" } },
-    ] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("pegue a lua");
-
-  assert.strictEqual(mundo.chamadas.length, 1,
-                     "o passo barrado voltou ao mundo no replanejamento");
+  const depois = JSON.parse(JSON.stringify(CENA));
+  depois.scene.characters = [{ id: "draven", name: "Draven" }];
+  const mundo = mundoDe({ respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["ok"] } }],
+                          contextos: [CENA, depois] });
+  await lacoDe({ mundo, mente: menteDe({ narracao: "Você pega a corda." }), emitir: c.emitir })
+    .sussurrar("pegue a corda");
+  const p = c.eventos.find((e) => e.ev === "paralelo");
+  assert.ok(p && /Draven chegou ao local/.test(p.texto));
 });
 
-test("a trava do conector impede dois turnos ao mesmo tempo", async () => {
+test("turno sem objetivo nenhum NÃO narra — narrar sem fato é inventar mundo", async () => {
   const c = coletor();
-  let solta;
-  const laco = new Laco({
-    mundo: { turnoId: null, contexto: () => new Promise((r) => { solta = r; }) },
-    mente: menteDe({ propostas: [] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  const primeiro = laco.sussurrar("um");
-  const segundo = await laco.sussurrar("dois");
-  assert.strictEqual(segundo, null, "o segundo turno não foi barrado");
-  assert.ok(c.eventos.some((e) => e.ev === "sistema" &&
-                                  /já está em andamento/.test(e.texto)));
-  solta(CENA);
-  await primeiro;
+  const mente = menteDe({ objetivos: "- (nada)" });
+  await lacoDe({ mundo: mundoDe(), mente, emitir: c.emitir }).sussurrar("pense na vida");
+  assert.ok(!c.eventos.some((e) => e.ev === "narracao_fim"));
+  assert.ok(c.eventos.some((e) => e.ev === "sistema"));
 });
 
-// DESDE QUANDO o turno corre. `ocupado` sozinho não distingue um turno de vinte
-// segundos de um pendurado há vinte minutos — e é o pendurado que trava tudo em
-// silêncio (a autonomia para, e a configuração adiada nunca entra em vigor). Sem
-// este instante, a tela não tem como avisar; foi o que aconteceu de verdade.
-test("o turno registra DESDE QUANDO corre, e limpa ao terminar", async () => {
+test("SEM FALLBACK (Princípio VIII): decisor fora do ar interrompe o turno com recado honesto", async () => {
   const c = coletor();
-  let solta;
-  const laco = new Laco({
-    mundo: { turnoId: null, contexto: () => new Promise((r) => { solta = r; }) },
-    mente: menteDe({ propostas: [] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  assert.strictEqual(laco.ocupadoDesde, null, "nasceu ocupado");
-  const antes = Date.now();
-  const turno = laco.sussurrar("um");
-  assert.ok(laco.ocupadoDesde >= antes && laco.ocupadoDesde <= Date.now(),
-    `ocupadoDesde fora da janela: ${laco.ocupadoDesde}`);
-  // e o instante VIAJA no evento, porque a tela precisa dele sem recarregar
-  const abriu = c.eventos.find((e) => e.ev === "estado" && e.ocupado === true);
-  assert.ok(abriu && abriu.ocupadoDesde === laco.ocupadoDesde,
-    "o evento de estado não levou `ocupadoDesde`");
-
-  solta(CENA);
-  await turno;
-  assert.strictEqual(laco.ocupadoDesde, null, "não limpou ao terminar o turno");
-  const fechou = c.eventos.filter((e) => e.ev === "estado" && e.ocupado === false).pop();
-  assert.ok(fechou && fechou.ocupadoDesde === null);
-});
-
-test("modelo fora do ar interrompe o turno e NÃO substitui por outro", async () => {
-  const c = coletor();
-  const laco = new Laco({
-    mundo: { turnoId: null, contexto: async () => CENA },
-    mente: { interpret: async () => { throw new Error("o Ollama não respondeu"); } },
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("faça algo");
-
-  const erro = c.eventos.find((e) => e.ev === "erro");
-  assert.ok(erro, "a falha do modelo não foi contada ao jogador");
-  assert.match(erro.texto, /Ollama/);
-  assert.ok(!c.eventos.some((e) => e.ev === "narracao_fim"),
-            "narrou mesmo sem Mente — isso seria inventar a cena");
-});
-
-test("o diff conta quem chegou, quem saiu e o que apareceu no chão", () => {
-  const eventos = diffTextual(
-    { scene: { characters: [{ name: "Verro" }], items: [] } },
-    { scene: { characters: [{ name: "Odila" }], items: [{ name: "corda" }] } });
-  assert.deepStrictEqual(eventos, [
-    "Odila chegou ao local.", "Verro saiu do local.",
-    "Um(a) corda apareceu no chão.",
-  ]);
-});
-
-test("movimento inventado pela Mente é descartado — prosa aponta, não cria", () => {
-  const rotas = [{ id: "r-porto", name: "trilha do porto",
-                   destination_name: "Porto Negro" }];
-  const bom = { movement: { enter_route: "Porto Negro" } };
-  sanitizeMovement(bom, rotas);
-  assert.deepStrictEqual(bom.movement, { enter_route: "r-porto" });
-
-  const inventado = { movement: { enter_route: "Cidade das Nuvens" } };
-  sanitizeMovement(inventado, rotas);
-  assert.strictEqual(inventado.movement, null);
-});
-
-// A PENEIRA DE CAPACIDADE INVENTADA — escrita a partir de um log real de jogo.
-//
-// O modelo local propôs 'comprar' sete vezes, 'pedir' sete vezes e 'ir' quatro,
-// nenhuma delas existindo na cena. Cada uma virou uma ida ao mundo e uma recusa
-// "não existe capacidade 'comprar'" na TELA DO JOGADOR — vocabulário de máquina
-// onde só deveria haver mundo.
-test("nome de capacidade inventado NÃO vai ao mundo nem à tela", async () => {
-  const c = coletor();
-  const mundo = mundoDe({
-    capacidades: ["take", "give"],
-    respostas: [{ recusado: false, texto: "",
-                  narrativa: { aconteceu: ["Fulano pegou a corda."] } }],
-  });
-  const laco = new Laco({
-    mundo,
-    mente: menteDe({ propostas: [
-      { capacidade: "comprar", alvos: {}, prosa: { acao: "tenta comprar" } },
-      { capacidade: "ir", alvos: {}, prosa: { acao: "tenta ir" } },
-      { capacidade: "take", alvos: { item: "corda" }, prosa: { acao: "pega" } },
-    ] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("faça algo");
-
-  assert.deepStrictEqual(mundo.chamadas.map((x) => x.nome), ["take"],
-    "uma capacidade inventada foi mandada ao mundo");
-  const texto = JSON.stringify(c.eventos);
-  assert.ok(!texto.includes("comprar") && !texto.includes("capacidade"),
-    "vocabulário de máquina vazou para a tela do jogador");
-});
-
-// FACE VAZIA — o caso do personagem MORTO. A face passou a devolver `[]` para quem
-// morreu (o servidor já recusava toda ação dele; agora também não oferece), e isso
-// tornou a cena de face vazia REAL em vez de teórica. O que não pode acontecer é a
-// Mente inventar um verbo no vácuo e o conector encaminhá-lo: `conhece()` sabe que
-// a cena não tem nada, então desmente TUDO, e nenhuma proposta chega ao mundo.
-test("face vazia (morto): nada chega ao mundo, nem que a Mente insista", async () => {
-  const c = coletor();
-  const mundo = mundoDe({ capacidades: [], respostas: [] });
-  const laco = new Laco({
-    mundo,
-    mente: menteDe({ propostas: [
-      { capacidade: "attack", alvos: { alvo: "sarga" }, prosa: { acao: "ergue o braço" } },
-      { capacidade: "levantar", alvos: {}, prosa: { acao: "tenta se erguer" } },
-    ] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("levante e ataque");
-
-  assert.deepStrictEqual(mundo.chamadas.map((x) => x.nome), [],
-    "uma proposta foi ao mundo com a face vazia");
-  const texto = JSON.stringify(c.eventos);
-  assert.ok(!texto.includes("attack") && !texto.includes("levantar"),
-    "vocabulário de máquina vazou para a tela do jogador");
-});
-
-test("proposta repetida é a mesma proposta — vai ao mundo UMA vez", async () => {
-  const c = coletor();
-  const mundo = mundoDe({
-    capacidades: ["take"],
-    respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["pegou"] } }],
-  });
-  const laco = new Laco({
-    mundo,
-    mente: menteDe({ propostas: [
-      { capacidade: "take", alvos: { item: "corda" }, prosa: { acao: "pega" } },
-      { capacidade: "take", alvos: { item: "corda" }, prosa: { acao: "pega" } },
-      { capacidade: "take", alvos: { item: "corda" }, prosa: { acao: "pega" } },
-    ] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("pegue");
-  assert.strictEqual(mundo.chamadas.length, 1);
-});
-
-test("turno só de invenções NÃO narra — narrar sem fato é inventar mundo", async () => {
-  const c = coletor();
-  const mundo = mundoDe({ capacidades: ["take"], respostas: [] });
-  const laco = new Laco({
-    mundo,
-    mente: menteDe({ propostas: [
-      { capacidade: "olhar", alvos: {}, prosa: { acao: "olha" } },
-    ] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("olhe");
-
+  const { DeciderUnavailable } = require("../harness/decider");
+  const decider = deciderDe();
+  decider.tournament = async () => { throw new DeciderUnavailable("o decisor não respondeu (ECONNREFUSED)"); };
+  const mente = menteDe({ objetivos: "- Esperar um pouco" });
+  const mundo = mundoDe();
+  await lacoDe({ mundo, mente, decider, emitir: c.emitir }).sussurrar("espere");
   assert.strictEqual(mundo.chamadas.length, 0);
-  assert.ok(!c.eventos.some((e) => e.ev === "narracao_fim"),
-    "narrou um turno sem fato nenhum — é assim que a Mente inventa cenário");
-  const sis = c.eventos.find((e) => e.ev === "sistema");
-  assert.ok(sis && /hesitou/.test(sis.texto), "o jogador ficou sem saber do vazio");
+  const e = c.eventos.find((x) => x.ev === "erro");
+  assert.ok(e && /decisor local não respondeu/.test(e.texto));
 });
 
-// O VAZIO PRECISA DIZER POR QUÊ — escrito a partir de um turno real.
-//
-// O Coppo tinha adormecido no laço autônomo. A cena passou a oferecer UMA coisa
-// (acordar), a Mente insistiu em caminhar, e o jogador leu apenas que ela
-// "hesitou" — sem nunca saber que o personagem estava dormindo. Mensagem honesta
-// e inútil é quase tão ruim quanto silêncio.
-test("cena estreita explica o vazio com as palavras do próprio mundo", async () => {
-  const c = coletor();
-  const cenaDormindo = {
-    ...CENA,
-    // a face de quem dorme é UMA capacidade, e desde o item 50 ela é `wake_up` com
-    // a própria descrição — não mais `sleep` alternador dizendo "chame de novo".
-    capacidades: [{ nome: "wake_up",
-                    descricao: "O personagem está dormindo, e esta é a ação de "
-                             + "despertar e se levantar. Uma noite completa devolve "
-                             + "toda a fadiga; acordar cedo devolve só uma fração." }],
-  };
-  const mundo = {
-    turnoId: null,
-    conhece: (n) => n === "wake_up",
-    contexto: async () => cenaDormindo,
-    chamarCapacidade: async () => { throw new Error("não devia chamar"); },
-  };
-  const laco = new Laco({
-    mundo,
-    mente: menteDe({ propostas: [
-      { capacidade: "caminhar", alvos: {}, prosa: { acao: "caminha" } },
-    ] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("faz algo");
-
-  const sis = c.eventos.find((e) => e.ev === "sistema");
-  assert.ok(sis, "o jogador ficou sem recado");
-  assert.match(sis.texto, /dormindo/,
-    "o vazio não disse por quê — o jogador não tem como saber o que houve");
-  assert.ok(!/sleep|capacidade/.test(sis.texto),
-    "vazou o nome da engrenagem em vez da prosa do mundo");
+test("REGISTRO: o turno sobe com as caixas NA ORDEM, com custo e versão de prompt", async () => {
+  const mundo = mundoDe({ respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["ok"] } }] });
+  const mente = menteDe();
+  mundoDe.registrados = [];
+  const reg = registroMod.criar({ mundo, cfg: { personagem: "fulano", runtime: "local", model: "x" },
+                                  extensoes: extVazio(), mente });
+  await lacoDe({ mundo, mente, registro: reg }).sussurrar("pegue a corda");
+  const linha = mundoDe.registrados[0];
+  const boxes = linha.corpo.caixas.map((c) => c.box);
+  assert.deepStrictEqual(boxes, ["C1", "C3", "C4", "C6", "C7", "M2", "C9"]);
+  const c3 = linha.corpo.caixas.find((c) => c.box === "C3");
+  assert.ok(c3.custo_pago && c3.custo_pago.chamadas === 1, "o C3 não registrou custo pago");
+  assert.match(c3.prompt_versao, /^[0-9a-f]{8}$/);
+  assert.strictEqual(linha.corpo.acoes.length, 1);
+  assert.strictEqual(linha.corpo.acoes[0].persistente, true);
+  assert.strictEqual(linha.corpo.acoes[0].pedida, true);
 });
 
-test("cena LARGA não vira cardápio de mecânica na tela", async () => {
-  const c = coletor();
-  const muitas = Array.from({ length: 12 }, (_, i) =>
-    ({ nome: `cap${i}`, descricao: `faz a coisa ${i}` }));
-  const mundo = {
-    turnoId: null,
-    conhece: () => false,
-    contexto: async () => ({ ...CENA, capacidades: muitas }),
-    chamarCapacidade: async () => { throw new Error("não devia chamar"); },
-  };
-  const laco = new Laco({
-    mundo,
-    mente: menteDe({ propostas: [{ capacidade: "voar", alvos: {}, prosa: { acao: "voa" } }] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("voe");
-
-  const sis = c.eventos.find((e) => e.ev === "sistema");
-  assert.ok(!/faz a coisa/.test(sis.texto),
-    "listou a cena inteira na tela — isso é cardápio de mecânica");
-  assert.match(sis.texto, /hesitou/);
+test("REGISTRO: o turno QUEBRADO sobe com a caixa onde quebrou (item 80)", async () => {
+  const mundo = mundoDe();
+  const mente = menteDe();
+  mente.conversar = async () => { throw new Error("o Ollama caiu"); };
+  mundoDe.registrados = [];
+  const reg = registroMod.criar({ mundo, cfg: { personagem: "fulano", runtime: "local", model: "x" },
+                                  extensoes: extVazio(), mente });
+  await lacoDe({ mundo, mente, registro: reg }).sussurrar("pegue a corda");
+  const linha = mundoDe.registrados[0];
+  assert.ok(linha, "o turno quebrado não subiu");
+  assert.deepStrictEqual(linha.corpo.falha, { box: "C3", erro: "o Ollama caiu" });
 });
 
-test("o que mudou AO REDOR viaja no desfecho que volta à Mente", async () => {
+test("o front recebe a Mente em 1ª pessoa, rótulos neutros e o bastidor marcado", async () => {
   const c = coletor();
-  delete menteDe.recebeu;
-  // a cena MUDA entre a proposta e o replanejamento: alguém chega
-  const cena1 = { scene: { characters: [{ name: "Elga" }], items: [], exits: [] },
-                  capacidades: [] };
-  const cena2 = { scene: { characters: [{ name: "Elga" }, { name: "Torvin" }],
-                          items: [], exits: [] }, capacidades: [] };
-  let vez = 0;
-  const mundo = {
-    chamadas: [], turnoId: null,
-    conhece: () => null,
-    contexto: async () => (vez++ === 0 ? cena1 : cena2),
-    chamarCapacidade: async (nome, args) => {
-      mundo.chamadas.push({ nome, args });
-      return { recusado: true, texto: "isso não está ao seu alcance", narrativa: {} };
-    },
-  };
-  const laco = new Laco({
-    mundo,
-    mente: menteDe({
-      propostas: [{ id: "c0", capacidade: "take", alvos: { item: "lua" },
-                    prosa: { acao: "tenta" } }],
-      depois: [{ id: "c1", capacidade: "examine", alvos: { alvo: "Torvin" },
-                 prosa: { acao: "olha" } }],
-    }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("pegue a lua");
-
-  const rec = menteDe.recebeu || [];
-  assert.ok(rec.length, "o desfecho não voltou à Mente");
-  // o motivo da recusa E a notícia do ambiente, na mesma volta
-  assert.match(rec[0].conteudo, /alcance/);
-  assert.match(rec[0].conteudo, /ao redor/i);
-  assert.match(rec[0].conteudo, /Torvin/,
-               "a Mente replanejaria sem saber que alguém chegou");
+  const mundo = mundoDe({ respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["ok"] } }] });
+  await lacoDe({ mundo, mente: menteDe(), emitir: c.emitir }).sussurrar("pegue a corda");
+  assert.ok(c.eventos.some((e) => e.ev === "objetivos" && /Corda/.test(e.texto)));
+  const rotulos = c.eventos.filter((e) => e.ev === "harness").map((e) => e.texto);
+  assert.ok(rotulos.length >= 3);
+  assert.ok(c.eventos.some((e) => e.ev === "bastidor" && e.box === "C6" && e.tool === "take"));
 });
 
-// O SUSSURRO MANUAL não podia estar quebrado, e estava: uma substituição larga pôs
-// `decidido.racional` no caminho manual, variável que só existe no tick autônomo.
-// Era `ReferenceError` em TODA ação digitada, e o try/catch a mascarava como "algo
-// interrompeu a cena". Passou porque o jogo roda sozinho e ninguém digitou nada.
-test("o sussurro MANUAL não estoura, e é registrado como manual", async () => {
-  const c = coletor();
-  const linhas = [];
-  const registro = {
-    abrir: () => ({
-      id: "t1",
-      pretendia(i) { linhas.push({ ev: "pretendia", i }); },
-      sussurro(texto, origem, rac) { linhas.push({ ev: "sussurro", origem, rac }); },
-      pensou() {}, propos() {}, narrou() {}, falha() {}, falhaDeExtensao() {},
-      descartar() {}, fechar: async () => {},
-    }),
-  };
-  const laco = new Laco({
-    mundo: mundoDe({ respostas: [{ recusado: false, texto: "",
-                                   narrativa: { aconteceu: ["fez."] } }] }),
-    mente: menteDe({ propostas: [{ id: "c0", capacidade: "take",
-                                   alvos: { item: "faca" }, prosa: { acao: "pega" } }] }),
-    extensoes: extVazio(), registro, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("pegue a faca", "manual");
-
-  const erro = c.eventos.find((e) => e.ev === "erro");
-  assert.ok(!erro, `o turno manual estourou: ${erro && erro.texto}`);
-  const s = linhas.find((l) => l.ev === "sussurro");
-  assert.strictEqual(s.origem, "manual");
-  assert.strictEqual(s.rac, undefined, "manual não tem racional de autonomia");
+test("diffTextual: quem chegou, quem saiu, o que apareceu e sumiu do chão", () => {
+  const a = { scene: { characters: [{ name: "A" }], items: [{ name: "Pão" }] } };
+  const b = { scene: { characters: [{ name: "B" }], items: [] } };
+  const d = diffTextual(a, b);
+  assert.ok(d.includes("B chegou ao local."));
+  assert.ok(d.includes("A saiu do local."));
+  assert.ok(d.includes("Um(a) Pão sumiu do chão."));
 });
 
-test("o registro guarda o que o personagem PRETENDIA no início do turno", async () => {
+// --- o desejo (US4) ------------------------------------------------------------ //
+
+function cenaCom(extra) {
+  const c = JSON.parse(JSON.stringify(CENA));
+  Object.assign(c.self, extra.self || {});
+  Object.assign(c.scene, extra.scene || {});
+  return c;
+}
+
+test("TICK sem desejo: QUERER → PLANEJAR → o desejo é gravado no world (create)", async () => {
+  const semDesejo = cenaCom({ self: { id: "t1", needs: { thirst: "com sede" } } });
+  const comDesejo = cenaCom({ self: { id: "t1", intentions: [{ id: "int-1", status: "ativa",
+    content: "Matar a sede.\n- Beber do Cantil de Água\nPronto quando: sede saciada." }] } });
+  const mundo = mundoDe({ contextos: [semDesejo, comDesejo] });
+  mundo.personagem = "t1";
+  const mente = menteDe({ porRotina: {
+    querer: "Quero matar a sede",
+    planejar: "DESEJO: matar a sede\nPASSOS:\n- Beber do Cantil de Água\n- Descansar\nFIM: sede saciada" } });
   const c = coletor();
-  const vistas = [];
-  const registro = {
-    abrir: () => ({
-      id: "t1",
-      pretendia(i) { vistas.push(i); },
-      sussurro() {}, pensou() {}, propos() {}, narrou() {}, falha() {},
-      falhaDeExtensao() {}, descartar() {}, fechar: async () => {},
-    }),
-  };
-  // A FIXTURE ESTAVA DOIS CONTRATOS ATRASADA, e por isso este teste ficou VERDE
-  // enquanto a produção gravava `intencoes: []` em todo turno. Ela usava
-  // `characters_present`/`items_present`/`routes` na raiz — nomes que o contrato
-  // (`docs/contrato-do-contexto.md`) lista como ERRADOS — e `intentions` na raiz, que
-  // a spec 067 moveu para dentro de `self`. Como o laço lia a raiz e a fixture
-  // escrevia na raiz, os dois erros se cancelavam aqui dentro e só apareciam no jogo.
-  const CENA = {
-    self: { id: "fulano", name: "Fulano",
-            intentions: [{ id: "int-1", status: "ativa", content: "achar Hulda" }] },
-    scene: { place: { id: "x", name: "X" },
-             characters: [], items: [], objects: [], exits: [] },
-  };
-  const laco = new Laco({
-    mundo: { chamadas: [], turnoId: null, conhece: () => null,
-             contexto: async () => CENA,
-             chamarCapacidade: async () => ({ recusado: false, texto: "",
-                                              narrativa: { aconteceu: ["fez."] } }) },
-    mente: menteDe({ propostas: [{ id: "c0", capacidade: "take",
-                                   alvos: { item: "faca" }, prosa: { acao: "pega" } }] }),
-    extensoes: extVazio(), registro, emitir: c.emitir,
-  });
-
-  await laco.sussurrar("pegue a faca");
-
-  // é a FOTO do início do turno: sem ela não há como perguntar se o personagem se
-  // comporta diferente quando TEM compromisso. Repare que a asserção lê de
-  // `self.intentions` — se um dia voltar a ler a raiz, ela falha, e é essa falha que
-  // teria evitado 321 turnos com `intencoes: []` no registro do Draven.
-  assert.deepStrictEqual(vistas[0], CENA.self.intentions);
-  assert.strictEqual(vistas[0].length, 1, "o compromisso ativo não foi fotografado");
+  await lacoDe({ mundo, mente, emitir: c.emitir }).talvezAgirSozinho();
+  const create = mundo.intencoes.find((i) => i.op === "create");
+  assert.ok(create, "o desejo não foi gravado no world");
+  assert.match(create.content, /- Beber do Cantil de Água/);
+  assert.match(create.content, /Pronto quando: sede saciada/);
+  assert.ok(c.eventos.some((e) => e.ev === "plano"));
 });
 
-// ===========================================================================
-// SPEC 060 — o turno continua no SUCESSO, e não só depois de um "não".
-//
-// Antes daqui, `_porPropostas` tinha `if (!parou) break;  // foi até o fim: nada
-// a repensar`: o passo que dava certo ENCERRAVA a vez, e A Mente nunca era
-// perguntada "e agora?". Um sussurro de dois passos rendia um.
-// ===========================================================================
-
-test("060: o SUCESSO continua — a Mente é perguntada de novo e o 2º passo acontece",
-async () => {
-  const c = coletor();
-  const mundo = mundoDe({
-    respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["pegou o frasco"] } },
-                { recusado: false, texto: "", narrativa: { aconteceu: ["entregou o frasco"] } }],
-    capacidades: ["take", "give"],
-  });
-  menteDe.recebeu = [];
-  const laco = new Laco({
-    mundo,
-    mente: menteDe({ propostas: [{ id: "1", capacidade: "take", alvos: { item: "frasco" } }],
-                     depois: [{ id: "2", capacidade: "give", alvos: { item: "frasco", to: "obadiah" } }] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-  await laco.sussurrar("pegue o frasco e entregue");
-  assert.deepStrictEqual(mundo.chamadas.map((x) => x.nome), ["take", "give"],
-    "as duas foram ao mundo, na ordem");
-  assert.ok(menteDe.recebeu.length >= 1,
-    "o desfecho do 1º passo voltou à conversa — é o que faz o 2º nascer");
-  const narracoes = c.eventos.filter((e) => e.ev === "narracao_fim");
-  assert.strictEqual(narracoes.length, 1,
-    "a narração é UMA, sobre o arco inteiro — nunca uma por passo");
+test("TICK com passo CONCRETO: resolve localmente, 0 token pago antes do narrar", async () => {
+  const ctx = cenaCom({ self: { id: "t2", intentions: [{ id: "int-2", status: "ativa",
+    content: "Matar a sede.\n- Beber do Cantil de Água\nPronto quando: sede saciada." }] } });
+  const depois = cenaCom({ self: { id: "t2", needs: { thirst: "sem sede" }, intentions: ctx.self.intentions } });
+  const mundo = mundoDe({ respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["Bebeu."] } }],
+                          contextos: [ctx, depois] });
+  mundo.personagem = "t2";
+  const mente = menteDe();
+  await lacoDe({ mundo, mente }).talvezAgirSozinho();
+  assert.deepStrictEqual(mundo.chamadas.map((x) => [x.nome, x.args.item]), [["drink", "cantil"]]);
+  assert.strictEqual(mente.conversas.length, 0, "pagou a Mente antes de narrar");
 });
 
-test("060: REGRESSÃO do 53.2 — a recusa continua matando a cauda", async () => {
-  const c = coletor();
-  const mundo = mundoDe({
-    respostas: [{ recusado: true, texto: "está de mãos ocupadas", narrativa: {} }],
-    capacidades: ["take", "give"],
-  });
-  menteDe.recebeu = [];
-  const laco = new Laco({
-    mundo,
-    // as DUAS na mesma proposta: a 2ª pressupõe a 1ª, que será recusada
-    mente: menteDe({ propostas: [
-      { id: "1", capacidade: "take", alvos: { item: "frasco" } },
-      { id: "2", capacidade: "give", alvos: { item: "frasco", to: "obadiah" } }] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-  await laco.sussurrar("pegue e entregue");
-  assert.deepStrictEqual(mundo.chamadas.map((x) => x.nome), ["take"],
-    "a cauda NÃO foi ao mundo: o passo de trás pressupunha o da frente");
-  assert.ok(c.eventos.some((e) => e.ev === "recusa"),
-    "a recusa virou matéria de cena, não silêncio");
+test("TICK: o fim conferível verdadeiro FECHA o desejo no world (concluida) sem perguntar à Mente", async () => {
+  const ctx = cenaCom({ self: { id: "t3", needs: { thirst: "sem sede" }, intentions: [{ id: "int-3", status: "ativa",
+    content: "Matar a sede.\n- Beber do Cantil de Água\nPronto quando: sede saciada." }] } });
+  const mundo = mundoDe({ contextos: [ctx] });
+  mundo.personagem = "t3";
+  const mente = menteDe();
+  await lacoDe({ mundo, mente }).talvezAgirSozinho();
+  assert.ok(mundo.intencoes.some((i) => i.op === "close" && i.status === "concluida"));
+  assert.strictEqual(mente.conversas.length, 0);
 });
 
-test("060: a repetição do que já foi despachado ENCERRA o turno", async () => {
+test("TICK EM TRÂNSITO: espera a chegada — nada de C3, nada de tentativa", async () => {
+  const ctx = cenaCom({ self: { id: "t4", transit: { route_id: "rua", to_name: "Taverna" },
+    intentions: [{ id: "int-4", status: "ativa", content: "Chegar à Taverna.\n- Seguir pela Rua\nPronto quando: estar em Taverna." }] } });
+  const mundo = mundoDe({ contextos: [ctx] });
+  mundo.personagem = "t4";
+  const mente = menteDe();
   const c = coletor();
-  const mundo = mundoDe({
-    respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["entregou"] } }],
-    capacidades: ["give"],
-  });
-  menteDe.recebeu = [];
-  const mesma = { id: "1", capacidade: "give", alvos: { item: "moeda", to: "obadiah" } };
-  const laco = new Laco({
-    mundo,
-    // ela propõe a MESMA coisa de novo na 2ª rodada — o `jaTentadas` barra,
-    // a lista esvazia e o `while` quebra. É sinal de parada, não erro.
-    mente: menteDe({ propostas: [mesma], depois: [{ ...mesma, id: "2" }] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-  await laco.sussurrar("entregue a moeda");
-  assert.strictEqual(mundo.chamadas.length, 1,
-    "a repetição não foi ao mundo uma segunda vez");
-  assert.strictEqual(c.eventos.filter((e) => e.ev === "narracao_fim").length, 1);
-});
-
-test("060: o orçamento de PASSOS APLICADOS encerra a vez, e a narração acontece",
-async () => {
-  const c = coletor();
-  // uma Mente que nunca se declara satisfeita: propõe um passo NOVO a cada rodada
-  const respostas = [];
-  for (let i = 0; i < 20; i++) {
-    respostas.push({ recusado: false, texto: "", narrativa: { aconteceu: [`ato ${i}`] } });
-  }
-  const mundo = mundoDe({ respostas, capacidades: ["take"] });
-  let n = 0;
-  const menteInsaciavel = {
-    interpret: async () => {
-      const proximo = () => ({
-        pensamento: "penso",
-        propostas: [{ id: `p${n}`, capacidade: "take", alvos: { item: `coisa-${n++}` } }],
-        continuar: async () => proximo(),
-      });
-      return proximo();
-    },
-    narrate: async () => "prosa",
-    deriveWhisper: async () => null,
-  };
-  const laco = new Laco({ mundo, mente: menteInsaciavel, extensoes: extVazio(),
-                          registro: null, emitir: c.emitir });
-  await laco.sussurrar("faça coisas para sempre");
-  assert.ok(mundo.chamadas.length <= 7,
-    `o orçamento segurou a vez (foram ${mundo.chamadas.length} chamadas)`);
-  assert.strictEqual(c.eventos.filter((e) => e.ev === "narracao_fim").length, 1,
-    "mesmo estourando o orçamento, o turno narra");
-});
-
-
-// ===========================================================================
-// SPEC 060 / US2 — a referência que não resolve NÃO vai ao mundo.
-// ===========================================================================
-
-test("060/US2: referência não resolvida não vai ao mundo, e volta à conversa",
-async () => {
-  const c = coletor();
-  const mundo = mundoDe({ respostas: [], capacidades: ["examine"] });
-  menteDe.recebeu = [];
-  const laco = new Laco({
-    mundo,
-    mente: menteDe({ propostas: [{
-      id: "1", capacidade: "examine", alvos: { alvo: "destilador" },
-      naoResolvido: [{ param: "alvo", referencia: "destilador", porque: "nada-casou" }],
-    }] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-  await laco.sussurrar("examine o destilador");
-  assert.strictEqual(mundo.chamadas.length, 0,
-    "a capacidade NÃO foi chamada: falta o mínimo que ela exige");
-  assert.ok(menteDe.recebeu.some((r) => /destilador/.test(r.conteudo)),
-    "o recado voltou à conversa para ela replanejar na MESMA vez");
-});
-
-test("062/US4: 'isso é rota' nomeia enter_route — não diz 'não corresponde a nada'",
-async () => {
-  const c = coletor();
-  const mundo = mundoDe({ respostas: [], capacidades: ["travel_to"] });
-  menteDe.recebeu = [];
-  const laco = new Laco({
-    mundo,
-    mente: menteDe({ propostas: [{
-      id: "1", capacidade: "travel_to", alvos: { destino: "Beco das Sombras" },
-      naoResolvido: [{ param: "destino", referencia: "Beco das Sombras",
-                       porque: "e-rota" }],
-    }] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-  await laco.sussurrar("vá pelo beco das sombras");
+  await lacoDe({ mundo, mente, emitir: c.emitir }).talvezAgirSozinho();
   assert.strictEqual(mundo.chamadas.length, 0);
-  const recado = menteDe.recebeu.find((r) => /Beco das Sombras/.test(r.conteudo));
-  assert.ok(recado, "o recado voltou à conversa");
-  assert.ok(/enter_route/.test(recado.conteudo), "nomeia o verbo certo");
-  assert.ok(!/não corresponde a nada/.test(recado.conteudo),
-    "não é mais a frase genérica — era falsa aqui");
+  assert.strictEqual(mente.conversas.length, 0);
+  assert.ok(c.eventos.some((e) => e.ev === "harness" && /a caminho de Taverna/.test(e.texto)));
 });
 
-test("060/US2: a rejeição do conector NUNCA chega à tela do jogador", async () => {
+test("TICK: o TETO DE CUSTO bloqueia o desejo e sobe como ponto de intervenção", async () => {
+  const H = require("../harness");
+  const ctx = cenaCom({ self: { id: "t5", intentions: [{ id: "int-5", status: "ativa",
+    content: "Conseguir o Ungüento.\n- Pegar a Corda de Cânhamo\nPronto quando: posse de Ungüento." }] } });
+  const nb = new H.desire.Notebook("t5");
+  nb.sync(ctx.self.intentions);
+  nb.pay("int-5", 9000);
+  const mundo = mundoDe({ contextos: [ctx] });
+  mundo.personagem = "t5";
   const c = coletor();
-  const laco = new Laco({
-    mundo: mundoDe({ respostas: [], capacidades: ["examine"] }),
-    mente: menteDe({ propostas: [{
-      id: "1", capacidade: "examine", alvos: { alvo: "destilador" },
-      naoResolvido: [{ param: "alvo", referencia: "destilador", porque: "nada-casou" }],
-    }] }),
-    extensoes: extVazio(), registro: null, emitir: c.emitir,
-  });
-  await laco.sussurrar("examine o destilador");
-  const naTela = c.eventos.filter((e) => ["beat", "recusa", "narracao_fim"].includes(e.ev));
-  for (const e of naTela) {
-    assert.ok(!/destilador.*não corresponde|nada-casou|referencia/i.test(e.texto || ""),
-      `vocabulário de máquina vazou para a tela: ${JSON.stringify(e)}`);
-  }
+  await lacoDe({ mundo, mente: menteDe(), emitir: c.emitir }).talvezAgirSozinho();
+  const b = c.eventos.find((e) => e.ev === "bloqueio");
+  assert.ok(b && b.motivo === "custo");
+  assert.strictEqual(mundo.chamadas.length, 0);
 });
 
-test("060/US2: a Mente teimosa não gira para sempre", async () => {
-  const c = coletor();
-  const mundo = mundoDe({ respostas: [], capacidades: ["examine"] });
-  // ela insiste na MESMA referência impossível, rodada após rodada. Como nada é
-  // aplicado, o orçamento de PASSOS nunca avançaria — é o teto de recados que
-  // encerra a vez.
-  let voltas = 0;
-  const teimosa = {
-    interpret: async () => {
-      const p = () => {
-        voltas++;
-        return {
-          pensamento: "insisto",
-          propostas: [{ id: `p${voltas}`, capacidade: "examine",
-            alvos: { alvo: "destilador" },
-            naoResolvido: [{ param: "alvo", referencia: "destilador",
-                             porque: "nada-casou" }] }],
-          continuar: async () => p(),
-        };
-      };
-      return p();
-    },
-    narrate: async () => "prosa",
-    deriveWhisper: async () => null,
+test("MESA (SC-011): um prompt do Jev tunado em extensoes/prompts muda a versão gravada", async () => {
+  const rodar = async (ext) => {
+    const mundo = mundoDe({ respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["ok"] } }] });
+    const mente = menteDe();
+    mundoDe.registrados = [];
+    const reg = registroMod.criar({ mundo, cfg: { personagem: "fulano", runtime: "local", model: "x" },
+                                    extensoes: ext, mente });
+    const decider = deciderDe();
+    await new Laco({ mundo, mente, decider, extensoes: ext, registro: reg, emitir: () => {} })
+      .sussurrar("pegue a corda");
+    return { linha: mundoDe.registrados[0], decider };
   };
-  const laco = new Laco({ mundo, mente: teimosa, extensoes: extVazio(),
-                          registro: null, emitir: c.emitir });
-  await laco.sussurrar("examine o destilador");
-  assert.ok(voltas <= 4, `a vez terminou (foram ${voltas} voltas)`);
-  assert.strictEqual(mundo.chamadas.length, 0, "e nada foi ao mundo");
-});
-
-test("060/US2: o não-match diz CONTRA O QUE comparou, não só o que foi pedido", () => {
-  // Nasceu de um custo real: ao achar o defeito do `registrarNomes`, a linha de
-  // log dizia "Nerissa, a Boticária (nada-casou)" e nada mais. Foi preciso
-  // reconstruir a tabela de candidatos à mão para ver que o candidato era o ID
-  // cru em vez do nome. Com os candidatos na linha, o diagnóstico é imediato.
-  const laco = Object.create(Laco.prototype);
-  laco.mundo = { conhece: () => true };
-  const { lista, naoResolvidas } = laco._peneira([{
-    id: "1", capacidade: "ask_directions", alvos: { quem: "Nerissa, a Boticária" },
-    naoResolvido: [{ param: "quem", referencia: "Nerissa, a Boticária",
-                     porque: "nada-casou", candidatos: ["nerissa-boticaria"] }],
-  }], null, new Set());
-  assert.strictEqual(lista.length, 0, "não vai ao mundo");
-  assert.deepStrictEqual(naoResolvidas[0].candidatos, ["nerissa-boticaria"],
-    "e o log tem contra o que comparou");
-});
-
-// --------------------------------------------------------------------------- //
-// O PLANO NASCE COM O COMPROMISSO (spec 073, T025/T027)
-// --------------------------------------------------------------------------- //
-//
-// Esta trava existe por um defeito COMETIDO nesta mesma fase: `planejar` foi
-// escrito, exportado, e chamava uma função que não existia. O `try/catch` ao redor
-// engolia o `ReferenceError`, a função devolvia "sem plano" sempre, e a suíte
-// inteira ficou verde. Código que ninguém chama, e código que ninguém vê falhar,
-// dão exatamente o mesmo resultado no jogo: nada.
-//
-// Então o que se prende aqui é a LIGAÇÃO — que o despacho de `set_intention`
-// realmente passa pelo planejar, e que o que chega ao mundo é o compromisso COM os
-// passos.
-
-test("set_intention sai para o mundo COM o plano pendurado", async () => {
-  const c = coletor();
-  const mundo = mundoDe({ respostas: [
-    { recusado: false, texto: "",
-      narrativa: { aconteceu: ["Fulano firmou um compromisso."] } },
-  ] });
-  const mente = menteDe({ propostas: [{ capacidade: "set_intention",
-                                        alvos: { content: "Matar minha fome.",
-                                                 pronto_quando: "hunger" },
-                                        prosa: { acao: "decide" } }] });
-  let pedido = null;
-  mente.planejar = async (compromisso) => {
-    pedido = compromisso;
-    return compromisso + "\n- pegar o pão\n- comer o pão";
-  };
-  const laco = new Laco({ mundo, mente, extensoes: extVazio(),
-                          registro: null, emitir: c.emitir });
-
-  await laco.sussurrar("resolva sua fome");
-
-  assert.strictEqual(pedido, "Matar minha fome.",
-    "o planejar não foi chamado no despacho do set_intention");
-  const chamada = mundo.chamadas.find((x) => x.nome === "set_intention");
-  assert.ok(chamada, "o set_intention nem saiu");
-  assert.match(chamada.args.content, /- pegar o pão/,
-    "o compromisso foi ao mundo SEM o plano — nasce sem caminho e nunca anda");
-  assert.match(chamada.args.content, /^Matar minha fome\./,
-    "o compromisso deixou de ser a 1a linha: é dela que o corpo é lido");
-});
-
-test("compromisso que JÁ vem com passos não é replanejado", async () => {
-  const c = coletor();
-  const mundo = mundoDe({ respostas: [{ recusado: false, texto: "", narrativa: {} }] });
-  const mente = menteDe({ propostas: [{ capacidade: "set_intention",
-                                        alvos: { content: "Comer.\n- pegar o pão" },
-                                        prosa: { acao: "decide" } }] });
-  let chamou = false;
-  mente.planejar = async () => { chamou = true; return "outra coisa"; };
-  const laco = new Laco({ mundo, mente, extensoes: extVazio(),
-                          registro: null, emitir: c.emitir });
-
-  await laco.sussurrar("resolva sua fome");
-
-  assert.strictEqual(chamou, false,
-    "replanejou um compromisso que já tinha plano — é uma chamada ao modelo jogada "
-    + "fora, e o plano do jogador seria sobrescrito");
-});
-
-test("planejar que falha NÃO cancela o compromisso", async () => {
-  const c = coletor();
-  const mundo = mundoDe({ respostas: [{ recusado: false, texto: "", narrativa: {} }] });
-  const mente = menteDe({ propostas: [{ capacidade: "set_intention",
-                                        alvos: { content: "Matar minha fome." },
-                                        prosa: { acao: "decide" } }] });
-  mente.planejar = async () => { throw new Error("o modelo caiu"); };
-  const laco = new Laco({ mundo, mente, extensoes: extVazio(),
-                          registro: null, emitir: c.emitir });
-
-  await laco.sussurrar("resolva sua fome");
-
-  const chamada = mundo.chamadas.find((x) => x.nome === "set_intention");
-  assert.ok(chamada, "o compromisso morreu junto com o plano — sem plano ele ainda "
-    + "fecha pelo `pronto_quando`; perdido, não fecha nunca");
-  assert.strictEqual(chamada.args.content, "Matar minha fome.");
-});
-
-// --------------------------------------------------------------------------- //
-// A RECUSA CORRIGÍVEL É MONTADA AQUI, E DIZ O NOME
-// --------------------------------------------------------------------------- //
-//
-// O mundo devolve `{campo, validos:[{id,nome}]}` como DADO; a frase para A Mente é
-// montada no conector, que é o BFF dela. Uma versão desta lógica viveu no servidor
-// preferindo o `id` e mandou "bram-pescador, coelho-do-cais" ao modelo — desfazendo
-// pela porta dos fundos o que a spec 060 tirou da face por medição.
-test("a recusa corrigível vira convite ao retry, com NOMES", async () => {
-  const c = coletor();
-  const mundo = mundoDe({ respostas: [
-    { recusado: true, texto: "'x' não é um personagem presente",
-      recusa: { campo: "de_quem",
-                validos: [{ id: "bram-pescador", nome: "Bram, o Pescador" },
-                          { id: "sorin-correio", nome: "Sorin, o Correio" }] },
-      narrativa: {} },
-  ] });
-  const mente = menteDe({ propostas: [{ capacidade: "cobrar",
-                                        alvos: { de_quem: "x" },
-                                        prosa: { acao: "cobra" } }] });
-  const laco = new Laco({ mundo, mente, extensoes: extVazio(),
-                          registro: null, emitir: c.emitir });
-
-  await laco.sussurrar("cobre dele");
-
-  const recebido = (menteDe.recebeu || []).map((r) => r.conteudo).join(" ");
-  assert.match(recebido, /Bram, o Pescador/,
-    "a Mente precisa receber o NOME para poder corrigir");
-  assert.ok(!recebido.includes("bram-pescador"),
-    "e NÃO o id — foi por isso que a 060 os tirou da face");
-  assert.match(recebido, /de_quem/, "e qual campo corrigir");
-
-  // A FRASE DE MUNDO, essa sim, é o que o jogador lê — sem o convite ao retry.
-  const recusa = c.eventos.find((e) => e.ev === "recusa");
-  assert.ok(recusa && !recusa.texto.includes("só valem"),
-    "o convite ao retry é material do MODELO, não vai à tela");
-});
-
-test("recusa de MÉRITO não ganha lista — não há o que corrigir", async () => {
-  const c = coletor();
-  const mundo = mundoDe({ respostas: [
-    { recusado: true, texto: "isso já é verdade agora", narrativa: {} },
-  ] });
-  const mente = menteDe({ propostas: [{ capacidade: "set_intention",
-                                        alvos: { content: "x" },
-                                        prosa: { acao: "firma" } }] });
-  menteDe.recebeu = [];
-  const laco = new Laco({ mundo, mente, extensoes: extVazio(),
-                          registro: null, emitir: c.emitir });
-  await laco.sussurrar("firme isso");
-  const recebido = (menteDe.recebeu || []).map((r) => r.conteudo).join(" ");
-  assert.ok(!recebido.includes("só valem"),
-    "recusa de mérito não convida retry: o mundo decidiu, e re-tentar é teimosia");
+  const a = await rodar(extVazio());
+  const raiz = fs.mkdtempSync(path.join(os.tmpdir(), "ext-"));
+  fs.mkdirSync(path.join(raiz, "prompts"));
+  fs.writeFileSync(path.join(raiz, "prompts", "c6_tool.txt"), "Que ferramenta, afinal?");
+  fs.writeFileSync(path.join(raiz, "prompts", "objetivos.txt"), "Liste o que ele quer.");
+  const b = await rodar(extensoes.criar(raiz));
+  assert.strictEqual(a.linha.versao_prompt, "padrao");
+  assert.match(b.linha.versao_prompt, /^tunado-/, "a mesa tunada não se distingue no envelope");
+  const c3a = a.linha.corpo.caixas.find((c) => c.box === "C3").prompt_versao;
+  const c3b = b.linha.corpo.caixas.find((c) => c.box === "C3").prompt_versao;
+  assert.notStrictEqual(c3a, c3b, "o C3 tunado gravou a mesma versão do padrão");
 });

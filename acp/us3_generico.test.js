@@ -52,14 +52,6 @@ test("US3 — uma sequência completa de turno (proposta -> desfecho) valida do 
   assert.equal(passos[1].update.status, "completed");
 });
 
-test("US3 — a falha de emissão (item 78) também valida contra o schema, com status 'failed'", () => {
-  const envelope = notificacao("session/update",
-    traduzir("tentativa_falha_emissao", { toolCallId: "tc-2", nomeSuspeito: "ask_about" },
-             "sess-generico-0001"));
-  assert.equal(valido(envelope), true, errosDeSchema(envelope).join("; "));
-  assert.equal(envelope.params.update.status, "failed");
-});
-
 test("US3 — um evento fora de banda (sem sessionId) não produz session-update — " +
      "um cliente genérico nunca vê um envelope quebrado", () => {
   assert.equal(traduzir("sala", { nome: "Taverna" }, null), null);

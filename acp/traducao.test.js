@@ -64,37 +64,6 @@ test("US1 — recusa do mundo também produz status 'completed', nunca 'failed' 
     "se este teste falhar porque alguém trocou para 'failed', é regressão da Decisão 2b");
 });
 
-test("US1 — item 78: falha de emissão bate com contracts/02 (nasce e morre 'failed')", () => {
-  const [falhou] = lerFixture("02-tentativa-falha-item78.json");
-  const params = traduzir("tentativa_falha_emissao", {
-    toolCallId: "tc-falha-0042", nomeSuspeito: "ask_about",
-  }, SESSION_ID);
-  assert.deepEqual(params, falhou.params);
-});
-
-test("US1 — falha de emissão NUNCA usa o texto de recusa do mundo (não confundir os dois)", () => {
-  const params = traduzir("tentativa_falha_emissao",
-    { toolCallId: "tc-1", nomeSuspeito: "ask_about" }, SESSION_ID);
-  const texto = params.update.content[0].content.text;
-  assert.equal(/Coppo|não quis/.test(texto), false);
-  assert.equal(params.update.status, "failed");
-});
-
-test("US2 — traduzir('pensamento', ...) bate com contracts/03", () => {
-  const [esperado] = lerFixture("03-pensamento.json");
-  const params = traduzir("pensamento", {
-    toolCallId: "tc-0091",
-    pensamento: "O lobo já está ferido e a matilha se afastou — é a abertura mais " +
-                "segura para encerrar a ameaça sem arriscar outro confronto.",
-  }, SESSION_ID);
-  assert.deepEqual(params, esperado.params);
-});
-
-test("US2 — pensamento vazio (rotina 'narrar') não produz notificação", () => {
-  assert.equal(traduzir("pensamento", { toolCallId: "tc-1", pensamento: "" }, SESSION_ID), null);
-  assert.equal(traduzir("pensamento", { toolCallId: "tc-1" }, SESSION_ID), null);
-});
-
 test("US2 — traduzir('rotina_ativa'/'rotina_ociosa', ...) bate com contracts/04", () => {
   const [refletirRunning, idleEndTurn, interpretarRunning] = lerFixture("04-rotina-ativa.json");
   assert.deepEqual(

@@ -130,29 +130,14 @@ function fetchFalso(texto = "narrado") {
 // 1. O RAMO QUE NINGUÉM TESTAVA — e que parou o Draven por 6h30
 // --------------------------------------------------------------------------- //
 
-test("deriveWhisper COM compromisso ativo monta o payload sem estourar", async () => {
-  configuracao.carregar(true);
-  const espia = fetchFalso("{}");
-  try {
-    // Antes do conserto, isto lançava `ReferenceError: _self is not defined` ao montar
-    // `itens_que_possuo`, ANTES de qualquer fetch — exatamente o que matou os 321 ticks.
-    await Mente.deriveWhisper(copia({ intentions: COMPROMISSO }));
-  } finally {
-    espia.restaurar();
-  }
-});
-
-test("deriveWhisper SEM compromisso continua determinístico e não chama modelo",
-     async () => {
-  configuracao.carregar(true);
-  const espia = fetchFalso();
-  try {
-    const d = await Mente.deriveWhisper(copia({ intentions: [] }));
-    assert.strictEqual(d.rotina, "refletir");
-    assert.strictEqual(espia.chamadas, 0,
-      "o ramo da reflexão passou a chamar o modelo — ele é para ser determinístico");
-  } finally {
-    espia.restaurar();
+// SPEC 075: o `deriveWhisper` (a autonomia) MORREU; quem lê o contexto agora é o
+// harness (C1/C4/C8/C8D por regra) e o C3 (a prosa da cena). O `_self is not defined`
+// de 2026-09-06 continua sendo o defeito a pegar — na montagem, antes de qualquer fetch.
+test("o C3 monta a cena em prosa sem estourar, com e sem desejo ativo", async () => {
+  const H = require("../harness");
+  for (const c of [copia(), copia({ intentions: COMPROMISSO })]) {
+    const u = await H.objectives.userOf(Mente, c, "pegue a caneca");
+    assert.match(u, /INSTRUÇÃO: pegue a caneca/);
   }
 });
 
@@ -167,81 +152,6 @@ test("narrate monta o payload sem estourar", async () => {
   } finally {
     espia.restaurar();
   }
-});
-
-test("o AUTONOMY_SYSTEM só cobra chaves que o payload realmente manda", async () => {
-  // O prompt de autonomia manda a Mente ler campos POR NOME ("consulte as `capacidades`",
-  // "Leia a `necessidade`"), e o código diz, num comentário, que o payload "é
-  // incrementado para expor as chaves exatas que o prompt cobra". Só que ninguém
-  // conferia, e em 2026-09-07 duas não casavam:
-  //
-  //   - `livro_de_regras` — o prompt mandava consultar o livro; a lista chega como
-  //     `capacidades`. Resíduo do portal da spec 036, aposentado pela 043.
-  //   - "seu status de sobrevivência" — anunciado na abertura, mas `status_sobrevivencia`
-  //     foi REMOVIDO do payload (era constante zero e o modelo lia o zero como urgência).
-  //
-  // Pedir por um nome que não chega é pior que não pedir: o modelo procura, não acha, e
-  // preenche o buraco com o que inventar.
-  configuracao.carregar(true);
-  const espia = fetchFalso("{}");
-  let corpo = null;
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (u, o) => {
-    if (!corpo) corpo = JSON.parse((o && o.body) || "{}");
-    return originalFetch(u, o);
-  };
-  try {
-    // com compromisso ativo, para cair no ramo que monta o payload de autonomia
-    await Mente.deriveWhisper(copia({ intentions: COMPROMISSO }));
-  } finally {
-    globalThis.fetch = originalFetch;
-    espia.restaurar();
-  }
-  assert.ok(corpo, "não capturei o pedido de autonomia");
-  const sys = (corpo.messages.find((m) => m.role === "system") || {}).content || "";
-  const usr = (corpo.messages.find((m) => m.role === "user") || {}).content || "";
-  const payload = JSON.parse(usr.slice(usr.indexOf("{")));
-
-  // toda `chave` em crase no system tem de existir no payload (aceita um nível: `a.b`)
-  const citadas = [...new Set((sys.match(/`([a-z_.]+)`/g) || [])
-    .map((s) => s.replace(/`/g, "")))];
-
-  // AS CHAVES DENTRO DE LISTA também contam. `intencoes` é um array de objetos, e o
-  // prompt cita `o_que`/`passos_cumpridos`/`parada` — que SÃO chaves que o payload
-  // manda, só que um nível abaixo. Sem isto a trava reprovaria o prompt por cobrar
-  // exatamente o que ele deve cobrar.
-  const dentroDeLista = new Set();
-  for (const v of Object.values(payload)) {
-    if (Array.isArray(v)) {
-      for (const item of v) {
-        if (item && typeof item === "object") {
-          Object.keys(item).forEach((k) => dentroDeLista.add(k));
-        }
-      }
-    }
-  }
-
-  // VOCABULÁRIO, não campo: nome de tool e valor de enum aparecem em crase de
-  // propósito — "chame `set_intention` com status `abandonada`" é instrução legítima,
-  // e `content`/`pronto_quando` são PARÂMETROS dela. A trava existe contra cobrar um
-  // CAMPO que o payload não manda (o caso de `livro_de_regras` e
-  // `status_sobrevivencia`), não contra o prompt saber o nome das coisas.
-  const vocabulario = new Set(["set_intention", "ativa", "concluida", "abandonada",
-                               "hunger", "thirst", "sleep", "content",
-                               "pronto_quando", "status", "intention_id"]);
-
-  const semDono = citadas.filter((k) => {
-    if (vocabulario.has(k) || dentroDeLista.has(k)) return false;
-    const [a, b] = k.split(".");
-    if (!(a in payload)) return true;
-    return b ? !(b in (payload[a] || {})) : false;
-  });
-  assert.deepStrictEqual(semDono, [],
-    "o prompt de autonomia cobra chave que o payload não manda: " + semDono.join(", "));
-  assert.doesNotMatch(sys, /status de sobreviv/i,
-    "o prompt voltou a anunciar `status_sobrevivencia`, que não existe no payload");
-  assert.doesNotMatch(sys, /livro_de_regras/,
-    "o prompt voltou a chamar as `capacidades` de `livro_de_regras`");
 });
 
 test("a necessidade chega à Mente com rótulo em PORTUGUÊS", async () => {
@@ -272,33 +182,6 @@ test("a necessidade chega à Mente com rótulo em PORTUGUÊS", async () => {
     "outra chave crua de `needs` vazou para o prompt");
 });
 
-test("resposta de autonomia com FORMA inesperada não derruba o turno", async () => {
-  // O prompt de autonomia pede `acoes_declaradas` como ARRAY. O modelo às vezes manda
-  // string — e a linha de auditoria fazia `.join` sem checar, matando o turno inteiro
-  // por causa de um log. Medido no Draven: 3 de 265 turnos (~1%).
-  //
-  // O que vem do modelo é DADO, não promessa de forma. Este teste cobre as três formas
-  // que já apareceram, e a de array, que é a esperada.
-  configuracao.carregar(true);
-  for (const acoes of ['"uma string só"', '["a","b"]', "null", "42"]) {
-    const original = globalThis.fetch;
-    globalThis.fetch = async () => ({
-      ok: true, headers: { get: () => "application/json" },
-      json: async () => ({
-        message: { content: `{"agir":true,"racional":"porque sim",`
-          + `"acoes_declaradas":${acoes},"sussurro":"ele age"}`, tool_calls: [] },
-        prompt_eval_count: 10, eval_count: 5,
-      }),
-    });
-    try {
-      const d = await Mente.deriveWhisper(copia({ intentions: COMPROMISSO }));
-      assert.ok(d, `acoes_declaradas=${acoes} não devolveu decisão`);
-    } finally {
-      globalThis.fetch = original;
-    }
-  }
-});
-
 // --------------------------------------------------------------------------- //
 // spec 070 — o TRABALHO PARADO na prosa
 // --------------------------------------------------------------------------- //
@@ -317,32 +200,11 @@ const COM_PECA = (started_by) => {
   return c;
 };
 
-// A CENA EM PROSA sai pelo `interpret` (o caminho do sussurro), não pelo `deriveWhisper`
-// — a autonomia continua em JSON de propósito (ver o comentário de `_cenaEmProsa`).
-// Errar isso foi o primeiro defeito deste teste, e o comentário fica para o próximo.
+// A CENA EM PROSA sai pelo C3 (`harness/objectives.js::userOf`) — a mesma que o jogo
+// manda à Mente (spec 075).
 async function prosaDe(contexto) {
-  Mente.usarMundo({
-    listarCapacidades: async () => [
-      { name: "craft", description: "Cria ou continua algo.",
-        inputSchema: { type: "object", properties: {} } },
-    ],
-    chamarCapacidade: async () => ({ recusado: false, texto: "", narrativa: {} }),
-  });
-  Mente.usarExtensoes({ toolsLocais: () => [], ehLocal: () => false,
-                        hook: async (_p, d) => d });
-  const vistos = [];
-  const original = globalThis.fetch;
-  globalThis.fetch = async (_u, o) => {
-    const corpo = JSON.parse((o && o.body) || "{}");
-    (corpo.messages || []).forEach((m) => vistos.push(String(m.content || "")));
-    return { ok: true, headers: { get: () => "application/json" },
-             json: async () => ({ message: { content: "", tool_calls: [] },
-                                  prompt_eval_count: 1, eval_count: 1 }) };
-  };
-  try {
-    await Mente.interpret("olhe em volta", contexto, () => {}, {});
-  } finally { globalThis.fetch = original; }
-  return vistos.join("\n");
+  const H = require("../harness");
+  return H.objectives.userOf(Mente, contexto, "olhe em volta");
 }
 
 test("070: o trabalho DELE ganha linha própria, com o verbo de retomada", async () => {
@@ -383,8 +245,14 @@ test("os consumidores aguentam um contexto MÍNIMO sem quebrar", async () => {
   configuracao.carregar(true);
   const espia = fetchFalso("{}");
   try {
-    await Mente.deriveWhisper({});
+    const H = require("../harness");
     await Mente.narrate("algo", {}, [], [], [], [], [], null);
+    await H.objectives.userOf(Mente, {}, "algo");
+    H.scene.sceneIndex({});
+    H.scene.labels({});
+    H.progress.stateSignature({});
+    H.progress.newKnowledge({}, {});
+    H.ending.isDone(H.ending.extractEnding("fome saciada"), {});
   } finally {
     espia.restaurar();
   }
@@ -399,7 +267,10 @@ test("os consumidores aguentam um contexto MÍNIMO sem quebrar", async () => {
 // `undefined`, e a tela mostrou "zero memórias" para um personagem com 38. Falha
 // silenciosa é pior que exceção — por isso ela é procurada ESTATICAMENTE aqui.
 
-const FONTES = ["mente.js", "laco.js", "mundo.js"]
+const FONTES = ["mente.js", "laco.js", "mundo.js",
+                "harness/scene.js", "harness/target.js", "harness/progress.js",
+                "harness/ending.js", "harness/objectives.js", "harness/plan.js",
+                "harness/params.js", "harness/desire.js"]
   .map((f) => path.join(__dirname, "..", f))
   .filter((p) => fs.existsSync(p));
 
@@ -417,10 +288,7 @@ const FONTES = ["mente.js", "laco.js", "mundo.js"]
 // descrição, `alvos_possiveis` e `exige`. Fica registrado porque a lição é do tipo que
 // se repete — ausência de escrita em UM repositório não é ausência no sistema.
 const MORTAS_CONHECIDAS = {
-  "mente.js: character_id": (
-    "Fallback defensivo em `interpret`: `(context.self && context.self.id) || "
-    + "context.character_id`. O lado esquerdo é o contrato e sempre vence; o direito é "
-    + "resto de um formato anterior. Inofensivo, mas é código morto."),
+  // (vazia desde a spec 075: o fallback `context.character_id` morreu com o `interpret`)
 };
 
 // OS CAMPOS DE SEGUNDO NÍVEL. Copiados da saída real de `get_context`

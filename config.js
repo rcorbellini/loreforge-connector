@@ -75,14 +75,21 @@ const DEFAULTS = {
   sala: null,
   canal: 8899,
   log: true,
-  // O MODELO DE EMBEDDING é OPCIONAL (spec 060, US2), e vazio de propósito.
-  //
-  // Ele serve à camada SEMÂNTICA da resolução de alvo — a que recupera paráfrase
-  // ("a mulher que vende água" -> odila-aguadeira) quando a camada literal não
-  // casou. Sem ele o conector resolve menos e REJEITA mais, e diz isso: não é o
-  // fallback silencioso que o Princípio VIII proíbe, é uma camada a menos,
-  // declarada. Quem quiser: `ollama pull nomic-embed-text` e aponte aqui.
-  embeddingModel: "",
+  // O DECISOR (Jev) — spec 075, research R2. Escolhe tool e ids lendo a LETRA da opção
+  // (logprobs), 0 token pago. É RUNTIME TRAZIDO PELO JOGADOR como a Mente: sem ele o
+  // turno para (Princípio VIII), e o `check()` cobra os dois antes de jogar. O default é o
+  // MESMO modelo da Mente, no Ollama local: trocar de modelo na VRAM de 8 GB custa mais
+  // que a chamada. `runtime: "semif"` aponta para o SemIf (`/v1/decide`).
+  decisor: { runtime: "ollama", endpoint: "http://localhost:11434", model: "qwen3:8b" },
+  // OS LIMIARES DO HARNESS (spec 075, FR-025) — do ecossistema do personagem, e por isso
+  // parametrizáveis por mesa. Os defaults são os medidos (B8, caso 2).
+  harness: {
+    abordagens: 3,             // abordagens distintas sem progresso até BLOCKED
+    repeticoes: 3,             // o mesmo verbo+alvo no passo até BLOCKED (teimosia)
+    tetoTokensDesejo: 8000,    // tokens pagos num desejo até BLOCKED por custo
+    janelaIntervencaoTicks: 1, // ticks esperando o sussurro do jogador num BLOCKED
+    losangosJev: "sombra",     // desligado | sombra | ligado (só depois da bateria B15)
+  },
 };
 
 // O JWT do jogador pareado (spec 056) e credencial igual as outras: quem o
@@ -136,6 +143,10 @@ function _montar(bruto) {
     if (SEGREDOS.includes(k)) continue;
     cfg[k] = v;
   }
+  // seções-objeto: o que o arquivo não diz vem do default (um conector.json antigo não
+  // tem `decisor` nem `harness`, e um parcial não pode apagar o resto)
+  cfg.decisor = { ...DEFAULTS.decisor, ...((migrado && migrado.decisor) || {}) };
+  cfg.harness = { ...DEFAULTS.harness, ...((migrado && migrado.harness) || {}) };
   for (const nome of SEGREDOS) {
     Object.defineProperty(cfg, nome, {
       value: migrado[nome] || _vazioDe(nome),
@@ -240,7 +251,8 @@ function paraPagina(cfg) {
     remoteModel: c.remoteModel,
     openrouterModel: c.openrouterModel, openrouterEndpoint: c.openrouterEndpoint,
     geminiModel: c.geminiModel,
-    embeddingModel: c.embeddingModel,
+    decisor: { ...DEFAULTS.decisor, ...(c.decisor || {}) },
+    harness: { ...DEFAULTS.harness, ...(c.harness || {}) },
     temChaveAnthropic: !!c.apiKey,
     temChaveOpenrouter: !!c.openrouterKey,
     temChaveGemini: !!c.geminiKey,
@@ -280,6 +292,24 @@ function aplicar(cfg, vindo) {
     cfg.mundoPublico = vindo.mundoPublico.trim();
   }
   if (Number(vindo.canal)) cfg.canal = Number(vindo.canal);
+  // o decisor e os limiares do harness chegam como objetos; campo ausente não apaga
+  if (vindo.decisor && typeof vindo.decisor === "object") {
+    const d = { ...(cfg.decisor || DEFAULTS.decisor) };
+    for (const k of ["runtime", "endpoint", "model"]) {
+      if (typeof vindo.decisor[k] === "string" && vindo.decisor[k].trim()) d[k] = vindo.decisor[k].trim();
+    }
+    cfg.decisor = d;
+  }
+  if (vindo.harness && typeof vindo.harness === "object") {
+    const h = { ...(cfg.harness || DEFAULTS.harness) };
+    for (const k of ["abordagens", "repeticoes", "tetoTokensDesejo", "janelaIntervencaoTicks"]) {
+      if (Number(vindo.harness[k]) > 0) h[k] = Number(vindo.harness[k]);
+    }
+    if (["desligado", "sombra", "ligado"].includes(vindo.harness.losangosJev)) {
+      h.losangosJev = vindo.harness.losangosJev;
+    }
+    cfg.harness = h;
+  }
   if (typeof vindo.apiKey === "string" && vindo.apiKey.trim()) {
     cfg.apiKey = vindo.apiKey.trim();
   }

@@ -21,30 +21,6 @@ function _textoContent(texto) {
   return [{ type: "content", content: { type: "text", text: texto } }];
 }
 
-// --- o rascunho bruto (agent_thought_chunk) ------------------------------------ //
-//
-// `intencao_inicio/intencao/intencao_fim` é o "pensando em voz alta" ANTES de a
-// proposta existir de forma parseável — por isso não tem `toolCallId` (T016-T019: só
-// nasce quando `p.id` existe). Mapeia para `agent_thought_chunk`, não `tool_call_
-// update` (revisão registrada em `contracts/README.md`, "O que mudou"). FR-003: o
-// CLIENT é quem decide colapsar/preservar ao fim do turno — o protocolo não apaga
-// nada, só para de emitir chunks novos.
-
-function _rascunho(evento, dados, sessionId) {
-  const messageId = `rascunho-${dados.numeroTurno || "atual"}`;
-  if (evento === "intencao_inicio") {
-    return _su(sessionId, "agent_thought_chunk",
-      { messageId, content: { type: "text", text: "" } });
-  }
-  if (evento === "intencao") {
-    return _su(sessionId, "agent_thought_chunk",
-      { messageId, content: { type: "text", text: dados.pedaco || "" } });
-  }
-  // intencao_fim não precisa de notificação própria: o próximo evento (a tentativa
-  // despachada, ou o fim do turno) já indica que o rascunho encerrou.
-  return null;
-}
-
 // --- o ciclo de vida da tentativa (tool_call_update) --------------------------- //
 
 function _tentativa(evento, dados, sessionId) {
@@ -81,21 +57,6 @@ function _tentativa(evento, dados, sessionId) {
       content: _textoContent(dados.texto),
     });
   }
-  if (evento === "tentativa_falha_emissao") {
-    // O item 78: nasce e já morre no mesmo upsert (contracts/02, "O que mudou").
-    return _su(sessionId, "tool_call_update", {
-      toolCallId: dados.toolCallId,
-      name: dados.nomeSuspeito || null,
-      title: "Uma tentativa começou a ser composta e não se completou.",
-      kind: dados.nomeSuspeito ? kindDe(dados.nomeSuspeito) : "other",
-      status: "failed",
-      content: _textoContent(
-        "A tentativa não chegou a se completar — a resposta do modelo terminou de " +
-        "forma incompleta antes de a ação ficar pronta. Não é uma recusa do mundo " +
-        "nem uma decisão do personagem de não agir."),
-      _meta: { causa: "emissao_malformada" },
-    });
-  }
   return null;
 }
 
@@ -116,15 +77,59 @@ function _rotina(evento, dados, sessionId) {
   return null;
 }
 
-// --- o pensamento já extraído (agent_thought) — FR-015 ------------------------- //
+// --- o harness por objetivos (spec 075, contrato 02) ---------------------------- //
+//
+// DUAS CAMADAS, e a marca é o que o client lê para decidir o que abre:
+//   · VISÍVEL — a Mente em 1ª pessoa (`objetivos`) e os rótulos NEUTROS do harness
+//     (`harness`: "procurando onde está a caneca…"). Sem número, id ou nome de tool
+//     (FR-021, Princípio V).
+//   · BASTIDOR — o que o resolvedor decidiu (tool, alvos, margem, motivo de subida).
+//     Vai marcado `_meta.camada: "bastidor"`, e o client o mostra RECOLHIDO e só
+//     leitura: não é menu, não decide nada (o mesmo gate da 074 para `name`).
 
-function _pensamento(evento, dados, sessionId) {
-  if (evento !== "pensamento") return null;
-  if (!dados.pensamento) return null;   // nem toda rotina produz um (ex.: narrar)
-  return _su(sessionId, "agent_thought", {
-    messageId: `thought-${dados.toolCallId || dados.numeroTurno || "atual"}`,
-    content: [{ type: "text", text: dados.pensamento }],
-  });
+function _harness(evento, dados, sessionId) {
+  if (evento === "objetivos") {
+    if (!dados.texto) return null;
+    return _su(sessionId, "agent_thought", {
+      messageId: `objetivos-${dados.numeroTurno || Date.now()}`,
+      content: [{ type: "text", text: dados.texto }],
+      _meta: { camada: "visivel", rotina: "objetivos" },
+    });
+  }
+  if (evento === "harness") {
+    if (!dados.texto) return null;
+    return _su(sessionId, "agent_thought_chunk", {
+      messageId: `harness-${dados.numeroTurno || "atual"}-${dados.box || ""}-${Date.now()}`,
+      content: { type: "text", text: dados.texto },
+      _meta: { camada: "visivel", box: dados.box || null },
+    });
+  }
+  if (evento === "bastidor") {
+    const { box, numeroTurno, personagem, escopo, ...resto } = dados;
+    return _su(sessionId, "agent_thought_chunk", {
+      messageId: `bastidor-${numeroTurno || "atual"}-${box || ""}-${Date.now()}`,
+      content: { type: "text", text: JSON.stringify(resto) },
+      _meta: { camada: "bastidor", box: box || null, dados: resto },
+    });
+  }
+  if (evento === "plano") {
+    // schema v2: `plan_update` com o plano INTEIRO a cada vez (o client substitui).
+    return _su(sessionId, "plan_update", {
+      plan: { type: "items", planId: dados.planId || "desejo",
+              entries: (dados.entries || []).map((e) => ({
+                content: e.content, priority: "medium", status: e.status || "pending" })) },
+      _meta: { desejo: dados.desejo || null },
+    });
+  }
+  if (evento === "bloqueio") {
+    if (!dados.texto) return null;
+    return _su(sessionId, "agent_message", {
+      messageId: `bloqueio-${Date.now()}`,
+      content: [{ type: "text", text: dados.texto }],
+      _meta: { intervencao: true, motivo: dados.motivo || null },
+    });
+  }
+  return null;
 }
 
 // --- a narração final (agent_message_chunk) ------------------------------------ //
@@ -191,23 +196,6 @@ function _sistema(evento, dados, sessionId) {
   });
 }
 
-// --- a decisão autônoma (decidiu) ----------------------------------------------- //
-//
-// O sussurro que a autonomia produziu é a MESMA trilha de uma tentativa proposta
-// manualmente — só a origem (`_meta.rotina: "autonomia"`) diferencia. Reusa `_tentativa`
-// via o evento `"tentativa"` que `laco.js` já emite depois de `decidiu` (autonomia
-// sempre desemboca num `_executar` como qualquer outra vez) — este evento em si vira
-// só um `agent_message_chunk` avulso com o sussurro decidido, para o cliente saber
-// QUE frase a autonomia escolheu, antes de ver as tentativas que ela gera.
-
-function _decidiu(evento, dados, sessionId) {
-  if (evento !== "decidiu") return null;
-  return _su(sessionId, "agent_thought", {
-    messageId: `decidiu-${dados.numeroTurno || Date.now()}`,
-    content: [{ type: "text", text: dados.texto || "" }],
-  });
-}
-
 // --- onde ele está (local) -------------------------------------------------------- //
 //
 // FR-016/Princípio V/IX de novo aqui, do jeito certo: `breadcrumb` é PROSA — nomes de
@@ -238,14 +226,12 @@ function traduzir(evento, dados, sessionId) {
   if (!sessionId) return null;
   const d = dados || {};
   return (
-    _rascunho(evento, d, sessionId) ||
     _tentativa(evento, d, sessionId) ||
     _rotina(evento, d, sessionId) ||
-    _pensamento(evento, d, sessionId) ||
+    _harness(evento, d, sessionId) ||
     _narracao(evento, d, sessionId) ||
     _paralelo(evento, d, sessionId) ||
     _sistema(evento, d, sessionId) ||
-    _decidiu(evento, d, sessionId) ||
     _local(evento, d, sessionId) ||
     null
   );

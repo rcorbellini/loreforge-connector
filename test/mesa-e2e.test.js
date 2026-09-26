@@ -93,17 +93,18 @@ const ollama = http.createServer((req, res) => {
     if (u.pathname === "/api/tags") return j({ models: [{ name: "llama3.1:8b" }] });
     if (u.pathname === "/api/chat") {
       const body = JSON.parse(corpo);
-      // com `tools` é a chamada de ESCOLHA; sem, é a narração
-      if (body.tools && body.tools.length) {
+      // spec 075: três chamadas distintas passam por aqui.
+      //  · o DECISOR (logprobs, 1 token): responde a letra A;
+      //  · a Mente nos OBJETIVOS (C3, sem tools): um objetivo com o alvo pelo nome;
+      //  · a Mente na NARRAÇÃO.
+      if (body.logprobs) {
         rodada++;
-        // primeira rodada propõe; as seguintes encerram (senão o laço continua)
-        if (rodada % 2 === 1) {
-          return j({ message: { content: "",
-            tool_calls: [{ function: { name: "take",
-              arguments: { alvo: "Corda Velha", prosa: { acao: "estica a mão" } } } }] },
-            prompt_eval_count: 100, eval_count: 20 });
-        }
-        return j({ message: { content: "" }, prompt_eval_count: 50, eval_count: 5 });
+        return j({ message: { content: "A" }, prompt_eval_count: 40, eval_count: 1,
+                   logprobs: [{ top_logprobs: [{ token: "A", logprob: -0.01 }, { token: "B", logprob: -5 }] }] });
+      }
+      const sys = (body.messages && body.messages[0] && body.messages[0].content) || "";
+      if (/OBJETIVOS/.test(sys)) {
+        return j({ message: { content: "- Pegar a Corda Velha" }, prompt_eval_count: 100, eval_count: 20 });
       }
       return j({ message: { content: "Você fecha a mão na corda áspera." },
                  prompt_eval_count: 80, eval_count: 12 });
@@ -121,7 +122,9 @@ test("072: dois turnos REAIS pela fila, cada um com o JWT do seu dono", async ()
   const cfgPath = path.join(SP, "e2e.json");
   fs.writeFileSync(cfgPath, JSON.stringify({
     mundo: `http://127.0.0.1:${pMundo}`, canal: 0, runtime: "local",
-    endpoint: `http://127.0.0.1:${pOllama}`, model: "llama3.1:8b" }), "utf8");
+    endpoint: `http://127.0.0.1:${pOllama}`, model: "llama3.1:8b",
+    decisor: { runtime: "ollama", endpoint: `http://127.0.0.1:${pOllama}`, model: "llama3.1:8b" } }), "utf8");
+  process.env.LOREFORGE_HARNESS_DIR = path.join(SP, "harness");
   process.env.LOREFORGE_CONFIG = cfgPath;
   process.env.LOREFORGE_LOG = "0";
 

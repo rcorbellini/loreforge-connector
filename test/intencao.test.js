@@ -1,23 +1,14 @@
-// O CICLO DO COMPROMISSO, DO LADO DA MENTE (spec 073) — trava de regressão.
+// O CICLO DO DESEJO, DO LADO DO HARNESS (spec 075, US4) — trava de regressão.
 //
-// POR QUE ESTE ARQUIVO EXISTE, e por que não bastou estender `contrato.test.js`.
+// Desde a opção 2 (25/09), o desejo é GUARDADO pelo world e DECIDIDO pelo harness. Este
+// arquivo prende as peças que decidem, uma a uma, sem modelo:
 //
-// A 073 acrescentou TRÊS coisas ao que desce para o modelo, e todas são invisíveis a
-// olho nu se vazarem:
-//
-//   · o PROGRESSO (`passos_cumpridos`) — sem ele o prompt de executar não tem como
-//     separar o feito do faltante, e o personagem refaz o passo que já deu. Foi
-//     medido: o `llama3.1:8b` não sabe em que passo está, refaz e desfaz
-//     (`medicoes.md` §5);
-//   · a PARADA em RÓTULO — o relógio de estagnação é NÚMERO no `.md` e tem de chegar
-//     como texto. Um `parada_desde` cru na tela é o Princípio V furado, e nenhum
-//     teste de forma pegaria: é um inteiro num objeto que já tem inteiros;
-//   · o PLANEJAR como chamada SEPARADA da de firmar. Juntas mediram 0/9 (item 38):
-//     o modelo escreve o compromisso OU o plano, nunca os dois na mesma resposta.
-//
-// O `contrato.test.js` guarda a FORMA do contexto (que chaves existem). Este guarda o
-// CICLO (o que a Mente faz com elas). São coisas diferentes, e misturá-las faria o
-// arquivo do contrato crescer para todo lado.
+//   · a PROSA da intenção (desejo + passos + "Pronto quando") vai e volta sem perda;
+//   · o CADERNO nunca contradiz o world (arquiva o que fechou, re-deriva o que mudou);
+//   · o C8 separa progresso de ciclo, e bloqueia por exaustão (B8: 24/24);
+//   · o C8D confere as quatro famílias de fim (B11: 32/32);
+//   · o C3P rejeita o plano que fala consigo ou abre com o que não está aqui (caso 2);
+//   · a rotina escolhe modelo e `think` no CORPO da requisição (item 79).
 
 "use strict";
 
@@ -29,283 +20,217 @@ const path = require("path");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "intencao-"));
 process.env.LOREFORGE_CONFIG = path.join(TMP, "conector.json");
+process.env.LOREFORGE_HARNESS_DIR = path.join(TMP, "harness");
 process.env.LOREFORGE_LOG = "0";
 
 const configuracao = require("../config");
 const Mente = require("../mente").criarMente();
+const H = require("../harness");
 
-// `planejar` lê a FACE da cena (os verbos que o mundo oferece) — sem mundo não há
-// verbo, e ele devolve `null` sem chamar modelo nenhum. Um mundo falso basta.
-Mente.usarMundo({
-  listarCapacidades: async () => [
-    { name: "take", description: "Pega algo.", inputSchema: { type: "object" } },
-    { name: "eat", description: "Come algo.", inputSchema: { type: "object" } },
-  ],
-  chamarCapacidade: async () => ({ texto: "", narrativa: {}, recusado: false }),
-  contexto: async () => copia(),
+// --------------------------------------------------------------------------- //
+// 1. A prosa da intenção
+// --------------------------------------------------------------------------- //
+
+test("a intenção em prosa vai e volta: desejo, passos e fim", () => {
+  const c = H.desire.formatContent("Conseguir o Ungüento de Arnica do Obadiah",
+    ["Ir até o Obadiah", "Comprar o Ungüento"], "posse de Ungüento de Arnica");
+  assert.match(c, /^Conseguir o Ungüento de Arnica do Obadiah\.\n- Ir até o Obadiah\n- Comprar o Ungüento\nPronto quando: posse de Ungüento de Arnica\.$/);
+  const p = H.desire.parseContent(c);
+  assert.strictEqual(p.desejo, "Conseguir o Ungüento de Arnica do Obadiah");
+  assert.deepStrictEqual(p.passos, ["Ir até o Obadiah", "Comprar o Ungüento"]);
+  assert.strictEqual(p.fim, "posse de Ungüento de Arnica");
 });
 
-// O compromisso COM plano e COM progresso — a forma que a spec 073 cravou.
-const COMPROMISSO = [{
-  id: "int-1", status: "ativa",
-  content: "Matar minha fome.\n- pegar o pão de centeio\n- comer o pão de centeio",
-  pronto_quando: "hunger", passos_cumpridos: 1,
-  parada: "há algumas voltas sem andar",
-}];
+test("fim 'nenhum' não vira linha de 'Pronto quando' — fecha por vontade", () => {
+  const c = H.desire.formatContent("Fazer as pazes com a Elga", ["Falar com a Elga"], "nenhum");
+  assert.ok(!/Pronto quando/.test(c));
+});
 
-const CONTEXTO = {
-  self: {
-    id: "fulano", name: "Fulano", prose: "Um sujeito qualquer.",
-    status: { location: "praca", action: "espera", mood: "calmo", conditions: [] },
-    body: {}, inventory: [], memories: [], intentions: COMPROMISSO,
-    carencias: [{ o_que: "matar minha fome", porque: "está faminto",
-                  pronto_quando: "hunger" }],
-  },
-  scene: { location: { id: "praca", name: "Praça", prose: "Uma praça." },
-           characters: [], objects: [], items: [], routes: [] },
-  capacidades: [],
+test("a intenção ANTIGA (spec 073, sem 'Pronto quando') ainda é lida — o pronto_quando legado vira o fim", () => {
+  const nb = new H.desire.Notebook("legado");
+  const d = nb.sync([{ id: "int-9", status: "ativa", pronto_quando: "hunger",
+                       content: "Matar minha fome.\n- pegar o pão\n- comer o pão" }]);
+  assert.deepStrictEqual(d.passos, ["pegar o pão", "comer o pão"]);
+  assert.strictEqual(d.fim.familia, "necessidade");
+  assert.strictEqual(d.fim.fonte, "prosa");   // o legado 'hunger' é traduzido para a família
+});
+
+// --------------------------------------------------------------------------- //
+// 2. O caderno nunca contradiz o world
+// --------------------------------------------------------------------------- //
+
+test("o caderno ARQUIVA o desejo que o world não tem mais como ativo", () => {
+  const nb = new H.desire.Notebook("arquiva");
+  nb.sync([{ id: "int-1", status: "ativa", content: "A.\n- x" }]);
+  nb.sync([]);
+  assert.strictEqual(nb.ativo(), null);
+  assert.ok(nb.dados.arquivados["int-1"]);
+});
+
+test("o caderno RE-DERIVA passos e zera o passo quando o jogador edita o content", () => {
+  const nb = new H.desire.Notebook("edita");
+  let d = nb.sync([{ id: "int-2", status: "ativa", content: "A.\n- x\n- y" }]);
+  d.passo_atual = 1;
+  nb.salvar();
+  d = nb.sync([{ id: "int-2", status: "ativa", content: "A.\n- z" }]);
+  assert.deepStrictEqual(d.passos, ["z"]);
+  assert.strictEqual(d.passo_atual, 0);
+});
+
+test("o caderno SOBREVIVE ao processo (arquivo 0600) — e sem ele, re-deriva do world", () => {
+  const a = new H.desire.Notebook("persiste");
+  a.sync([{ id: "int-3", status: "ativa", content: "A.\n- x\n- y" }]);
+  a.get("int-3").passo_atual = 1;
+  a.salvar();
+  const b = new H.desire.Notebook("persiste");
+  assert.strictEqual(b.get("int-3").passo_atual, 1);
+  const arq = fs.readdirSync(process.env.LOREFORGE_HARNESS_DIR).find((f) => f.startsWith("persiste"));
+  const modo = fs.statSync(path.join(process.env.LOREFORGE_HARNESS_DIR, arq)).mode & 0o777;
+  assert.strictEqual(modo, 0o600);
+});
+
+// --------------------------------------------------------------------------- //
+// 3. C8 — andou? (B8)
+// --------------------------------------------------------------------------- //
+
+const cfg = { harness: { abordagens: 3, repeticoes: 3 } };
+
+test("C8: estado NOVO é progresso; voltar a um estado já visto é CICLO, não progresso", () => {
+  const s = H.progress.newStep("E0");
+  assert.strictEqual(H.progress.after(s, { tool: "take", args: { item: "a" }, aceita: true, estadoDepois: "E1", cfg }).veredito, "progresso");
+  assert.strictEqual(H.progress.after(s, { tool: "drop", args: { item: "a" }, aceita: true, estadoDepois: "E0", cfg }).veredito, "sem_progresso");
+});
+
+test("C8: três abordagens DISTINTAS sem progresso → BLOCKED", () => {
+  const s = H.progress.newStep("E0");
+  for (const [t, a] of [["ask_about", "x"], ["ask_directions", "y"], ["recognize", "z"]]) {
+    var v = H.progress.after(s, { tool: t, args: { alvo: a }, aceita: false, recusa: `não (${a})`, estadoDepois: "E0", cfg });
+  }
+  assert.deepStrictEqual(v, { veredito: "blocked", motivo: "abordagens" });
+});
+
+test("C8: repetir o que JÁ FALHOU no mesmo estado é BLOCKED antes de ir ao mundo (o wake_up do Draven)", () => {
+  const s = H.progress.newStep("E0");
+  H.progress.after(s, { tool: "wake_up", args: {}, aceita: false, recusa: "dorme fundo", estadoDepois: "E0", cfg });
+  assert.deepStrictEqual(H.progress.before(s, "wake_up", {}), { bloqueio: "repeticao" });
+});
+
+test("C8: SABER NOVO é progresso mesmo sem estado novo — e o 'não sei' não é", () => {
+  const antes = { self: { memories: [{ id: "m1" }] } };
+  const ouvida = { self: { memories: [{ id: "m1" }, { id: "m2", event: "hearsay_reconto", heard_from: "bram" }] } };
+  const propria = { self: { memories: [{ id: "m1" }, { id: "m3", event: "unanswered" }] } };
+  const chegou = { self: { memories: [{ id: "m1" }, { id: "m4", event: "witness_arrival" }] } };
+  assert.strictEqual(H.progress.newKnowledge(antes, ouvida).length, 1);
+  assert.strictEqual(H.progress.newKnowledge(antes, propria).length, 0);
+  assert.strictEqual(H.progress.newKnowledge(antes, chegou).length, 0, "gente chegando não é saber");
+});
+
+test("C8: TEIMOSIA com estado novo (a Petrila acusando 8×) — o teto de verbo+alvo pega", () => {
+  const s = H.progress.newStep("E0");
+  let v;
+  for (let i = 1; i <= 3; i++) {
+    v = H.progress.after(s, { tool: "accuse", args: { alvo: "mira" }, aceita: true, estadoDepois: `E${i}`, cfg });
+  }
+  assert.deepStrictEqual(v, { veredito: "blocked", motivo: "teimosia" });
+});
+
+test("C8: a assinatura de estado IGNORA `status.action` (toda ação o reescreve — B7)", () => {
+  const a = { self: { status: { action: "espera" }, inventory: [] }, scene: { place: { id: "p" }, items: [] } };
+  const b = { self: { status: { action: "come" }, inventory: [] }, scene: { place: { id: "p" }, items: [] } };
+  assert.strictEqual(H.progress.stateSignature(a), H.progress.stateSignature(b));
+});
+
+test("C8: o teto de custo do desejo (FR-009b)", () => {
+  assert.strictEqual(H.progress.overBudget(9000, { harness: { tetoTokensDesejo: 8000 } }), true);
+  assert.strictEqual(H.progress.overBudget(100, { harness: { tetoTokensDesejo: 8000 } }), false);
+});
+
+// --------------------------------------------------------------------------- //
+// 4. C8D — acabou? (B11)
+// --------------------------------------------------------------------------- //
+
+const CTX = {
+  self: { inventory: [{ id: "unguento", name: "Ungüento de Arnica" }], needs: { hunger: "sem fome", thirst: "com sede" },
+          memories: [{ summary: "Bram me contou que foi o Nuno.", involved: ["nuno"] }], known_elsewhere: [{ id: "nuno", name: "Nuno" }] },
+  scene: { place: { id: "taverna", name: "Taverna do Gancho" }, characters: [] },
 };
 
-// Captura o que SAIU para o modelo, sem deixar nada sair da máquina.
+test("C8D: as quatro famílias conferidas por regra", () => {
+  const f = (t) => H.ending.isDone(H.ending.extractEnding(t), CTX);
+  assert.strictEqual(f("posse de Ungüento de Arnica"), true);
+  assert.strictEqual(f("posse de Faca de Mercador"), false);
+  assert.strictEqual(f("estar em Taverna do Gancho"), true);
+  assert.strictEqual(f("estar no Cais Velho"), false);
+  assert.strictEqual(f("fome saciada"), true);
+  assert.strictEqual(f("sede saciada"), false);
+  assert.strictEqual(f("lembrança sobre Nuno"), true);
+  assert.strictEqual(f("nenhum"), null);
+});
+
+test("C8D: EM TRÂNSITO não se está em lugar nenhum — o fim de lugar espera a chegada", () => {
+  const viajando = { ...CTX, self: { ...CTX.self, transit: { to_id: "taverna" } } };
+  assert.strictEqual(H.ending.isDone(H.ending.extractEnding("estar em Taverna do Gancho"), viajando), false);
+});
+
+// --------------------------------------------------------------------------- //
+// 5. C3P — o plano possível agora (caso 2)
+// --------------------------------------------------------------------------- //
+
+test("C3P: planejar falar CONSIGO MESMA é rejeitado (a Mira e a Mira)", () => {
+  const ctx = { self: { name: "Mira, a Vigia da Praça", inventory: [] },
+                scene: { characters: [{ id: "mira", name: "Mira, a Vigia da Praça" }, { id: "hulda", name: "Hulda" }],
+                         items: [], objects: [], exits: [] } };
+  const idx = H.scene.sceneIndex(ctx);
+  const p = H.plan.validatePlan(["Falar com Mira sobre o Pé de Cabra", "Perguntar à Hulda"], idx, ctx);
+  assert.ok(p.some((x) => /você mesmo/.test(x)));
+});
+
+test("C3P: o 1º passo tem de usar o que está AQUI — ou ser um passo de descobrir", () => {
+  const ctx = { self: { id: "t", name: "Torvin", inventory: [] },
+                scene: { characters: [{ id: "obadiah", name: "Obadiah, o Mascate" }], items: [], objects: [], exits: [] } };
+  const idx = H.scene.sceneIndex(ctx);
+  assert.deepStrictEqual(H.plan.validatePlan(["Perguntar ao Obadiah o preço", "Comprar"], idx, ctx), []);
+  assert.deepStrictEqual(H.plan.validatePlan(["Descobrir onde fica a forja", "Ir lá"], idx, ctx), []);
+  assert.ok(H.plan.validatePlan(["Aproximar-se sem chamar atenção", "Comprar"], idx, ctx).length);
+});
+
+test("C3P: a resposta do modelo vira passos e fim", () => {
+  const r = H.plan.parsePlanReply("DESEJO: matar a sede\nPASSOS:\n- Beber do Cantil\n- Descansar\nFIM: sede saciada");
+  assert.deepStrictEqual(r.passos, ["Beber do Cantil", "Descansar"]);
+  assert.strictEqual(r.fim, "sede saciada");
+});
+
+// --------------------------------------------------------------------------- //
+// 6. A ROTINA ESCOLHE MODELO E OPÇÕES — `think` viaja no CORPO (item 79)
+// --------------------------------------------------------------------------- //
+
 function espia(resposta) {
   const original = globalThis.fetch;
   const chamadas = [];
   globalThis.fetch = async (url, opts) => {
     chamadas.push({ url: String(url), corpo: JSON.parse((opts && opts.body) || "{}") });
-    return {
-      ok: true,
-      headers: { get: () => "application/json" },
-      json: async () => ({
-        message: { content: resposta, tool_calls: [] },
-        prompt_eval_count: 10, eval_count: 5,
-      }),
-    };
+    return { ok: true, headers: { get: () => "application/json" },
+             json: async () => ({ message: { content: resposta }, prompt_eval_count: 10, eval_count: 5 }) };
   };
   return { chamadas, restaurar: () => { globalThis.fetch = original; } };
 }
 
-function copia(extra) {
-  const c = JSON.parse(JSON.stringify(CONTEXTO));
-  if (extra) Object.assign(c.self, extra);
-  return c;
-}
-
-// --------------------------------------------------------------------------- //
-// 1. O PROGRESSO DESCE — e é o que separa o feito do faltante
-// --------------------------------------------------------------------------- //
-
-test("o payload leva `passos_cumpridos` junto do compromisso", async () => {
-  configuracao.carregar(true);
-  const e = espia("{}");
-  try {
-    await Mente.deriveWhisper(copia());
-  } finally {
-    e.restaurar();
-  }
-  assert.strictEqual(e.chamadas.length, 1);
-  const texto = JSON.stringify(e.chamadas[0].corpo);
-  assert.match(texto, /passos_cumpridos/,
-    "o progresso não desceu: sem ele o modelo refaz o passo que já deu (§5)");
-});
-
-test("a parada desce em RÓTULO — nunca o instante cru (Princípio V)", async () => {
-  configuracao.carregar(true);
-  const e = espia("{}");
-  try {
-    // `parada_desde` é o campo do `.md`. Se ele aparecer no que sai para o modelo, o
-    // número do relógio vazou — e o vazamento é permanente: vira texto na tela.
-    await Mente.deriveWhisper(copia({
-      intentions: [{ ...COMPROMISSO[0], parada_desde: 1757000000 }],
-    }));
-  } finally {
-    e.restaurar();
-  }
-  const texto = JSON.stringify(e.chamadas[0].corpo);
-  assert.ok(!texto.includes("parada_desde"),
-    "`parada_desde` vazou para o modelo — é medida interna, não texto de cena");
-  assert.ok(!texto.includes("1757000000"),
-    "o instante cru vazou para o modelo");
-  assert.match(texto, /sem andar/, "o rótulo da parada não desceu");
-});
-
-// --------------------------------------------------------------------------- //
-// 2. A CARÊNCIA DO CORPO — a fome que vira compromisso (US1)
-// --------------------------------------------------------------------------- //
-
-test("a carência desce COM o critério que a encerraria", async () => {
-  configuracao.carregar(true);
-  const e = espia("{}");
-  try {
-    await Mente.deriveWhisper(copia());
-  } finally {
-    e.restaurar();
-  }
-  const texto = JSON.stringify(e.chamadas[0].corpo);
-  assert.match(texto, /carencias/, "a carência não desceu");
-  assert.match(texto, /matar minha fome/,
-    "a carência desceu sem dizer O QUE resolveria — é o que `set_intention` pede");
-  assert.match(texto, /pronto_quando/,
-    "a carência desceu sem o critério de fim: a intenção nasceria sem como fechar");
-});
-
-// --------------------------------------------------------------------------- //
-// 3. PLANEJAR É CHAMADA SEPARADA — juntas mediram 0/9 (item 38)
-// --------------------------------------------------------------------------- //
-
-test("planejar() faz UMA chamada e devolve o compromisso com os passos", async () => {
-  configuracao.carregar(true);
-  const e = espia("- pegar o pão de centeio\n- comer o pão de centeio");
-  let plano;
-  try {
-    plano = await Mente.planejar("Matar minha fome.", copia());
-  } finally {
-    e.restaurar();
-  }
-  assert.strictEqual(e.chamadas.length, 1,
-    "planejar tem de ser UMA chamada — firmar e planejar juntos mediram 0/9");
-  assert.match(plano, /^Matar minha fome\./,
-    "o compromisso tem de continuar sendo a 1a linha: é dele que o corpo é lido");
-  const passos = plano.split("\n").filter((l) => l.startsWith("- "));
-  assert.strictEqual(passos.length, 2, "os dois passos não viraram checklist");
-});
-
-test("planejar() com resposta vazia devolve `null` — e o compromisso sobrevive", async () => {
-  configuracao.carregar(true);
-  const e = espia("Claro! Aqui está o que penso a respeito.");
-  let plano;
-  try {
-    // Medido: pensando, o `qwen3` devolve vazio em 6 de 8 (§3). O `think:false` é a
-    // defesa; esta é a rede embaixo dela.
-    //
-    // `null` é a resposta CERTA, e o contrato importa: quem chama (`laco.js`, no
-    // despacho do `set_intention`) só substitui o `content` quando vem plano. Sem
-    // plano, o compromisso segue como A Mente o escreveu — e ainda fecha pelo
-    // `pronto_quando`. Se `planejar` devolvesse texto de enfeite, ele viraria o
-    // corpo da intenção, e o "Claro! Aqui está" seria o compromisso do personagem.
-    plano = await Mente.planejar("Matar minha fome.", copia());
-  } finally {
-    e.restaurar();
-  }
-  assert.strictEqual(plano, null,
-    "prosa sem passo nenhum virou plano — o enfeite do modelo vira o corpo da intenção");
-});
-
-// --------------------------------------------------------------------------- //
-// 4. A ROTINA ESCOLHE MODELO E OPÇÕES — `think` viaja no CORPO (item 79)
-// --------------------------------------------------------------------------- //
-
-test("a rotina `planejar` manda `think:false` no corpo da requisição", async () => {
+test("a rotina `planejar` manda `think:false` e o modelo DELA no corpo da requisição", async () => {
   const cfg = configuracao.carregar(true);
-  assert.ok(cfg.porRotina && cfg.porRotina.planejar,
-    "sem entrada em `porRotina`, a rotina não escolhe nada");
+  assert.ok(cfg.porRotina && cfg.porRotina.planejar);
   const e = espia("- um passo");
-  try {
-    await Mente.planejar("Matar minha fome.", copia());
-  } finally {
-    e.restaurar();
-  }
-  const corpo = e.chamadas[0].corpo;
-  assert.strictEqual(corpo.think, false,
-    "`think` não desceu no CORPO — `/no_think` no prompt NÃO funciona nesta versão "
-    + "do Ollama, e pensando o plano sai vazio em 6 de 8 (§3)");
-  assert.strictEqual(corpo.model, cfg.porRotina.planejar.model,
-    "a rotina não trocou o modelo");
+  try { await Mente.conversar("sys", "user", { rotina: "planejar" }); } finally { e.restaurar(); }
+  assert.strictEqual(e.chamadas[0].corpo.think, false);
+  assert.strictEqual(e.chamadas[0].corpo.model, cfg.porRotina.planejar.model);
 });
 
-test("as outras rotinas NÃO herdam o `think` de planejar", async () => {
-  const cfg = configuracao.carregar(true);
-  // Sem `think` geral, isola o que se quer provar: a sobreposição de `planejar` não
-  // vaza. (O default geral existe — ver o teste seguinte.)
-  const geral = cfg.think;
-  delete cfg.think;
-  const e = espia("{}");
-  try {
-    await Mente.deriveWhisper(copia());
-  } finally {
-    e.restaurar();
-    cfg.think = geral;
-  }
-  assert.ok(!("think" in e.chamadas[0].corpo),
-    "o `think` vazou para uma rotina que não o pediu — a sobreposição tem de ser "
-    + "por rotina, não global");
-});
-
-test("o `think` GERAL desce para a rotina que não declara o dela", async () => {
-  // O default da Mente é `qwen3:8b` (2026-09-25): se o `think:false` geral não
-  // descer, a autonomia roda PENSANDO — 86 s e resposta vazia, com a suíte verde.
+test("o `think` GERAL desce para a rotina que não declara o dela (objetivos)", async () => {
   const cfg = configuracao.carregar(true);
   assert.strictEqual(cfg.think, false, "o default geral perdeu o `think:false`");
-  const e = espia("{}");
-  try {
-    await Mente.deriveWhisper(copia());
-  } finally {
-    e.restaurar();
-  }
-  assert.strictEqual(e.chamadas[0].corpo.think, false,
-    "o `think` geral não chegou ao CORPO da autonomia");
+  const e = espia("- x");
+  try { await Mente.conversar("sys", "user", { rotina: "objetivos" }); } finally { e.restaurar(); }
+  assert.strictEqual(e.chamadas[0].corpo.think, false);
   assert.strictEqual(e.chamadas[0].corpo.model, "qwen3:8b",
     "a Mente não está no `qwen3:8b` — o `llama3.1` é desrecomendado para ela");
-});
-
-// --------------------------------------------------------------------------- //
-// 5. O PLANO NÃO ANDA EM CÍRCULO POR DENTRO (§13.1 e §13.2)
-// --------------------------------------------------------------------------- //
-//
-// As duas travas abaixo prendem a saída LITERAL que o `qwen3:8b` devolveu na
-// primeira chamada real de `planejar`, dirigindo o Draven na Praça do Mercado. Não
-// é entrada inventada: é o que o modelo fez, e o que a suíte não sabia proibir.
-
-test("passos idênticos são riscados do plano — o círculo por dentro", async () => {
-  configuracao.carregar(true);
-  // O que o `qwen3` devolveu ao vivo: o mesmo par, quatro vezes, enchendo os oito
-  // lugares. Um plano assim nasce com a doença que a spec veio curar — o passo 3 é
-  // o passo 1 de novo, então riscar o 1 não faz o personagem avançar: ele volta.
-  const e = espia([
-    "- take Macieira da Praça", "- eat Macieira da Praça",
-    "- take Macieira da Praça", "- eat Macieira da Praça",
-    "- take Macieira da Praça", "- eat Macieira da Praça",
-    "- take Macieira da Praça", "- eat Macieira da Praça",
-  ].join("\n"));
-  let plano;
-  try {
-    plano = await Mente.planejar("Matar minha fome.", copia());
-  } finally {
-    e.restaurar();
-  }
-  const passos = plano.split("\n").filter((l) => l.startsWith("- "));
-  assert.strictEqual(passos.length, 2, "o plano manteve o passo repetido");
-});
-
-test("repetir o VERBO com outro alvo sobrevive — a dedup não é cega", async () => {
-  configuracao.carregar(true);
-  const e = espia("- take o pão\n- take o queijo\n- eat o pão");
-  let plano;
-  try {
-    plano = await Mente.planejar("Matar minha fome.", copia());
-  } finally {
-    e.restaurar();
-  }
-  const passos = plano.split("\n").filter((l) => l.startsWith("- "));
-  assert.strictEqual(passos.length, 3,
-    "dois `take` de coisas DIFERENTES é plano legítimo, não repetição");
-});
-
-test("`set_intention` não é oferecido ao planejar, nem sobrevive como passo", async () => {
-  configuracao.carregar(true);
-  // Ao vivo, o `qwen3` fechou o plano com `set_intention \"Fome saciada\"` — a Mente
-  // planejando anunciar que cumpriu, que é o Princípio IX pelo avesso e o mesmo
-  // motivo que aposenta o `give.intention_id`.
-  const e = espia("- take o pão\n- eat o pão\n- set_intention \"Fome saciada\"");
-  let plano;
-  try {
-    plano = await Mente.planejar("Matar minha fome.", copia());
-  } finally {
-    e.restaurar();
-  }
-  const enviado = e.chamadas[0].corpo.messages[1].content;
-  const lista = enviado.split("EXATAMENTE estes:")[1] || "";
-  assert.ok(!lista.includes("set_intention"),
-    "o verbo de DECLARAR foi oferecido como passo do caminho");
-  assert.ok(!plano.includes("set_intention"),
-    "a Mente planejou declarar o próprio desfecho e o passo sobreviveu");
+  assert.ok(!("tools" in e.chamadas[0].corpo), "a conversa levou tools");
 });

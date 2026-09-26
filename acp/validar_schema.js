@@ -20,6 +20,7 @@ const _REQUIRED_POR_SESSION_UPDATE = {
   agent_thought_chunk: _schema.$defs.ContentChunk.required,
   agent_message_chunk: _schema.$defs.ContentChunk.required,
   state_update: ["state"],
+  plan_update: _schema.$defs.PlanUpdate.required,
 };
 
 // `erros(envelope)` — devolve um array de strings (vazio = válido). Confere:

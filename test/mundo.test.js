@@ -1,245 +1,63 @@
-// Testes de MUNDO — a tabela de resolução (spec 060, US2).
+// O MUNDO, visto do conector — as portas do DESEJO (spec 075, contrato 03).
 //
-// Estes testes existem por um defeito que 101 testes verdes NÃO pegaram: o
-// `registrarNomes` foi escrito e NUNCA LIGADO. A tabela ficava só com ids, o
-// resolvedor caía no fallback `nome: id`, e o efeito era invertido — o nome
-// CURTO casava por continência e o nome COMPLETO falhava.
-//
-// Medido em jogo (20 turnos do Irmão Tobias): "Nerissa" resolveu 9 vezes;
-// "Nerissa, a Boticária" — o nome EXATO da cena — falhou 8. Nenhum teste
-// unitário via isso, porque cada peça estava certa sozinha. Só o caminho INTEIRO
-// mostra.
+// Opção 2: o world GUARDA a intenção, o harness DECIDE. O harness escreve pelas MESMAS
+// portas que o client usa (`/api/intention/*`), com o JWT do DONO do assento. Este
+// teste é de LIGAÇÃO: sobe um servidor HTTP falso e confere o que atravessa o fio —
+// a rota, o corpo (inclusive o `status` novo, `concluida`) e o cabeçalho de identidade.
 
 "use strict";
 
 const test = require("node:test");
 const assert = require("node:assert");
+const http = require("http");
+
 const { Mundo } = require("../mundo");
-const { literal } = require("../resolucao");
 
-const FACE = [
-  { name: "ask_directions", inputSchema: { type: "object", properties: {
-      quem: { type: "string", enum: ["nerissa-boticaria", "torvin-ferreiro"] } } } },
-  { name: "cook", inputSchema: { type: "object", properties: {
-      ingredientes: { type: "array", items: { type: "string",
-        enum: ["raiz-torta", "fuligem"] } } } } },
-];
-
-const CONTEXTO = {
-  self: { id: "irmao-tobias", name: "Irmão Tobias",
-          inventory: [{ id: "raiz-torta", name: "Raiz Torta" },
-                      { id: "fuligem", name: "Fuligem" }] },
-  scene: {
-    place: { id: "boticario-da-raiz-torta", name: "Boticário da Raiz Torta" },
-    characters: [
-      { id: "nerissa-boticaria", name: "Nerissa, a Boticária",
-        carrying: [{ id: "bolsa-de-ervas", name: "Bolsa de Ervas" }] }],
-    items: [{ id: "frasco-de-tintura-vermelha", name: "Frasco de Tintura Vermelha" }],
-    objects: [], exits: [],
-  },
-};
-
-function mundoFake() {
-  const m = Object.create(Mundo.prototype);
-  m.capacidadesDaCena = null;
-  m.candidatosDaCena = null;
-  m._nomesDaCena = null;
-  return m;
-}
-
-test("060/US2: a face vira tabela de candidatos por parâmetro", () => {
-  const m = mundoFake();
-  m.capacidadesDaCena = new Set(FACE.map((t) => t.name));
-  m.candidatosDaCena = require("../mundo")._tabelaDeCandidatos
-    ? require("../mundo")._tabelaDeCandidatos(FACE) : null;
-  if (!m.candidatosDaCena) return;   // helper não exposto: coberto pelo teste de ponta a ponta
-  assert.deepStrictEqual(m.candidatosDaCena["ask_directions"].quem,
-    ["nerissa-boticaria", "torvin-ferreiro"]);
-  assert.deepStrictEqual(m.candidatosDaCena["cook"].ingredientes,
-    ["raiz-torta", "fuligem"], "enum dentro de array também entra na tabela");
-});
-
-test("060/US2: registrarNomes colhe o dicionário id -> nome do contexto", () => {
-  const m = mundoFake();
-  const nomes = m.registrarNomes(CONTEXTO);
-  assert.strictEqual(nomes["nerissa-boticaria"], "Nerissa, a Boticária");
-  assert.strictEqual(nomes["bolsa-de-ervas"], "Bolsa de Ervas",
-    "o que os presentes CARREGAM também entra — a Mente pode apontar para isso");
-  assert.strictEqual(nomes["frasco-de-tintura-vermelha"], "Frasco de Tintura Vermelha");
-  assert.strictEqual(nomes["raiz-torta"], "Raiz Torta", "o próprio inventário entra");
-});
-
-test("060/US2: SEM os nomes, o nome COMPLETO falha e o CURTO passa — o defeito real",
-() => {
-  // A prova do que aconteceu em jogo. Sem `registrarNomes`, o candidato é
-  // {id, nome: id} e a continência inverte o resultado esperado.
-  const semNomes = [{ id: "nerissa-boticaria", nome: "nerissa-boticaria" }];
-  assert.ok(literal("Nerissa", semNomes).id, "o nome curto casava (por continência)");
-  assert.strictEqual(literal("Nerissa, a Boticária", semNomes).id, null,
-    "e o nome COMPLETO falhava — o ` a ` quebra a continência nos dois sentidos");
-});
-
-test("060/US2: COM os nomes, os dois resolvem — é o que a fiação conserta", () => {
-  const m = mundoFake();
-  m.candidatosDaCena = { ask_directions: { quem: ["nerissa-boticaria", "torvin-ferreiro"] } };
-  m.registrarNomes(CONTEXTO);
-  const cands = m.candidatosDe("ask_directions", "quem");
-  assert.strictEqual(cands[0].nome, "Nerissa, a Boticária");
-  for (const ref of ["Nerissa", "Nerissa, a Boticária", "nerissa-boticaria"]) {
-    assert.strictEqual(literal(ref, cands).id, "nerissa-boticaria",
-      `"${ref}" precisa resolver`);
+async function comServidor(fn) {
+  const recebidos = [];
+  const srv = http.createServer((req, res) => {
+    let corpo = "";
+    req.on("data", (c) => { corpo += c; });
+    req.on("end", () => {
+      recebidos.push({ url: req.url, auth: req.headers.authorization || null,
+                       corpo: corpo ? JSON.parse(corpo) : null });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, id: "int-novo" }));
+    });
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  try {
+    const m = new Mundo(`http://127.0.0.1:${srv.address().port}`, "draven-vigia");
+    m.jwt = "jwt-do-dono";
+    await fn(m);
+  } finally {
+    await new Promise((r) => srv.close(r));
   }
-});
-
-test("060/US2: parâmetro sem lista devolve null — não há o que resolver", () => {
-  const m = mundoFake();
-  m.candidatosDaCena = { ask_directions: { quem: ["nerissa-boticaria"] } };
-  m.registrarNomes(CONTEXTO);
-  assert.strictEqual(m.candidatosDe("ask_directions", "prosa"), null);
-  assert.strictEqual(m.candidatosDe("capacidade-que-nao-existe", "x"), null);
-});
-
-
-// ===========================================================================
-// SPEC 060 — QUEM ELE SABE NOMEAR, MAS NÃO ESTÁ AQUI.
-//
-// O caso real que criou isto: a Elga tem intenção ativa de ajudar a Ossa, e uma
-// lembrança de tê-la visto PARTIR. Ao tentar agir sobre ela, o conector não
-// conseguia sequer converter o nome em id — e a recusa saía como "isso não
-// corresponde a nada", que soa como falha de NOMEAR.
-//
-// O certo é o mundo dizer "ela não está aqui", que é FATO e diz o que fazer a
-// seguir. É o item 53.1: a memória estende o alcance, e quem recusa é a
-// execução, nunca um pré-filtro do cliente.
-// ===========================================================================
-
-const CTX_COM_AUSENTE = {
-  self: { id: "elga-taverneira", name: "Elga", inventory: [] },
-  scene: {
-    place: { id: "taverna-do-gancho", name: "Taverna do Gancho" },
-    characters: [{ id: "bram-pescador", name: "Bram, o Pescador" }],
-    items: [], objects: [], exits: [],
-  },
-};
-// spec 067: `known_elsewhere` — lista de {id, name} em `self`. Antes era um mapa
-// com o id de CHAVE, que é impossível de tipar para quem escreve um conector.
-CTX_COM_AUSENTE.self.known_elsewhere = [
-  { id: "ossa-cavadora", name: "Ossa, a Cavadora" },
-  { id: "forja-de-ferro", name: "Forja de Ferro" },
-];
-
-function mundoComAusentes() {
-  const m = Object.create(Mundo.prototype);
-  m.candidatosDaCena = { ask_directions: { quem: ["bram-pescador"] } };
-  m.registrarNomes(CTX_COM_AUSENTE);
-  return m;
+  return recebidos;
 }
 
-test("060: `known` entra no dicionário de nomes, sem apagar a cena", () => {
-  const m = mundoComAusentes();
-  assert.strictEqual(m._nomesDaCena["bram-pescador"], "Bram, o Pescador");
-  assert.strictEqual(m._nomesDaCena["ossa-cavadora"], "Ossa, a Cavadora");
-  assert.ok(m.ehAusenteConhecido("ossa-cavadora"));
-  assert.ok(!m.ehAusenteConhecido("bram-pescador"), "quem ESTÁ aqui não é ausente");
+test("criar o desejo: POST /api/intention/create com o content e o JWT do dono", async () => {
+  const r = await comServidor((m) => m.criarIntencao("Matar a fome.\n- Comer o Bocado"));
+  assert.strictEqual(r[0].url, "/api/intention/create");
+  assert.strictEqual(r[0].auth, "Bearer jwt-do-dono");
+  assert.deepStrictEqual(r[0].corpo, { character_id: "draven-vigia", content: "Matar a fome.\n- Comer o Bocado" });
 });
 
-test("060: o ausente NÃO entra na lista do parâmetro, mas entra na de resolução",
-() => {
-  const m = mundoComAusentes();
-  const soCena = m.candidatosDe("ask_directions", "quem");
-  assert.deepStrictEqual(soCena.map((c) => c.id), ["bram-pescador"],
-    "a lista do PARÂMETRO continua sendo só quem pode ser perguntado");
-  const maior = m.candidatosOuConhecidos("ask_directions", "quem");
-  assert.ok(maior.some((c) => c.id === "ossa-cavadora"),
-    "mas a de RESOLUÇÃO inclui quem ele sabe nomear");
+test("replanejar: POST /api/intention/update com o id e o content novo", async () => {
+  const r = await comServidor((m) => m.atualizarIntencao("int-1", "A.\n- b"));
+  assert.strictEqual(r[0].url, "/api/intention/update");
+  assert.deepStrictEqual(r[0].corpo, { character_id: "draven-vigia", intention_id: "int-1", content: "A.\n- b" });
 });
 
-test("060: o nome de quem SAIU resolve — e é o que faz a proposta chegar ao mundo",
-() => {
-  const m = mundoComAusentes();
-  const soCena = m.candidatosDe("ask_directions", "quem");
-  const maior = m.candidatosOuConhecidos("ask_directions", "quem");
-  assert.strictEqual(literal("Ossa, a Cavadora", soCena).id, null,
-    "contra a cena sozinha não resolve — era o comportamento que engolia a tentativa");
-  assert.strictEqual(literal("Ossa, a Cavadora", maior).id, "ossa-cavadora",
-    "contra o conjunto maior resolve, e o mundo é que vai recusar");
+test("LIGAÇÃO: fechar CONCLUÍDO leva `status: concluida` pelo fio (o status novo da opção 2)", async () => {
+  const r = await comServidor((m) => m.fecharIntencao("int-1", "concluida"));
+  assert.strictEqual(r[0].url, "/api/intention/close");
+  assert.strictEqual(r[0].corpo.status, "concluida");
+  assert.strictEqual(r[0].corpo.lembrar, false);
 });
 
-test("060: o que não existe em lugar NENHUM continua morrendo no conector", () => {
-  const m = mundoComAusentes();
-  const maior = m.candidatosOuConhecidos("ask_directions", "quem");
-  assert.strictEqual(literal("o destilador", maior).id, null,
-    "alargar a resolução não pode virar licença para inventar");
-});
-
-// Regressão: `candidatosOuConhecidos` convertia o `null` de `candidatosDe`
-// (parâmetro sem enum — texto livre por desenho, como `set_intention.content`)
-// em `[]` (via `|| []`), e `[]` é truthy — `_resolverAlvos` (mente.js) só pula
-// a resolução quando recebe `null`/`undefined`, então um array vazio o fazia
-// tentar casar TEXTO LIVRE contra ZERO candidatos: falha garantida, sempre,
-// mesmo quando o dicionário de "known ausentes" tinha gente nele. Foi o
-// que travou `set_intention.content` em produção por dois dias (81 falhas no
-// devlog, nenhuma intenção formada em nenhum personagem do mundo).
-test("060/US2: candidatosOuConhecidos TAMBÉM devolve null quando não há lista"
-     + " — mesmo com known ausentes no dicionário", () => {
-  const m = mundoComAusentes();
-  assert.strictEqual(m.candidatosOuConhecidos("set_intention", "content"), null,
-    "content é texto livre por desenho — nunca teve enum, nunca deveria ter lista");
-  assert.ok(Array.isArray(m.candidatosOuConhecidos("ask_directions", "quem")),
-    "um parâmetro que TEM enum continua devolvendo a lista normalmente");
-});
-
-// ===========================================================================
-// O ESCOPO POR PARÂMETRO (17/09) — `byName` deixa de ter os valores jogados fora
-//
-// Tirar o enum de `memoria_id` do schema custou uma coisa que não estava à vista: o
-// enum era também o ESCOPO do parâmetro no conector. Sem ele, `candidatosDe` caía no
-// dicionário do contexto — 67 entidades, e NENHUMA memória. A resolução era
-// impossível por construção, e teria falhado em silêncio numa corrida de 2h.
-//
-// O `byName` sempre carregou `{param: {id: nome}}`; o conector lia só as chaves.
-// Agora os valores servem de escopo para o que o contexto não sabe nomear.
-// ===========================================================================
-
-test("o parâmetro de MEMÓRIA resolve contra as memórias, não contra a cena", () => {
-  const { Mundo } = require("../mundo");
-  const m = new Mundo("http://x", "alguem");
-  m.porNomeDaCena = { sing: new Set(["memoria_id"]) };
-  m.paresPorParametro = { sing: { memoria_id: {
-    "mem-1": "Vi Hulda furtar o pe de cabra.",
-    "mem-2": "Conversei com Elga sobre o tempo." } } };
-  m.candidatosDaCena = {};
-  m._nomesDaCena = { "elga-taverneira": "Elga, a Taverneira",
-                     "frasco-de-oleo": "Frasco de Oleo" };
-  const c = m.candidatosDe("sing", "memoria_id");
-  assert.strictEqual(c.length, 2, "tem de vir a lista do PARÂMETRO, não a da cena");
-  assert.ok(c.every((x) => x.id.startsWith("mem-")));
-  assert.ok(c.some((x) => x.nome.includes("Hulda")),
-    "e com o RESUMO como nome — sem ele o resolvedor não tem contra o que casar");
-});
-
-test("o parâmetro de ENTIDADE continua vindo do CONTEXTO, que é mais fresco", () => {
-  const { Mundo } = require("../mundo");
-  const m = new Mundo("http://x", "alguem");
-  m.porNomeDaCena = { examine: new Set(["alvo"]) };
-  // o `byName` de `alvo` traz gente que o contexto TAMBÉM nomeia: o contexto vence
-  m.paresPorParametro = { examine: { alvo: { "elga-taverneira": "Elga" } } };
-  m.candidatosDaCena = {};
-  m._nomesDaCena = { "elga-taverneira": "Elga, a Taverneira",
-                     "frasco-de-oleo": "Frasco de Oleo" };
-  const c = m.candidatosDe("examine", "alvo");
-  assert.strictEqual(c.length, 2, "o dicionário do contexto, inteiro, como antes");
-  assert.ok(c.some((x) => x.nome === "Elga, a Taverneira"),
-    "e com o nome do CONTEXTO, que diz o que existe agora");
-});
-
-test("parâmetro que NÃO é referência continua devolvendo null", () => {
-  const { Mundo } = require("../mundo");
-  const m = new Mundo("http://x", "alguem");
-  m.porNomeDaCena = { set_intention: new Set(["intention_id"]) };
-  m.paresPorParametro = {};
-  m.candidatosDaCena = {};
-  m._nomesDaCena = { "elga-taverneira": "Elga" };
-  assert.strictEqual(m.candidatosDe("set_intention", "content"), null,
-    "prosa livre resolvida contra entidades vira o teor do compromisso virando id");
+test("desistir leva `status: abandonada` e `lembrar: true` — a desistência vira memória", async () => {
+  const r = await comServidor((m) => m.fecharIntencao("int-1", "abandonada", { lembrar: true }));
+  assert.strictEqual(r[0].corpo.status, "abandonada");
+  assert.strictEqual(r[0].corpo.lembrar, true);
 });

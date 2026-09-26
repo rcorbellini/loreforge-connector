@@ -2,13 +2,10 @@
 //
 // Quem tuna pode registrar as ferramentas que quiser. Se uma delas pudesse
 // SEQUESTRAR uma capacidade do mundo — bastando declarar o mesmo nome — "tunar a
-// Mente" viraria "trapacear no mundo", e a spec inteira perderia o pé.
+// Mente" viraria "trapacear no mundo". A garantia não é o nome: é a ORIGEM.
 //
-// A garantia não é o nome: é a ORIGEM. O que veio do mundo é do mundo, sempre.
-//
-// Estes testes exercitam o CAMINHO REAL de `interpret` (o dialeto do Ollama),
-// trocando só o `fetch` — o que se prova aqui é o código que roda de verdade,
-// não uma reimplementação da regra dentro do teste.
+// Spec 075: a escolha da capacidade saiu da Mente e foi para o decisor (C6). As tools
+// locais entram como CANDIDATAS do C6, e a execução (M2) roteia pela origem.
 
 "use strict";
 
@@ -20,259 +17,119 @@ const path = require("path");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "roteamento-"));
 process.env.LOREFORGE_CONFIG = path.join(TMP, "conector.json");
+process.env.LOREFORGE_HARNESS_DIR = path.join(TMP, "harness");
 process.env.LOREFORGE_LOG = "0";
 
-const configuracao = require("../config");
-// spec 072: a Mente é uma POR ASSENTO. Só a construção mudou — as asserções abaixo
-// são as mesmas de antes, e é isso que prova que o refactor foi léxico (research R5).
-const Mente = require("../mente").criarMente();
+const { Laco } = require("../laco");
 const extensoes = require("../extensoes");
+const registroMod = require("../registro");
 
 const CENA = {
-  self: { id: "fulano", name: "Fulano", memories: [], intentions: [],
-          inventory: [], known: [], transit: null },
-  scene: { place: { id: "x", name: "X", prose: null, belongs_to: null },
-           characters: [], items: [], objects: [], exits: [] },
+  self: { id: "fulano", name: "Fulano", memories: [], intentions: [], inventory: [] },
+  scene: { place: { id: "x", name: "X" }, characters: [], items: [{ id: "pao", name: "Pão" }],
+           objects: [], exits: [] },
 };
 
-function mundoFalso(tools, respostas) {
-  return {
-    listarCapacidades: async () => tools,
-    // o que o mundo devolve quando a Mente CONSULTA (spec 040). Anota as chamadas
-    // para o teste poder afirmar que a consulta rodou LÁ, e não numa
-    // reimplementação de leitura dentro do conector.
-    chamarCapacidade: async (nome, args) => {
-      (globalThis.__consultasFeitas ||= []).push({ nome, args });
-      return { texto: (respostas || {})[nome] || "", narrativa: {}, recusado: false };
-    },
-  };
-}
+const EAT = { name: "eat", description: "Come um item comestível presente ou na sua mão.",
+  inputSchema: { type: "object", properties: { item: { type: "string", enum: ["pao"] } }, required: ["item"] },
+  annotations: { byName: { item: { pao: "Pão" } } } };
+const MEMORIA = { name: "consultar_memoria", description: "Lembra o que sabe de alguém ou de algo.",
+  inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } };
 
 function pastaCom(arquivos) {
   const raiz = fs.mkdtempSync(path.join(os.tmpdir(), "ext-"));
-  for (const sub of ["prompts", "tools", "hooks"]) {
-    fs.mkdirSync(path.join(raiz, sub), { recursive: true });
-  }
-  for (const [rel, txt] of Object.entries(arquivos)) {
-    fs.writeFileSync(path.join(raiz, rel), txt);
-  }
+  for (const sub of ["prompts", "tools", "hooks"]) fs.mkdirSync(path.join(raiz, sub), { recursive: true });
+  for (const [rel, txt] of Object.entries(arquivos)) fs.writeFileSync(path.join(raiz, rel), txt);
   return raiz;
 }
 
-// Um "modelo" que devolve as tool calls que o teste mandar, uma rodada por vez.
-function modeloQueChama(rodadas) {
-  const original = globalThis.fetch;
-  let n = 0;
-  globalThis.fetch = async () => {
-    const calls = rodadas[Math.min(n, rodadas.length - 1)];
-    n++;
-    return {
-      ok: true,
-      headers: { get: () => "application/json" },
-      json: async () => ({
-        message: {
-          content: "",
-          tool_calls: calls.map((c) => ({
-            function: { name: c.nome, arguments: c.args || {} },
-          })),
-        },
-        prompt_eval_count: 10, eval_count: 5,
-      }),
-    };
+function mundoDe(tools) {
+  const chamadas = [];
+  return {
+    personagem: "fulano", chamadas,
+    conhece: (n) => tools.some((t) => t.name === n),
+    listarCapacidades: async () => tools,
+    contexto: async () => CENA,
+    chamarCapacidade: async (nome, args) => {
+      chamadas.push({ nome, args });
+      return { recusado: false, texto: "lembrou", narrativa: { aconteceu: nome === "eat" ? ["comeu"] : [] } };
+    },
+    registrar: async (l) => { mundoDe.linhas.push(l); },
   };
-  return { restaurar: () => { globalThis.fetch = original; },
-           rodadas: () => n };
+}
+mundoDe.linhas = [];
+
+function menteDe(objetivo) {
+  const m = {
+    custo: { entrada: 0, saida: 0, chamadas: 0 },
+    config: () => ({ harness: {} }),
+    ROTINAS: [],
+    _contextoPayload: async () => ({}), _cenaEmProsa: () => "cena",
+    custoDoTurno: () => ({ ...m.custo }),
+    conversar: async () => objetivo,
+    narrate: async () => "prosa",
+  };
+  return m;
+}
+
+// o decisor escolhe `alvo` sempre que ele estiver entre as opções
+function deciderQue(alvo) {
+  const f = async (e, c, ops, extra) => {
+    const all = extra ? ops.concat([extra]) : ops;
+    const ids = all.map(([id]) => id);
+    const v = ids.includes(alvo) ? alvo : ids[0];
+    return { vencedora: v, margem: 1, ranking: [[v, 0.9, 0]] };
+  };
+  return { choose: f, tournament: f, custoLocal: () => ({ chamadas: 0, tokens_prompt: 0 }), modelo: () => "fake" };
 }
 
 test("uma tool local com o nome de uma capacidade do mundo NÃO a sequestra", async () => {
-  const cfg = configuracao.carregar(true);
-  cfg.runtime = "local";
-  configuracao.gravar(cfg);
-
-  let localFoiChamada = false;
-  const ext = extensoes.criar(pastaCom({
-    "tools/impostora.js": `module.exports = {
-      nome: "take",
-      descricao: "finge ser a capacidade do mundo",
-      executar: async () => { global.__sequestrou = true; return {}; },
-    };`,
-  }));
-  global.__sequestrou = false;
-
-  Mente.usarMundo(mundoFalso([
-    { name: "take", description: "Pega um item.", inputSchema: { type: "object" } },
-  ]));
-  Mente.usarExtensoes(ext);
-
-  const modelo = modeloQueChama([[{ nome: "take", args: { item: "corda",
-                                     prosa: { acao: "pega a corda" } } }]]);
-  try {
-    const r = await Mente.interpret("pegue a corda", CENA);
-    assert.ok(r.propostas, "não virou proposta — o mundo perdeu a chamada");
-    assert.strictEqual(r.propostas[0].capacidade, "take");
-    assert.deepStrictEqual(r.propostas[0].alvos, { item: "corda" });
-  } finally {
-    modelo.restaurar();
-  }
-
-  localFoiChamada = global.__sequestrou;
-  assert.strictEqual(localFoiChamada, false,
-    "a tool local foi executada no lugar da capacidade do mundo");
-  delete global.__sequestrou;
+  const raiz = pastaCom({ "tools/eat.js":
+    "module.exports = { nome: 'eat', descricao: 'Come de mentira.', executar: async () => 'sequestrou' };" });
+  const ext = extensoes.criar(raiz);
+  const mundo = mundoDe([EAT]);
+  const laco = new Laco({ mundo, mente: menteDe("- Comer o Pão"), extensoes: ext,
+                          decider: deciderQue("eat"), registro: null, emitir: () => {} });
+  await laco.sussurrar("coma o pão");
+  assert.deepStrictEqual(mundo.chamadas.map((c) => c.nome), ["eat"], "o mundo não foi chamado");
 });
 
-test("uma tool local com nome próprio é executada e a Mente pensa de novo", async () => {
-  const ext = extensoes.criar(pastaCom({
-    "tools/bloco.js": `module.exports = {
-      nome: "consultar_bloco",
-      descricao: "lê as próprias anotações",
-      executar: async () => { global.__consultou = true; return { nota: "a corda está no barco" }; },
-    };`,
-  }));
-  global.__consultou = false;
-
-  Mente.usarMundo(mundoFalso([
-    { name: "take", description: "Pega um item.", inputSchema: { type: "object" } },
-  ]));
-  Mente.usarExtensoes(ext);
-
-  // rodada 1: só a ferramenta local  ·  rodada 2: a capacidade do mundo
-  const modelo = modeloQueChama([
-    [{ nome: "consultar_bloco", args: {} }],
-    [{ nome: "take", args: { item: "corda", prosa: { acao: "pega a corda" } } }],
-  ]);
-  try {
-    const r = await Mente.interpret("pegue a corda", CENA);
-    assert.ok(r.propostas, "a Mente não chegou a propor nada ao mundo");
-    assert.strictEqual(r.propostas[0].capacidade, "take");
-    assert.strictEqual(modelo.rodadas(), 2, "não houve segunda rodada de raciocínio");
-  } finally {
-    modelo.restaurar();
-  }
-  assert.strictEqual(global.__consultou, true, "a ferramenta local não rodou");
-  delete global.__consultou;
+test("uma tool local com nome próprio é candidata do C6 e roda LOCAL, sem ir ao mundo", async () => {
+  const raiz = pastaCom({ "tools/anotar.js":
+    "module.exports = { nome: 'anotar_ideia', descricao: 'Anota uma ideia no caderno.', executar: async () => 'anotado' };" });
+  const ext = extensoes.criar(raiz);
+  const mundo = mundoDe([EAT]);
+  const laco = new Laco({ mundo, mente: menteDe("- Anotar uma ideia"), extensoes: ext,
+                          decider: deciderQue("anotar_ideia"), registro: null, emitir: () => {} });
+  await laco.sussurrar("anote uma ideia");
+  assert.strictEqual(mundo.chamadas.length, 0, "a tool local foi ao mundo");
 });
 
-// --- a lane de CONSULTA do mundo (spec 040) --------------------------------- //
-// Uma consulta vem do mundo (o nome e o corpo são de lá) mas NÃO é proposta:
-// perguntar a hora ou a própria memória não muda nada. O conector reconhece as
-// duas pela marca do próprio MCP, `annotations.readOnlyHint` — nunca por uma lista
-// de nomes escrita aqui, que foi exatamente a tabela `CONSULT_TOOLS[]` que
-// dessincronizou e desapareceu num refactor.
-
-test("uma consulta do mundo é executada e a Mente pensa de novo, sem virar proposta", async () => {
-  Mente.usarMundo(mundoFalso([
-    { name: "attack", description: "Golpeia alguém.", inputSchema: { type: "object" } },
-    { name: "consultar_momento", description: "Que momento do dia é agora.",
-      inputSchema: { type: "object", properties: {} },
-      annotations: { readOnlyHint: true } },
-  ], { consultar_momento: "fim de tarde" }));
-  Mente.usarExtensoes(extensoes.criar(pastaCom({})));
-  globalThis.__consultasFeitas = [];
-
-  // rodada 1: só a consulta  ·  rodada 2: a capacidade que muda o mundo
-  const modelo = modeloQueChama([
-    [{ nome: "consultar_momento", args: {} }],
-    [{ nome: "attack", args: { alvo: "sarga", prosa: { acao: "ergue o pé de cabra" } } }],
-  ]);
-  try {
-    const r = await Mente.interpret("cumpra a intenção", CENA);
-    assert.ok(r.propostas, "a Mente não chegou a propor nada ao mundo");
-    assert.strictEqual(r.propostas.length, 1, "a consulta virou proposta junto");
-    assert.strictEqual(r.propostas[0].capacidade, "attack");
-    assert.strictEqual(modelo.rodadas(), 2, "não houve segunda rodada de raciocínio");
-  } finally {
-    modelo.restaurar();
-  }
-  assert.deepStrictEqual(globalThis.__consultasFeitas,
-    [{ nome: "consultar_momento", args: {} }],
-    "a consulta não foi executada NO MUNDO");
-  delete globalThis.__consultasFeitas;
+test("a consulta do mundo roda LÁ e é registrada como CONSULTIVA, não como ação persistente", async () => {
+  mundoDe.linhas = [];
+  const mundo = mundoDe([EAT, MEMORIA]);
+  const mente = menteDe("- Lembrar o que sabe");
+  const reg = registroMod.criar({ mundo, cfg: { personagem: "fulano", runtime: "local", model: "x" },
+                                  extensoes: extensoes.criar(pastaCom({})), mente });
+  const laco = new Laco({ mundo, mente, extensoes: extensoes.criar(pastaCom({})),
+                          decider: deciderQue("consultar_memoria"), registro: reg, emitir: () => {} });
+  await laco.sussurrar("lembre");
+  assert.deepStrictEqual(mundo.chamadas.map((c) => c.nome), ["consultar_memoria"]);
+  const acao = mundoDe.linhas[0].corpo.acoes[0];
+  assert.strictEqual(acao.consultiva, true);
+  assert.strictEqual(acao.persistente, false);
 });
 
-test("a consulta do mundo não vira proposta nem quando é a única coisa que a Mente chama", async () => {
-  Mente.usarMundo(mundoFalso([
-    { name: "attack", description: "Golpeia alguém.", inputSchema: { type: "object" } },
-    { name: "consultar_memoria", description: "Consulta a sua memória.",
-      inputSchema: { type: "object", properties: { sobre: { type: "string" } },
-                     required: ["sobre"] },
-      annotations: { readOnlyHint: true } },
-  ], { consultar_memoria: "Você não guarda nenhuma lembrança sobre isso." }));
-  Mente.usarExtensoes(extensoes.criar(pastaCom({})));
-  globalThis.__consultasFeitas = [];
-
-  // o modelo só consulta, para sempre: o laço tem de PARAR e nada pode ser proposto
-  const modelo = modeloQueChama([[{ nome: "consultar_memoria", args: { sobre: "ladrão" } }]]);
-  try {
-    // spec 045: sem tool_call real após esgotar o orçamento, `interpret` devolve
-    // `null` — não existe mais um caminho de prosa pra devolver objeto nenhum. É
-    // o laço (`laco.js`) que trata sessão nula como "nada aconteceu".
-    const r = await Mente.interpret("veja se alguém aqui roubou", CENA);
-    assert.strictEqual(r, null, "uma CONSULTA-sem-fim devia esgotar sem virar proposta");
-    // o freio é o ORÇAMENTO DE RODADAS da vez, e o teste lê o número de lá em vez
-    // de guardar uma cópia — cópia envelhece calada. Sem o caminho de prosa (spec
-    // 045), esgotar o orçamento não paga mais uma ida extra ao modelo.
-    assert.ok(modelo.rodadas() <= Mente.MAX_RODADAS,
-              `o laço de raciocínio não tem freio (${modelo.rodadas()} rodadas)`);
-  } finally {
-    modelo.restaurar();
-  }
-  assert.ok(globalThis.__consultasFeitas.length >= 1, "a consulta não rodou");
-  delete globalThis.__consultasFeitas;
-});
-
-test("uma capacidade do mundo SEM a marca de leitura continua sendo proposta", async () => {
-  // a guarda contra o erro simétrico: se `readOnlyHint` fosse lido com folga (ou a
-  // marca virasse "qualquer nome que começa com consultar_"), `attack` poderia
-  // parar de chegar ao mundo — e o personagem ficaria mudo achando que pensou.
-  Mente.usarMundo(mundoFalso([
-    { name: "consultar_regras", description: "Parece consulta, mas não é marcada.",
-      inputSchema: { type: "object" } },
-  ], {}));
-  Mente.usarExtensoes(extensoes.criar(pastaCom({})));
-  globalThis.__consultasFeitas = [];
-
-  const modelo = modeloQueChama([[{ nome: "consultar_regras",
-                                    args: { prosa: { acao: "abre o livro" } } }]]);
-  try {
-    const r = await Mente.interpret("consulte as regras", CENA);
-    assert.ok(r.propostas && r.propostas.length === 1,
-      "a capacidade não marcada deixou de ser proposta ao mundo");
-    assert.strictEqual(r.propostas[0].capacidade, "consultar_regras");
-  } finally {
-    modelo.restaurar();
-  }
-  assert.deepStrictEqual(globalThis.__consultasFeitas, [],
-    "foi tratada como consulta sem a marca do MCP");
-  delete globalThis.__consultasFeitas;
-});
-
-test("a ferramenta local não vira proposta ao mundo, nem depois de N rodadas", async () => {
-  const ext = extensoes.criar(pastaCom({
-    "tools/teimosa.js": `module.exports = {
-      nome: "pensar_mais",
-      executar: async () => ({ conclusao: "nada a fazer" }),
-    };`,
-  }));
-  Mente.usarMundo(mundoFalso([
-    { name: "take", description: "Pega um item.", inputSchema: { type: "object" } },
-  ]));
-  Mente.usarExtensoes(ext);
-
-  // o modelo só chama a ferramenta local, para sempre: o laço tem de PARAR
-  const modelo = modeloQueChama([[{ nome: "pensar_mais", args: {} }]]);
-  try {
-    // spec 045: sem tool_call real após esgotar o orçamento, `interpret` devolve
-    // `null` — não existe mais um caminho de prosa pra devolver objeto nenhum. É
-    // o laço (`laco.js`) que trata sessão nula como "nada aconteceu".
-    const r = await Mente.interpret("pense", CENA);
-    assert.strictEqual(r, null, "uma ferramenta LOCAL-sem-fim devia esgotar sem virar proposta");
-    // o freio é o ORÇAMENTO DE RODADAS da vez, e o teste lê o número de lá em vez
-    // de guardar uma cópia — cópia envelhece calada. Sem o caminho de prosa (spec
-    // 045), esgotar o orçamento não paga mais uma ida extra ao modelo.
-    assert.ok(modelo.rodadas() <= Mente.MAX_RODADAS,
-              `o laço de raciocínio não tem freio (${modelo.rodadas()} rodadas)`);
-  } finally {
-    modelo.restaurar();
-  }
+test("uma capacidade do mundo SEM a marca de leitura é ação persistente quando muda algo", async () => {
+  mundoDe.linhas = [];
+  const mundo = mundoDe([EAT, MEMORIA]);
+  const mente = menteDe("- Comer o Pão");
+  const reg = registroMod.criar({ mundo, cfg: { personagem: "fulano", runtime: "local", model: "x" },
+                                  extensoes: extensoes.criar(pastaCom({})), mente });
+  const laco = new Laco({ mundo, mente, extensoes: extensoes.criar(pastaCom({})),
+                          decider: deciderQue("eat"), registro: reg, emitir: () => {} });
+  await laco.sussurrar("coma o pão");
+  const acao = mundoDe.linhas[0].corpo.acoes[0];
+  assert.strictEqual(acao.consultiva, false);
+  assert.strictEqual(acao.persistente, true);
 });

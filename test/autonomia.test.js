@@ -1,60 +1,35 @@
-// A BIFURCAÇÃO DO TICK AUTÔNOMO (spec 033, item 53.6).
+// A BIFURCAÇÃO DO TICK AUTÔNOMO — agora "querer OU andar" (spec 075).
 //
-// Cada volta do relógio bifurca: quem TEM compromisso decide se age por ele; quem
-// NÃO tem para e faz um. O ramo de criar nasceu ligado (spec 035, 30/07) e o
-// refactor de prompts de 06/08 apagou o `if`, deixando `REFLECT_COMMAND` órfão —
-// declarado e nunca referenciado, por uma semana.
+// O ramo de CRIAR já morreu em silêncio uma vez (spec 035 → refactor de 06/08: o
+// `REFLECT_COMMAND` ficou órfão por uma semana, e um personagem sem intenção
+// simplesmente nunca fazia nenhuma). Na spec 075 ele virou a rotina `querer` (C3P):
+// sem desejo, o tick pergunta "o que eu quero agora?" e planeja.
 //
-// Falhava em SILÊNCIO, que é o que o tornou caro: um personagem sem intenção
-// simplesmente nunca fazia nenhuma, e isso se parece com apatia, não com defeito.
-// O Irmão Tobias passou três horas perguntando o mesmo caminho porque, sem
-// compromisso e sem urgência biológica, a única bússola que lhe restava era a
-// memória — e ela só tinha repetições do próprio fracasso.
-//
-// Este teste existe para que o `if` não possa ser apagado de novo em silêncio.
+// O comportamento do tick é testado em `laco.test.js` (TICK sem desejo). Aqui fica a
+// garantia de que as rotinas do harness existem e são EDITÁVEIS pelo painel — o
+// Jev e a Mente são um ecossistema só, e a mesa tuna os dois do mesmo jeito.
 
 "use strict";
 
 const test = require("node:test");
 const assert = require("node:assert");
 
-// spec 072: a Mente é uma POR ASSENTO. Só a construção mudou — as asserções abaixo
-// são as mesmas de antes, e é isso que prova que o refactor foi léxico (research R5).
 const Mente = require("../mente").criarMente();
 
-test("sem compromisso, o tick manda REFLETIR — e não chama modelo nenhum", async () => {
-  // se tocasse no modelo, a chamada falharia (não há runtime no teste): o próprio
-  // sucesso desta chamada é a prova de que o ramo é determinístico
-  const d = await Mente.deriveWhisper({ intentions: [], self: { id: "x" } });
-  const sussurro = d && d.texto;
-
-  assert.ok(sussurro, "sem intenção, o tick não produziu sussurro nenhum");
-  assert.strictEqual(sussurro, Mente.promptsPadrao().refletir);
-  // a ROTINA viaja junto: é ela que faz o laço responder a reflexão com a face
-  // recortada em vez da cena inteira (item 53.6)
-  assert.strictEqual(d.rotina, "refletir");
-  assert.match(sussurro, /decid/i, "o comando não manda decidir");
-  // o texto ANTIGO mandava descrever a 'action' — campo do formato que o caminho
-  // de tool-calling aposentou. Se voltar, voltou o prompt errado.
-  assert.doesNotMatch(sussurro, /'action'|"action"/,
-                      "o comando ainda fala do formato antigo");
-});
-
-test("o comando de refletir é uma rotina EDITÁVEL no painel", () => {
+test("as rotinas do harness são EDITÁVEIS no painel — as da Mente e as do Jev", () => {
   const nomes = Mente.ROTINAS.map((r) => r.nome);
-  assert.ok(nomes.includes("refletir"),
-            "quem tuna não consegue trocar o prompt de reflexão");
-  assert.ok(Object.keys(Mente.promptsPadrao()).includes("refletir"));
+  for (const n of ["objetivos", "querer", "planejar", "narrar",
+                   "decisor_system", "c6_tool", "c7_param", "c8_passo", "c8d_fim"]) {
+    assert.ok(nomes.includes(n), `a rotina '${n}' não aparece para quem tuna`);
+    assert.ok(Object.keys(Mente.promptsPadrao()).includes(n), `a rotina '${n}' não tem texto padrão`);
+  }
 });
 
-// NÃO existe teste do ramo OPOSTO ("com compromisso, não reflete"), e a ausência é
-// deliberada. Ele exigiria chamar `deriveWhisper` com uma intenção, o que dispara o
-// MODELO — e um `fetch` em voo mantém o event loop vivo, então o processo de teste
-// não encerra nem quando a asserção passa. A primeira versão deste arquivo tinha
-// esse teste: passava enquanto o Ollama estava ocupado com o jogo (falhava rápido) e
-// travava por minutos no instante em que ele ficou livre. Teste que depende do que
-// está rodando na máquina não é teste.
-//
-// O que se perde é pouco: é o MESMO `if` do teste acima, pelo outro lado. Cobrir o
-// ramo do modelo pede uma costura para injetar runtime, que o `mente.js` não tem —
-// e inventá-la só para este teste seria pior que a lacuna.
+test("as rotinas do caminho antigo MORRERAM (FR-005): nada de interpretar, autonomia ou refletir", () => {
+  const nomes = Mente.ROTINAS.map((r) => r.nome);
+  for (const morta of ["interpretar", "autonomia", "refletir"]) {
+    assert.ok(!nomes.includes(morta), `a rotina '${morta}' ainda existe`);
+  }
+  assert.strictEqual(typeof Mente.interpret, "undefined");
+  assert.strictEqual(typeof Mente.deriveWhisper, "undefined");
+});

@@ -65,9 +65,22 @@ function criar({ mundo, cfg, extensoes, mente, sala, membro }) {
         narracao: null,
         falhas_de_extensao: [],
         falhas: [],
+        // O HARNESS POR OBJETIVOS (spec 075, FR-016/FR-017). Uma entrada por CAIXA
+        // percorrida, na ordem, com o MESMO nome da página de arquitetura — é o que faz
+        // o registro, o código e a documentação falarem a mesma língua (FR-023).
+        caixas: [],
+        // as chamadas ao mundo, classificadas (persistente/consultiva, pedida/não pedida)
+        acoes: [],
+        // a foto do caderno do desejo no início do turno
+        desejo: null,
+        // onde o turno quebrou, quando quebrou (item 80: o turno que quebra vira dado)
+        falha: null,
+        // turno sem nada a fazer (sono, trânsito) SOBE marcado, em vez de sumir
+        descartado: null,
       },
     };
     let descartado = false;
+    let caixaAtual = null;
 
     return {
       id: linha.turno_id,
@@ -108,11 +121,32 @@ function criar({ mundo, cfg, extensoes, mente, sala, membro }) {
         });
       },
       narrou(prosa) { linha.corpo.narracao = prosa || null; },
-      falha(msg) { linha.corpo.falhas.push(String(msg)); },
+      // Uma caixa do harness. `dados`: entrada, saida, decisao, custo_pago, custo_local,
+      // duracao_ms, prompt_versao, modelo, sombra — o que houver.
+      caixa(box, dados) {
+        const c = { box, ...(dados || {}) };
+        linha.corpo.caixas.push(c);
+        caixaAtual = box;
+        return c;
+      },
+      // A caixa que está rodando agora — é o que `falha` grava quando o turno quebra.
+      entrou(box) { caixaAtual = box; },
+      acao(a) { linha.corpo.acoes.push(a); },
+      desejo(foto) { linha.corpo.desejo = foto || null; },
+      falha(msg) {
+        linha.corpo.falhas.push(String(msg));
+        if (!linha.corpo.falha) linha.corpo.falha = { box: caixaAtual, erro: String(msg) };
+      },
       falhaDeExtensao(ponto, msg) {
         linha.corpo.falhas_de_extensao.push({ ponto, erro: String(msg) });
       },
-      descartar() { descartado = true; },
+      // O DESCARTADO SOBE (spec 075, contrato 04 regra 1). Antes ele sumia, e a análise
+      // não via os ticks de sono e de viagem — que são justamente os que custam 0.
+      // Sem motivo, é o descarte antigo de verdade (nada a registrar).
+      descartar(motivo) {
+        if (motivo) linha.corpo.descartado = String(motivo);
+        else descartado = true;
+      },
 
       async fechar() {
         if (descartado) return null;
