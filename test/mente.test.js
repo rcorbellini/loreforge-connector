@@ -799,3 +799,30 @@ test("a dica saiu do parâmetro E entrou no ESCOLHER_SYSTEM", () => {
   assert.ok(/nunca um c[óo]digo/.test(sys),
     "a metade que impede o id inventado tinha de estar no system também");
 });
+
+// O `event` e o `heard_from` das memórias (2026-09-26, harness por objetivos · B7) chegam
+// ao CONECTOR — é com eles que o progresso separa "aprendi algo" de "lembro do que fiz" —
+// e NÃO descem ao payload da Mente. É a regra das três camadas (`docs/fluxo-do-contrato.md`):
+// o conector guarda o que o personagem PODERIA alcançar; o payload leva o que está
+// presente agora, e a classificação de sistema da lembrança não é isso. Teste de LIGAÇÃO
+// do lado do conector: o que o `get_context` entrega × o que sai no `user` do modelo.
+test("memória: `event`/`heard_from` ficam no conector e NÃO vão ao payload da Mente", async () => {
+  const m = require("../mente");
+  const agora = Math.floor(Date.now() / 1000);
+  const CTX = {
+    self: { id: "elga-taverneira", name: "Elga", needs: {}, inventory: [], intentions: [],
+      memories: [
+        { id: "mem-1", estado: "viva", salience: "vivida", recency: "agora", intensity: "small",
+          involved: ["bram-pescador"], summary: "Bram me contou do barco.", timestamp_start: agora,
+          event: "hearsay_reconto", heard_from: "bram-pescador" },
+        { id: "mem-2", estado: "viva", salience: "vivida", recency: "agora", intensity: "small",
+          involved: [], summary: "Comi o pão.", timestamp_start: agora, event: "eat" }] },
+    scene: { place: { id: "taverna-do-gancho", name: "Taverna do Gancho", prose: "" },
+             characters: [], items: [], objects: [], exits: [] },
+  };
+  const payload = JSON.stringify(await m._contextoPayload(CTX, { comCapacidades: false }));
+  assert.ok(payload.includes("Bram me contou do barco."), "a memória em si sumiu do payload");
+  for (const vaz of ["hearsay_reconto", "heard_from", "\"event\"", "\"eat\""]) {
+    assert.ok(!payload.includes(vaz), `${vaz} vazou para o payload da Mente`);
+  }
+});
