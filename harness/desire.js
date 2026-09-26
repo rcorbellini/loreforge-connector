@@ -78,6 +78,7 @@ class Notebook {
   }
 
   salvar() {
+    if (!this.personagem) return;   // sem dono, não há caderno (nada de `undefined.json`)
     try {
       fs.mkdirSync(dir(), { recursive: true });
       const alvo = _arquivo(this.personagem);
@@ -110,10 +111,22 @@ class Notebook {
     return this.ativo();
   }
 
-  // O desejo em que ele trabalha: o mais antigo ativo (um de cada vez, como o tick).
+  // O desejo em que ele trabalha: o MAIS RECENTE ativo (um de cada vez, como o tick).
+  //
+  // Era o mais antigo, e o caso 2 no conector real (26/09) mostrou o estrago: os
+  // personagens carregam intenções velhas no world ("Análise o contexto e decida o que
+  // achar melhor", do Draven, ativa há semanas), e o harness andava ESSAS em vez do
+  // desejo que acabou de nascer — pelo jogador ou pelo próprio tick. O desejo novo é a
+  // vontade de agora. A idade vem do id da intenção (`int-<epoch ms>-…`), que é o
+  // instante em que o world a criou; sem ele, a hora em que o caderno a viu.
   ativo() {
+    const quando = (d) => {
+      const m = String(d.id || "").match(/^int-(\d{10,13})/);
+      if (m) return Number(m[1].length === 10 ? m[1] + "000" : m[1]);
+      return Date.parse(d.criado_em) || 0;
+    };
     const ds = Object.values(this.dados.desejos);
-    ds.sort((a, b) => String(a.criado_em).localeCompare(String(b.criado_em)));
+    ds.sort((a, b) => quando(b) - quando(a));
     return ds[0] || null;
   }
 

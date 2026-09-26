@@ -259,3 +259,10 @@ test("C8D: o fim COPIADO do exemplo do prompt não vale — o alvo tem de ser do
   assert.strictEqual(g("estar em Taverna do Gancho", "Chegar à Taverna do Gancho", []).familia, "lugar");
   assert.strictEqual(g("fome saciada", "Matar a fome", []).familia, "necessidade");
 });
+
+test("o harness anda o desejo MAIS RECENTE — a intenção velha do world não sequestra o novo (caso 2)", () => {
+  const nb = new H.desire.Notebook("recente");
+  nb.sync([{ id: "int-1788725803802-01f5c5b4", status: "ativa", content: "Análise o contexto e decida o que achar melhor." },
+           { id: "int-1790460000000-aaaa0000", status: "ativa", content: "Matar a fome.\n- Comer o Bocado" }]);
+  assert.strictEqual(nb.ativo().desejo, "Matar a fome");
+});

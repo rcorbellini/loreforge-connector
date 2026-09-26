@@ -144,3 +144,11 @@ test("decisor: endpoint fora do ar vira DeciderUnavailable — sem fallback (Pri
     fetchImpl: async () => { throw new Error("ECONNREFUSED"); } });
   await assert.rejects(() => d.choose({}, "?", [["a", "A"], ["b", "B"]]), DeciderUnavailable);
 });
+
+test("C7: o texto livre leva o ASSUNTO, não o objetivo inteiro (caso 2: o `sobre` do ask_about)", () => {
+  const { assunto } = H.params;
+  assert.strictEqual(assunto("Perguntar à Hulda sobre o furto do Pé de Cabra", []), "o furto do Pé de Cabra");
+  assert.strictEqual(assunto("Perguntar ao Bram a respeito do Nuno.", []), "Nuno");
+  assert.strictEqual(assunto("Perguntar à Hulda quem viu o Nuno", [{ nome: "Nuno" }]), "Nuno");
+  assert.strictEqual(assunto("Conversar com a Bruna", []), "Conversar com a Bruna");
+});

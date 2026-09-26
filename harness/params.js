@@ -36,6 +36,18 @@ async function _escolher(decider, pergunta, texto, toolName, ops) {
   return decider.tournament({ passo: texto, capacidade: toolName }, pergunta, ops.slice(0, 64));
 }
 
+// O ASSUNTO de um parâmetro de texto livre (`sobre`, `fala`…). Mandar o objetivo inteiro
+// ("Conversar com Bruna para entender o que ela precisa") foi o que o caso 2 no conector
+// real mostrou: a pergunta chega ao mundo sem assunto. Ordem: o que vem depois de
+// "sobre"/"a respeito de"; senão, o alvo citado que sobrou (quem não coube em parâmetro);
+// senão, o objetivo como veio.
+function assunto(texto, sobra) {
+  const m = String(texto || "").match(/\b(?:sobre|a respeito d[eoa]s?|acerca d[eoa]s?)\s+(.+)$/i);
+  if (m && m[1].trim()) return m[1].trim().replace(/[.!?]+$/, "");
+  if (sobra && sobra.length) return sobra[0].nome;
+  return texto;
+}
+
 // → { args, subiu?, decisoes: {param: decisao} }
 async function fillParams({ texto, tool, citados, ctx, decider, pergunta }) {
   const refs = refsOf(tool);
@@ -109,10 +121,10 @@ async function fillParams({ texto, tool, citados, ctx, decider, pergunta }) {
     const esq = props[p] || {};
     if (esq.type === "boolean") args[p] = false;
     else if (esq.type === "number" || esq.type === "integer") continue;
-    else if (esq.type === "string" || !esq.type) args[p] = sobra.length ? sobra[0].nome : texto;
+    else if (esq.type === "string" || !esq.type) args[p] = assunto(texto, sobra);
   }
   args.prosa = { acao: texto };
   return { args, decisoes };
 }
 
-module.exports = { BOX, fillParams };
+module.exports = { BOX, fillParams, assunto };
