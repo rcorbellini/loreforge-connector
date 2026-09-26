@@ -579,7 +579,8 @@ class Laco {
                             saida: { passos: pl.passos, fim: pl.fim, problemas: pl.problemas,
                                      tentativas_de_plano: pl.tentativasDePlano } });
     if (!pl.passos.length) return null;
-    const content = H.desire.formatContent(desejoTexto, pl.passos, pl.fim);
+    const fim = H.ending.groundEnding(H.ending.extractEnding(pl.fim), desejoTexto, pl.passos);
+    const content = H.desire.formatContent(desejoTexto, pl.passos, fim.texto);
     await this.mundo.criarIntencao(content);
     // o world é a verdade: relê e sincroniza o caderno com o id que nasceu lá
     const ctx2 = await this.mundo.contexto();
@@ -832,10 +833,11 @@ class Laco {
     if (!pl.passos.length) return;
     // o fim já declarado (o `pronto_quando` legado, ou o "Pronto quando" escrito à mão)
     // vale mais que o que o C3P sugeriu agora
-    const fimTexto = d.fim && d.fim.familia !== "nenhuma" ? d.fim.texto : pl.fim;
-    const content = H.desire.formatContent(d.desejo, pl.passos, fimTexto);
+    const fim = d.fim && d.fim.familia !== "nenhuma" ? d.fim
+      : H.ending.groundEnding(H.ending.extractEnding(pl.fim), d.desejo, pl.passos);
+    const content = H.desire.formatContent(d.desejo, pl.passos, fim.texto);
     await this.mundo.atualizarIntencao(d.id, content);
-    nb.replan(d.id, pl.passos, d.fim && d.fim.familia !== "nenhuma" ? d.fim : H.ending.extractEnding(pl.fim), content);
+    nb.replan(d.id, pl.passos, fim, content);
     this._emitePlano(nb.get(d.id));
   }
 
@@ -890,9 +892,11 @@ class Laco {
     }
     const porCusto = d.bloqueio.motivo === "custo";
     if (porCusto) d.replanejamentos_por_custo = (d.replanejamentos_por_custo || 0) + 1;
-    const content = H.desire.formatContent(d.desejo, pl.passos, pl.fim);
+    const fim = d.fim && d.fim.familia !== "nenhuma" && d.fim.fonte === "pronto_quando" ? d.fim
+      : H.ending.groundEnding(H.ending.extractEnding(pl.fim), d.desejo, pl.passos);
+    const content = H.desire.formatContent(d.desejo, pl.passos, fim.texto);
     await this.mundo.atualizarIntencao(d.id, content);
-    nb.replan(d.id, pl.passos, H.ending.extractEnding(pl.fim), content);
+    nb.replan(d.id, pl.passos, fim, content);
     // o teto é por PLANO: um plano novo, depois de estourar, recomeça a conta (e se
     // estourar de novo, ele desiste — acima)
     if (porCusto) nb.get(d.id).tokens_pagos = 0;

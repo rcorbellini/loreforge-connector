@@ -53,6 +53,24 @@ function extractEnding(fimTexto, intencao) {
   return { familia: "nenhuma", texto: t, fonte: "prosa" };
 }
 
+// O FIM PRECISA SER DO DESEJO (B9b, 26/09). O C3P copia os EXEMPLOS do prompt como
+// valor: 25 de 34 planos saíram com "posse de Faca de Mercador", "estar em Cais Velho" ou
+// "lembrança sobre Nuno" em desejos sem relação nenhuma — e a linha de base do B9 já fazia
+// o mesmo (21/34), invisível porque a régua de lá só olhava a CLASSE do fim. Um fim assim
+// fecharia o desejo à toa no dia em que o personagem tocasse a Faca de Mercador.
+//
+// A contenção é por REGRA, sem modelo: um fim com alvo (posse, lugar, lembrança) só vale
+// se o alvo aparece no próprio desejo ou nos passos. Senão, o fim é "nenhum" — e o desejo
+// fecha por vontade, como qualquer desejo que não se confere por um fato simples.
+function groundEnding(fim, desejo, passos) {
+  if (!fim || !fim.alvo || fim.familia === "necessidade" || fim.familia === "nenhuma") return fim;
+  if (fim.fonte === "pronto_quando") return fim;
+  const alvo = base(fim.alvo);
+  const texto = " " + norm([desejo || ""].concat(passos || []).join(" ")) + " ";
+  if (alvo && texto.includes(` ${alvo} `)) return fim;
+  return { familia: "nenhuma", texto: "nenhum", fonte: "prosa", descartado: fim.texto };
+}
+
 // → true | false | null (null = não conferível por regra)
 function isDone(fim, ctx) {
   if (!fim || fim.familia === "nenhuma") return null;
@@ -96,4 +114,4 @@ async function shadow({ decider, pergunta, desejo, fim, memoriasNovas }) {
   return { losango: "c8d_fim", resposta: r.vencedora, margem: r.margem };
 }
 
-module.exports = { BOX, extractEnding, isDone, shadow };
+module.exports = { BOX, extractEnding, groundEnding, isDone, shadow };

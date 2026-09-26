@@ -248,3 +248,14 @@ test("a narração STREAMADA também entra no custo do turno (o último pedaço 
   assert.strictEqual(c.entrada, 300);
   assert.strictEqual(c.saida, 20);
 });
+
+test("C8D: o fim COPIADO do exemplo do prompt não vale — o alvo tem de ser do desejo (B9b)", () => {
+  const g = (fim, desejo, passos) => H.ending.groundEnding(H.ending.extractEnding(fim), desejo, passos);
+  // o caso real: "posse de Faca de Mercador" num desejo de fazer um plano de segurança
+  assert.strictEqual(g("posse de Faca de Mercador", "Fazer um plano de segurança para o porto", ["Falar com a Ossa"]).familia, "nenhuma");
+  assert.strictEqual(g("estar em Cais Velho", "Aprender o caminho do Santuário", ["Perguntar ao Tobias"]).familia, "nenhuma");
+  // o fim do próprio desejo continua valendo
+  assert.strictEqual(g("posse de Ungüento de Arnica", "Conseguir o Ungüento de Arnica do Obadiah", ["Comprar o Ungüento"]).familia, "posse");
+  assert.strictEqual(g("estar em Taverna do Gancho", "Chegar à Taverna do Gancho", []).familia, "lugar");
+  assert.strictEqual(g("fome saciada", "Matar a fome", []).familia, "necessidade");
+});
