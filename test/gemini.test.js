@@ -50,7 +50,7 @@ const TOOLS = [
   { name: "narrate", description: "Encerra o turno.", inputSchema: { type: "object" } },
 ];
 
-function espiaFetch() {
+function espiaFetch(uso = { promptTokenCount: 10, candidatesTokenCount: 5 }) {
   const original = globalThis.fetch;
   const chamadas = [];
   globalThis.fetch = async (url, opts) => {
@@ -60,22 +60,25 @@ function espiaFetch() {
       headers: { get: () => "application/json" },
       json: async () => ({
         candidates: [{ content: { parts: [{ text: "- Pegar a corda" }] } }],
-        usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5 },
+        usageMetadata: uso,
       }),
     };
   };
   return { chamadas, restaurar: () => { globalThis.fetch = original; } };
 }
 
-async function comGemini(cb, opts = {}) {
+async function comGemini(cb, opts = {}, { think, porRotina, uso } = {}) {
   const cfg = configuracao.carregar(true);
   cfg.runtime = "gemini";
   cfg.geminiKey = "AIza-SEGREDO-DE-TESTE";
+  if (think !== undefined) cfg.think = think;
+  cfg.porRotina = porRotina || {};
   configuracao.gravar(cfg);
   Mente.usarMundo(mundoFalso(TOOLS));
   Mente.usarExtensoes({ toolsLocais: () => [], ehLocal: () => false,
                         hook: async (_p, dado) => dado });
-  const espiao = espiaFetch();
+  const espiao = espiaFetch(uso);
+  Mente.zerarCusto();
   try {
     return { texto: await Mente.conversar("sys", "faça algo", { rotina: "objetivos", ...opts }), ...espiao };
   } finally {
@@ -165,4 +168,25 @@ test("spec 076: o plano pede JSON — `responseMimeType` só quando a rotina ped
   assert.strictEqual(com.chamadas[0].corpo.generationConfig.responseMimeType, "application/json");
   const sem = await comGemini();
   assert.strictEqual(sem.chamadas[0].corpo.generationConfig.responseMimeType, undefined);
+});
+
+// O THINKING NATIVO NUNCA ENTRA (mantenedor, 03/10). O Gemini pensa por padrão: sem o
+// `thinkingConfig` no corpo, o `think:false` da mesa não chega a ele e o modelo pensa
+// escondido, pago, fora do contrato do harness — foi o que a bateria do M2 fez sem ninguém ver.
+test("Gemini: com o `think` desligado (o padrão), o corpo DESLIGA o thinking nativo", async () => {
+  const { chamadas } = await comGemini();
+  assert.deepStrictEqual(chamadas[0].corpo.generationConfig.thinkingConfig, { thinkingBudget: 0 });
+});
+
+test("Gemini: só a mesa que LIGA o `think` deixa o modelo no padrão dele", async () => {
+  const ligado = await comGemini(null, {}, { think: true });
+  assert.strictEqual(ligado.chamadas[0].corpo.generationConfig.thinkingConfig, undefined);
+  const rotinaDesliga = await comGemini(null, {}, { think: true, porRotina: { objetivos: { think: false } } });
+  assert.deepStrictEqual(rotinaDesliga.chamadas[0].corpo.generationConfig.thinkingConfig,
+    { thinkingBudget: 0 }, "a rotina que desliga o think não chegou ao corpo do Gemini");
+});
+
+test("Gemini: o thinking, quando houver, entra no custo do turno como saída paga", async () => {
+  await comGemini(null, {}, { uso: { promptTokenCount: 10, candidatesTokenCount: 5, thoughtsTokenCount: 700 } });
+  assert.strictEqual(Mente.custoDoTurno().saida, 705);
 });

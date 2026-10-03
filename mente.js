@@ -335,7 +335,12 @@ function criarMente({ mundo, extensoes } = {}) {
     return msg.content || "";
   }
 
-  async function gemini(cfg, system, user, { temperature = 0.4, onToken, forceJson = false } = {}) {
+  // O THINKING NATIVO NUNCA ENTRA (mantenedor, 03/10): o pensar do harness é o contrato
+  // dele (o M), e não se troca pelo raciocínio escondido do modelo. O Gemini 3.5 Flash
+  // PENSA POR PADRÃO — sem `thinkingConfig`, a bateria do M2 gastou de 383 a 2.882 tokens
+  // de thinking por chamada, pagos e fora do contrato. `thinkingBudget: 0` foi medido
+  // nesse modelo: 0 token de thinking. Só a mesa que liga o `think` volta ao padrão dele.
+  async function gemini(cfg, system, user, { temperature = 0.4, onToken, forceJson = false, think } = {}) {
     if (!cfg.geminiKey) throw new Error("configure sua chave do Gemini no ⚙.");
     const emit = _safeToken(onToken);
     const contents = [{ role: "user", parts: [{ text: String(user ?? "") }] }];
@@ -355,7 +360,8 @@ function criarMente({ mundo, extensoes } = {}) {
           contents, systemInstruction: { parts: [{ text: system }] },
           // o plano do C3 (spec 076) é JSON: o modo JSON do Gemini foi o que a bateria mediu
           generationConfig: { temperature: Math.min(temperature, 2),
-                              ...(forceJson ? { responseMimeType: "application/json" } : {}) },
+                              ...(forceJson ? { responseMimeType: "application/json" } : {}),
+                              ...(think === true ? {} : { thinkingConfig: { thinkingBudget: 0 } }) },
         }),
       });
     } catch (_) { throw new Error("não foi possível falar com o Gemini."); }
@@ -378,7 +384,9 @@ function criarMente({ mundo, extensoes } = {}) {
       return texto;
     }
     const data = await res.json();
-    _contabiliza(data?.usageMetadata?.promptTokenCount, data?.usageMetadata?.candidatesTokenCount);
+    // o thinking é pago como saída: se a mesa o ligou, ele aparece no custo do turno
+    const uso = data?.usageMetadata || {};
+    _contabiliza(uso.promptTokenCount, (Number(uso.candidatesTokenCount) || 0) + (Number(uso.thoughtsTokenCount) || 0));
     const cand = (data.candidates && data.candidates[0]) || {};
     return ((cand.content && cand.content.parts) || []).map((p) => p.text || "").join("");
   }
