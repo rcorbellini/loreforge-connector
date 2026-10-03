@@ -297,6 +297,7 @@ class Laco {
 
   async _turno(texto, contexto, t) {
     this.numeroTurno += 1;
+    const custo0 = this.mente.custoDoTurno ? _soma(this.mente.custoDoTurno()) : 0;
     let cena = { texto, contexto };
     cena = await this.extensoes.hook("antes_de_pensar", cena, t) || cena;
     const ctx = cena.contexto;
@@ -325,8 +326,9 @@ class Laco {
                                           sussurro: cena.texto, d: aberto });
     // O PEDIDO (spec 077): com o pensar ligado, o que o plano deixou para depois abre ou regrava
     // o pedido; "nada a carregar" fecha o que estava aberto. Desligado, nada é carregado.
+    const custoDoPlano = this.mente.custoDoTurno ? _soma(this.mente.custoDoTurno()) - custo0 : 0;
     const extras = pensar
-      ? await this._pedidoDoSussurro({ texto: cena.texto, plan: c3.plan, ctx, ex, aberto, t })
+      ? await this._pedidoDoSussurro({ texto: cena.texto, plan: c3.plan, ctx, ex, aberto, t, custoDoPlano })
       : [];
 
     // O turno que mudou alguma coisa (spec 072, FR-032) — a sala lê para decidir se o
@@ -521,7 +523,11 @@ class Laco {
     }
     for (const chave of ["lido", "falas", "wares", "informes", "reconhecimentos"]) {
       for (const m of out[chave] || []) {
-        partes.push(typeof m === "string" ? m : JSON.stringify(m));
+        // PRINCÍPIO V: um objeto do mundo NUNCA vira JSON na tela (a bateria da 077 mostrou o
+        // reconhecimento do Bram inteiro, com id e "posse", num batimento do turno). Do objeto, só o
+        // que se lê em mundo: o texto, ou quem/o que foi observado.
+        const txt = typeof m === "string" ? m : (m && (m.texto || m.text || m.fala || m.name || m.nome)) || "";
+        if (txt) partes.push(String(txt));
       }
     }
     if (out.narrative_hint && !partes.length) partes.push(String(out.narrative_hint));
@@ -718,13 +724,13 @@ class Laco {
       if (t) t.pedido({ ...base, conferido: { antes: true }, desfecho: "andou", estado: "cumprido",
                         vezes: d.vezes || 0 });
       this.ultimoTurnoAplicou = true;
-      return this._fecharTurno([], ctx, [], t, [_fatoCumprido(palavras)]);
+      return this._fecharTurno([], ctx, [], t, [_fatoCumprido(d.fim)]);
     }
 
     // O TETO do pedido: vezes demais, ou custo demais, sem fechar (FR-009)
     if ((d.vezes || 0) >= (h.tetoVezesPedido || TETO_VEZES) || H.progress.overBudget(d.tokens_pagos, cfg)) {
       await this._fecharPedido(d, "abandonada", { lembrar: true });
-      this._emite("sistema", { texto: `Ele desiste: ${_minusc(palavras.join("; "))}.` });
+      this._emite("sistema", { texto: `Ele desiste do pedido ${_aspas(palavras)}.` });
       if (t) t.pedido({ ...base, desfecho: "teto", estado: "largado", vezes: d.vezes || 0 });
       return;
     }
@@ -749,7 +755,21 @@ class Laco {
     // C3 · o M2 repensa o pedido inteiro, com o que já foi feito e o que faltava
     const andamento = { feito: this._feito(d), faltava: d.passos || [] };
     const instrucao = palavras[palavras.length - 1];
-    const c3 = await this._planC3({ ctx, instrucao, t, andamento, entrada: { instrucao, andamento } });
+    let c3;
+    try {
+      c3 = await this._planC3({ ctx, instrucao, t, andamento, entrada: { instrucao, andamento } });
+    } catch (e) {
+      // O PLANO FORA DO CONTRATO numa vez do meio: a vez falha honesta (076) e conta como vez sem
+      // avanço — senão um modelo que sempre erra o formato prenderia o pedido para sempre.
+      if (e instanceof H.objectives.PlanContractError) {
+        nb.contarVez(d.id, false);
+        pagar();
+        if ((d.vezes_sem_avanco || 0) >= (h.vezesSemAvanco || VEZES_SEM_AVANCO)) {
+          await this._abrirIntervencao(d, "plano_fora_do_contrato", null, t);
+        }
+      }
+      throw e;
+    }
     const plan = c3.plan;
     const tools = await this._ferramentas();
     const ex = await this._executarAtos({ plan, ctx, tools, idx, t, sussurro: null, d });
@@ -781,16 +801,16 @@ class Laco {
     if (conferido === true) {
       await this._fecharPedido(d, "concluida");
       estado = "cumprido";
-      extras.push(_fatoCumprido(palavras));
+      extras.push(_fatoCumprido(fim));
     } else if (!plan.later.length && semAto) {
       // ELE DESISTIU (a decisão é dele, numa vez sem sussurro): a desistência vira lembrança.
       await this._fecharPedido(d, "abandonada", { lembrar: true });
       estado = "largado";
-      this._emite("sistema", { texto: `Ele desiste: ${_minusc(palavras.join("; "))}.` });
+      this._emite("sistema", { texto: `Ele desiste do pedido ${_aspas(palavras)}.` });
     } else if (!plan.later.length && (!fim || fim.familia === "nenhuma") && ex.aceitos > 0) {
       await this._fecharPedido(d, "concluida");
       estado = "vontade";
-      extras.push(_fatoCumprido(palavras));
+      extras.push(_fatoCumprido(null));
     } else {
       const content = H.desire.formatContent(palavras, plan.later, fim && fim.texto);
       await this.mundo.atualizarIntencao(d.id, content);
@@ -813,7 +833,7 @@ class Laco {
   // ABRE o pedido (sem pedido aberto) ou o REGRAVA (com as palavras em sequência); "nada a
   // carregar" FECHA o que estava aberto, sem lembrança de desistência — quem mudou foi o
   // jogador. → os fatos extras da narração.
-  async _pedidoDoSussurro({ texto, plan, ctx, ex, aberto, t }) {
+  async _pedidoDoSussurro({ texto, plan, ctx, ex, aberto, t, custoDoPlano = 0 }) {
     const nb = this._notebook();
     const palavras = aberto ? _palavrasDe(aberto).concat([texto]) : [texto];
     const fi = H.ending.fromPlan(plan.doneWhen, palavras, _textosDoPlano(plan), ctx);
@@ -825,12 +845,13 @@ class Laco {
                   conferido: { antes: null, depois: conferido } };
     if (aberto) {
       for (const x of ex.tentativas) nb.attempt(aberto.id, { vez: (aberto.vezes || 0) + 1, ...x });
+      nb.pay(aberto.id, custoDoPlano);
       const base = { ...reg, id: aberto.id, origem: aberto.origem };
       if (conferido === true) {
         await this._fecharPedido(aberto, "concluida");
         if (t) t.pedido({ ...base, desfecho: ex.andou ? "andou" : "sem_aceite", estado: "cumprido",
                           vezes: (aberto.vezes || 0) + 1 });
-        return [_fatoCumprido(palavras)];
+        return [_fatoCumprido(fi.fim)];
       }
       if (!plan.later.length) {
         await this._fecharPedido(aberto, "abandonada");
@@ -863,6 +884,7 @@ class Laco {
     const novo = Object.values(nb.dados.desejos).find((x) => !antes.has(x.id)) || null;
     if (novo) {
       nb.marcarOrigem(novo.id, "pedido");
+      nb.pay(novo.id, custoDoPlano);
       for (const x of ex.tentativas) nb.attempt(novo.id, { vez: 1, ...x });
       nb.contarVez(novo.id, ex.andou);
       novo.step = H.progress.newStep(H.progress.stateSignature(ctx2));
@@ -961,7 +983,7 @@ class Laco {
     d.intervencao = { ticks: 0 };
     nb.salvar();
     const ultima = [...((ex && ex.tentativas) || [])].reverse().find((x) => x.mundo);
-    const texto = `Ele empacou em ${_minusc(_palavrasDe(d).join("; "))}`
+    const texto = `Ele empacou no pedido ${_aspas(_palavrasDe(d))}`
       + (ultima ? `: ${_minusc(ultima.mundo)}.` : ": nada do que tentou adiantou.");
     this._emite("bloqueio", { texto, motivo, desejo: d.desejo });
     if (t) t.caixa("C8", { saida: { veredito: "blocked", motivo, intervencao: true } });
@@ -1002,9 +1024,24 @@ function _mundoDisse(out) {
   return linha ? (linha.length > 200 ? linha.slice(0, 199) + "…" : linha) : null;
 }
 
-// O fato extra da narração quando o pedido se cumpre (em palavras de mundo, sem estado).
-function _fatoCumprido(palavras) {
-  return `ele conseguiu o que buscava: ${_minusc(palavras.join("; "))}`;
+// O fato extra da narração quando o pedido se cumpre: o FATO do mundo que fechou, em palavras de
+// mundo. Citar as palavras do jogador fazia o narrador repetir o imperativo ("você conseguiu o que
+// buscava: esquece isso") e inventar o resto (bateria do caso 3).
+function _fatoCumprido(fim) {
+  const alvo = fim && fim.alvo;
+  switch (fim && fim.familia) {
+    case "posse": return `ele tem ${alvo} consigo`;
+    case "lugar": return `ele está em ${alvo}`;
+    case "lembranca": return `ele sabe agora de ${alvo}`;
+    case "necessidade":
+      return alvo === "fome" ? "a fome dele passou" : alvo === "sede" ? "a sede dele passou" : "ele descansou";
+    default: return "ele deu por feito o que queria";
+  }
+}
+
+// As palavras do jogador entre aspas, para os recados de sistema (desistência, travamento).
+function _aspas(palavras) {
+  return `“${(palavras || []).join("; ")}”`;
 }
 
 function c4Rotulo(objetivo, idx) {

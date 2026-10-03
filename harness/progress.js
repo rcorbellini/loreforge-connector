@@ -106,9 +106,13 @@ function after(step, { tool, args, aceita, recusa, estadoDepois, saber, cfg }) {
   return { veredito: "sem_progresso" };
 }
 
-// O teto de custo do desejo (FR-009b): um desejo que queima tokens sem fechar.
+// O teto de custo do pedido (FR-009b da 075; spec 077): um pedido que queima tokens sem fechar. Era 8
+// mil por desejo, quando o plano rodava uma vez; com o M2 a CADA vez (~3–4 mil tokens no qwen, medido na
+// bateria do caso 3), 8 mil largava o pedido na 3ª vez, muito antes do teto de 12 vezes. O padrão
+// passou a 50 mil (≈ 12 vezes); `tetoTokensDesejo` segue valendo para a mesa que já o declarou.
 function overBudget(tokensPagos, cfg) {
-  const teto = ((cfg && cfg.harness) || {}).tetoTokensDesejo || 8000;
+  const h = (cfg && cfg.harness) || {};
+  const teto = h.tetoTokensPedido || h.tetoTokensDesejo || 50000;
   return tokensPagos > teto;
 }
 

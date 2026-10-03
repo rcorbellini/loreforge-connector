@@ -88,9 +88,13 @@ function _names(com) {
 
 // O que ainda falta (spec 077): só os itens que são texto. Lista ausente, ou que não é lista, não
 // é inventada — vale "nada a carregar", e o defeito vai ao registro.
+// Um item que só NEGA ("Nenhum passo adicional necessário", "nada mais") é a lista vazia dita em
+// palavras (o qwen, na bateria do caso 3): não carrega nada.
+const _SO_NEGA = /^(nenhum|nenhuma|nada)\b/i;
+
 function _later(v, defects) {
   if (!Array.isArray(v)) { defects.push("depois"); return []; }
-  return v.map((x) => _text(x)).filter(Boolean);
+  return v.map((x) => _text(x)).filter((x) => x && !_SO_NEGA.test(x));
 }
 
 // O fato que fecha (spec 077): uma das formas do C8D, ou "nenhum". Fora das formas, ou ausente,

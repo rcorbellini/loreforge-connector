@@ -575,7 +575,11 @@ test("PEDIDO (LIGAÇÃO): o sussurro que deixa algo para depois ABRE o pedido; a
   assert.doesNotMatch(userVez2, NOMES_DE_TOOL, "nome de capacidade desceu à Mente no andamento");
   assert.ok(mundo.ops.some((o) => o.op === "close" && o.id === criado.id && o.status === "concluida"));
   assert.strictEqual(mundo.registrados[1].corpo.pedido.estado, "cumprido");
-  assert.ok((mente.ultimo.aconteceu || []).some((f) => /conseguiu o que buscava: mate a sede/.test(f)));
+  assert.ok((mente.ultimo.aconteceu || []).includes("a sede dele passou"),
+    "o fechamento não foi narrado pelo FATO do mundo");
+  assert.ok(!(mente.ultimo.aconteceu || []).some((f) => /mate a sede/.test(f)),
+    "a narração recebeu o imperativo do jogador em vez do fato");
+  assert.ok(nb.dados.arquivados[criado.id].tokens_pagos > 0, "o custo das vezes não entrou no teto do pedido");
   assert.ok(!laco.temPedidoAberto());
 });
 
@@ -693,7 +697,7 @@ test("TRAVAMENTO: duas vezes sem avanço abrem o ponto de intervenção, em pala
   await laco.talvezAgirSozinho({ autonomia: false });
   const b = c.eventos.find((e) => e.ev === "bloqueio");
   assert.ok(b, "duas vezes sem avanço e nenhum ponto de intervenção");
-  assert.match(b.texto, /empacou em amarre o barco com a corda: a corda está presa no poste/);
+  assert.match(b.texto, /empacou no pedido “amarre o barco com a corda”: a corda está presa no poste/);
   assert.doesNotMatch(b.texto, NOMES_DE_TOOL);
   const pagas = mente.conversas.length;
   await laco.talvezAgirSozinho({ autonomia: false });
@@ -704,7 +708,7 @@ test("TRAVAMENTO: duas vezes sem avanço abrem o ponto de intervenção, em pala
 test("TETO: o pedido que chega ao teto de vezes, ou de custo, é largado COM a lembrança da desistência", async () => {
   const H = require("../harness");
   for (const [pers, marcar] of [["p077k", (nb, id) => { nb.get(id).vezes = 12; nb.salvar(); }],
-                                ["p077l", (nb, id) => nb.pay(id, 9000)]]) {
+                                ["p077l", (nb, id) => nb.pay(id, 60000)]]) {
     const c = coletor();
     const mundo = mundoVivo({ personagem: pers, cenas: cenasDoFulano(pers), inicial: "base" });
     await mundo.criarIntencao("mate a sede.\n- beber do Cantil de Água\nPronto quando: sede saciada.");
@@ -720,7 +724,7 @@ test("TETO: o pedido que chega ao teto de vezes, ou de custo, é largado COM a l
     const close = mundo.ops.find((o) => o.op === "close");
     assert.ok(close && close.status === "abandonada" && close.lembrar === true, `${pers}: o teto não largou com lembrança`);
     assert.strictEqual(mente.conversas.length, 0);
-    assert.ok(c.eventos.some((e) => e.ev === "sistema" && /desiste: mate a sede/.test(e.texto)));
+    assert.ok(c.eventos.some((e) => e.ev === "sistema" && /desiste do pedido “mate a sede”/.test(e.texto)));
   }
 });
 
@@ -764,4 +768,39 @@ test("AUTONOMIA DESLIGADA: o desejo que ELE inventou não anda, e nada é pago; 
   const criado = vazio.ops.find((o) => o.op === "create");
   assert.strictEqual(criado.content, "Quero matar a sede.");
   assert.deepStrictEqual(m2.conversas.map((x) => x.opts.rotina), ["querer"], "o planejador antigo ainda é chamado");
+});
+
+test("O TETO DE CUSTO é do pedido inteiro (M2 a cada vez): 9 mil tokens não largam mais — o de 8 mil largava na 3ª vez", async () => {
+  const H = require("../harness");
+  assert.strictEqual(H.progress.overBudget(9000, {}), false);
+  assert.strictEqual(H.progress.overBudget(60000, {}), true);
+  assert.strictEqual(H.progress.overBudget(9000, { harness: { tetoTokensDesejo: 8000 } }), true,
+    "a mesa que já declarou o teto antigo perdeu o dela");
+});
+
+test("PLANO FORA DO CONTRATO numa vez do meio: a vez falha honesta e CONTA como vez sem avanço (não prende o pedido)", async () => {
+  const H = require("../harness");
+  const mundo = mundoVivo({ personagem: "p077q", cenas: cenasDoFulano("p077q"), inicial: "base" });
+  await mundo.criarIntencao("mate a sede.\n- beber do Cantil de Água\nPronto quando: sede saciada.");
+  const id = mundo.ativas[0].id;
+  const nb0 = new H.desire.Notebook("p077q");
+  nb0.sync(mundo.ativas);
+  nb0.marcarOrigem(id, "pedido");
+  const c = coletor();
+  const laco = lacoComPensar({ mundo, mente: menteEmFila(["isto não é JSON", "nem isto"]), emitir: c.emitir });
+  await laco.talvezAgirSozinho({ autonomia: false });
+  assert.strictEqual(laco._notebook().get(id).vezes, 1);
+  assert.strictEqual(laco._notebook().get(id).vezes_sem_avanco, 1);
+  await laco.talvezAgirSozinho({ autonomia: false });
+  assert.ok(c.eventos.some((e) => e.ev === "bloqueio"), "duas vezes fora do contrato e nenhuma intervenção");
+  assert.ok(c.eventos.some((e) => e.ev === "erro"), "a vez fora do contrato não falhou honesta");
+});
+
+test("PRINCÍPIO V: o que o mundo devolve como objeto (o reconhecimento) NUNCA vira JSON na tela", () => {
+  const laco = lacoComPensar({ mundo: mundoVivo({ personagem: "p077r", cenas: cenasDoFulano("p077r"), inicial: "base" }),
+                               mente: menteEmFila([]) });
+  const txt = laco._desfechoEmPalavras({ ok: true, reconhecimentos: [{ id: "bram-pescador", name: "Bram, o Pescador",
+    kind: "character", posse: { de: null, grau: "ausente" }, prosa: "Bram fala pouco." }] });
+  assert.strictEqual(txt, "Bram, o Pescador");
+  assert.doesNotMatch(txt, /[{}"]|bram-pescador|posse/);
 });

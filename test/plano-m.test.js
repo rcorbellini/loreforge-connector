@@ -159,3 +159,12 @@ test("o racional junta os nomes do `com` à ação quando ela veio sem eles (o q
     depois: [], pronto_quando: "nenhum" }, resposta: "" }));
   assert.strictEqual(rationaleText(p), "— Seguir — Ladeira do Sal\n— Perguntar a Elga, a Taverneira, se há peixe");
 });
+
+test("o item do `depois` que só NEGA é a lista vazia dita em palavras (o qwen: 'Nenhum passo adicional necessário')", () => {
+  const p = parsePlan(JSON.stringify({ chain_of_thought: { passos_do_plano: [],
+    depois: ["Nenhum passo adicional necessário", "nada mais", "voltar à taverna"], pronto_quando: "nenhum" } }));
+  assert.deepStrictEqual(p.later, ["voltar à taverna"]);
+  const vazio = parsePlan(JSON.stringify({ chain_of_thought: { passos_do_plano: [],
+    depois: ["Nenhum passo adicional necessário"], pronto_quando: "nenhum" } }));
+  assert.deepStrictEqual(vazio.later, []);
+});
