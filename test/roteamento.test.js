@@ -59,6 +59,19 @@ function mundoDe(tools) {
 }
 mundoDe.linhas = [];
 
+// O PLANO M (spec 076) a partir da lista antiga: cada linha vira um passo ATO, sem `com`, para
+// os testes que provam o laço e o resolvedor seguirem provando o mesmo; "- (nada)" vira plano
+// sem passos.
+function planoDeLista(texto, extra = {}) {
+  const linhas = String(texto || "").split("\n").map((l) => l.trim())
+    .filter((l) => /^[-*•]\s*\S/.test(l)).map((l) => l.replace(/^[-*•]\s*/, "").trim())
+    .filter((l) => !/^\(?\s*nada\s*\)?\.?$/i.test(l));
+  return JSON.stringify({
+    chain_of_thought: { condicao_fisica: "", avaliacao_de_viabilidade: extra.viabilidade || "",
+      passos_do_plano: linhas.map((acao) => ({ tipo: "ato", acao, com: [], espera: "" })) },
+    resposta: extra.resposta || "" });
+}
+
 function menteDe(objetivo) {
   const m = {
     custo: { entrada: 0, saida: 0, chamadas: 0 },
@@ -66,7 +79,7 @@ function menteDe(objetivo) {
     ROTINAS: [],
     _contextoPayload: async () => ({}), _cenaEmProsa: () => "cena",
     custoDoTurno: () => ({ ...m.custo }),
-    conversar: async () => objetivo,
+    conversar: async () => planoDeLista(objetivo),
     narrate: async () => "prosa",
   };
   return m;

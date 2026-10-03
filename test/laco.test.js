@@ -82,6 +82,19 @@ function mundoDe({ respostas = [], contextos } = {}) {
 
 // --- a Mente ---------------------------------------------------------------- //
 
+// O PLANO M (spec 076) a partir da lista antiga: cada linha vira um passo ATO, sem `com`, para
+// os testes que provam o laço e o resolvedor seguirem provando o mesmo; "- (nada)" vira plano
+// sem passos.
+function planoDeLista(texto, extra = {}) {
+  const linhas = String(texto || "").split("\n").map((l) => l.trim())
+    .filter((l) => /^[-*•]\s*\S/.test(l)).map((l) => l.replace(/^[-*•]\s*/, "").trim())
+    .filter((l) => !/^\(?\s*nada\s*\)?\.?$/i.test(l));
+  return JSON.stringify({
+    chain_of_thought: { condicao_fisica: "", avaliacao_de_viabilidade: extra.viabilidade || "",
+      passos_do_plano: linhas.map((acao) => ({ tipo: "ato", acao, com: [], espera: "" })) },
+    resposta: extra.resposta || "" });
+}
+
 function menteDe({ objetivos = "- Pegar a Corda de Cânhamo", narracao = "prosa", porRotina = {} } = {}) {
   const m = {
     conversas: [],
@@ -97,7 +110,7 @@ function menteDe({ objetivos = "- Pegar a Corda de Cânhamo", narracao = "prosa"
       m.custo.entrada += 100; m.custo.saida += 20; m.custo.chamadas += 1;
       const r = porRotina[opts && opts.rotina];
       if (r !== undefined) return typeof r === "function" ? r(user) : r;
-      return objetivos;
+      return planoDeLista(objetivos);
     },
     async narrate(hint, ctx, falhas, viradas, aconteceu) {
       m.ultimo = { hint, falhas, viradas, aconteceu };
@@ -401,4 +414,100 @@ test("MESA (SC-011): um prompt do Jev tunado em extensoes/prompts muda a versão
   const c3a = a.linha.corpo.caixas.find((c) => c.box === "C3").prompt_versao;
   const c3b = b.linha.corpo.caixas.find((c) => c.box === "C3").prompt_versao;
   assert.notStrictEqual(c3a, c3b, "o C3 tunado gravou a mesma versão do padrão");
+});
+
+// --- spec 076: o plano M -------------------------------------------------------- //
+
+function planoM(passos, { viabilidade = "", resposta = "" } = {}) {
+  return JSON.stringify({ chain_of_thought: { condicao_fisica: "", avaliacao_de_viabilidade: viabilidade,
+    passos_do_plano: passos }, resposta });
+}
+
+async function turnoComPlano(plano, { respostas = [], decider } = {}) {
+  const mundo = mundoDe({ respostas });
+  const mente = menteDe({ porRotina: { objetivos: plano } });
+  const c = coletor();
+  mundoDe.registrados = [];
+  const reg = registroMod.criar({ mundo, cfg: { personagem: "fulano", runtime: "local", model: "x" },
+                                  extensoes: extVazio(), mente });
+  await lacoDe({ mundo, mente, registro: reg, emitir: c.emitir, decider }).sussurrar("faça algo");
+  return { mundo, mente, eventos: c.eventos, linha: mundoDe.registrados[0] };
+}
+
+test("PLANO M (LIGAÇÃO): só o passo ATO chega ao mundo; fala e gesto ficam no registro, narrados", async () => {
+  const { mundo, linha } = await turnoComPlano(planoM([
+    { tipo: "gesto", acao: "Olhar a praça com calma", com: [], espera: "" },
+    { tipo: "fala", acao: "Dizer que vai ajudar", com: [], espera: "" },
+    { tipo: "ato", acao: "Pegar a Corda de Cânhamo", com: ["Corda de Cânhamo"], espera: "a corda na mão" },
+  ]), { respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["Fulano pegou a corda."] } }] });
+  assert.deepStrictEqual(mundo.chamadas.map((c) => c.nome), ["take"], "fala ou gesto chegou ao mundo");
+  assert.deepStrictEqual(linha.corpo.passos.map((p) => [p.tipo, p.desfecho]),
+    [["gesto", "narrado"], ["fala", "narrado"], ["ato", "executado"]]);
+  const ato = linha.corpo.passos[2];
+  assert.strictEqual(ato.tool, "take");
+  assert.strictEqual(ato.aceito, true);
+  assert.strictEqual(ato.espera, "a corda na mão");
+  assert.deepStrictEqual(ato.com, ["Corda de Cânhamo"]);
+});
+
+test("PLANO M: fora do contrato o turno FALHA honesto — nada vai ao mundo, e a tela não lê 'JSON'", async () => {
+  const { mundo, eventos, linha } = await turnoComPlano("- Pegar a Corda de Cânhamo");
+  assert.strictEqual(mundo.chamadas.length, 0, "o formato antigo virou ação (fallback)");
+  assert.strictEqual(linha.corpo.falha.box, "C3");
+  assert.match(linha.corpo.falha.erro, /JSON/);
+  const erro = eventos.find((e) => e.ev === "erro");
+  assert.ok(erro, "o turno quebrado não avisou o jogador");
+  assert.doesNotMatch(erro.texto, /json|passos_do_plano/i, "termo de sistema na tela");
+});
+
+test("PLANO M: passo sem tipo NÃO age e sobe como defeito; plano sem passos não toca o mundo", async () => {
+  const r1 = await turnoComPlano(planoM([{ acao: "Pegar a Corda de Cânhamo", com: [], espera: "" }]));
+  assert.strictEqual(r1.mundo.chamadas.length, 0);
+  assert.deepStrictEqual(r1.linha.corpo.passos.map((p) => p.desfecho), ["defeito"]);
+  const r2 = await turnoComPlano(planoM([], { viabilidade: "Não vou.", resposta: "Nem pensar." }));
+  assert.strictEqual(r2.mundo.chamadas.length, 0);
+  const rac = r2.eventos.find((e) => e.ev === "objetivos");
+  assert.ok(rac && /Não vou\./.test(rac.texto) && /Nem pensar\./.test(rac.texto), "o racional não subiu");
+});
+
+test("PLANO M: ATO que não acha capacidade é SEM TOOL (o sinal de tool ausente), nunca gesto", async () => {
+  const { mundo, linha, mente } = await turnoComPlano(planoM([
+    { tipo: "ato", acao: "Contar uma piada para distrair todo mundo", com: [], espera: "todos riem" },
+  ]), { decider: deciderDe(["(nenhuma)"]) });
+  assert.strictEqual(mundo.chamadas.length, 0);
+  assert.deepStrictEqual(linha.corpo.passos.map((p) => p.desfecho), ["sem_tool"]);
+  assert.ok(JSON.stringify(mente.ultimo || {}).includes("não havia como fazer isso ali"),
+    "a narração não soube que o ato não aconteceu");
+});
+
+test("PLANO M: o racional sobe na camada visível com o tipo de cada passo em _meta", async () => {
+  const { eventos } = await turnoComPlano(planoM([
+    { tipo: "gesto", acao: "Olhar a corda", com: [], espera: "" },
+    { tipo: "ato", acao: "Pegar a Corda de Cânhamo", com: ["Corda de Cânhamo"], espera: "a corda na mão" },
+  ], { viabilidade: "Dá para pegar.", resposta: "É minha agora." }),
+  { respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["ok"] } }] });
+  const rac = eventos.find((e) => e.ev === "objetivos");
+  assert.strictEqual(rac.texto, "Dá para pegar.\n— Olhar a corda\n— Pegar a Corda de Cânhamo\n\"É minha agora.\"");
+  assert.deepStrictEqual(rac.passos, [{ tipo: "gesto" }, { tipo: "ato" }]);
+});
+
+test("TICK com passo ABSTRATO (spec 076): o C3 planeja no contrato M e só o ATO anda; os passos sobem na ordem", async () => {
+  const ctx = cenaCom({ self: { id: "t3", intentions: [{ id: "int-3", status: "ativa",
+    content: "Ter algo para amarrar.\n- Conseguir alguma coisa que sirva de amarra\nPronto quando: posse de Corda de Cânhamo." }] } });
+  const depois = cenaCom({ self: { id: "t3", inventory: [{ id: "corda", name: "Corda de Cânhamo" }],
+                                   intentions: ctx.self.intentions } });
+  const mundo = mundoDe({ respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["Pegou a corda."] } }],
+                          contextos: [ctx, depois] });
+  mundo.personagem = "t3";
+  const mente = menteDe({ porRotina: { objetivos: planoM([
+    { tipo: "gesto", acao: "Olhar em volta", com: [], espera: "" },
+    { tipo: "ato", acao: "Pegar a Corda de Cânhamo", com: ["Corda de Cânhamo"], espera: "a corda na mão" },
+  ]) } });
+  mundoDe.registrados = [];
+  const reg = registroMod.criar({ mundo, cfg: { personagem: "t3", runtime: "local", model: "x" },
+                                  extensoes: extVazio(), mente });
+  await lacoDe({ mundo, mente, registro: reg }).talvezAgirSozinho();
+  assert.deepStrictEqual(mundo.chamadas.map((x) => x.nome), ["take"]);
+  const linha = mundoDe.registrados[0];
+  assert.deepStrictEqual(linha.corpo.passos.map((p) => [p.tipo, p.desfecho]), [["gesto", "narrado"], ["ato", "executado"]]);
 });

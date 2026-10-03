@@ -335,7 +335,7 @@ function criarMente({ mundo, extensoes } = {}) {
     return msg.content || "";
   }
 
-  async function gemini(cfg, system, user, { temperature = 0.4, onToken } = {}) {
+  async function gemini(cfg, system, user, { temperature = 0.4, onToken, forceJson = false } = {}) {
     if (!cfg.geminiKey) throw new Error("configure sua chave do Gemini no ⚙.");
     const emit = _safeToken(onToken);
     const contents = [{ role: "user", parts: [{ text: String(user ?? "") }] }];
@@ -353,7 +353,9 @@ function criarMente({ mundo, extensoes } = {}) {
         headers: { "Content-Type": "application/json", "x-goog-api-key": cfg.geminiKey },
         body: JSON.stringify({
           contents, systemInstruction: { parts: [{ text: system }] },
-          generationConfig: { temperature: Math.min(temperature, 2) },
+          // o plano do C3 (spec 076) é JSON: o modo JSON do Gemini foi o que a bateria mediu
+          generationConfig: { temperature: Math.min(temperature, 2),
+                              ...(forceJson ? { responseMimeType: "application/json" } : {}) },
         }),
       });
     } catch (_) { throw new Error("não foi possível falar com o Gemini."); }
@@ -894,10 +896,12 @@ RESTRIÇÕES SEVERAS:
   // O schema das tools nunca desce (invariante 1 do contrato 01): o que ela devolve é
   // prosa, e quem aponta tool e ids é o decisor. `rotina` escolhe o modelo por
   // `porRotina` e entra no rótulo do log. Devolve o TEXTO.
-  async function conversar(system, user, { rotina, label, temperature = 0.4, maxTokens } = {}) {
+  // `json`: a rotina devolve JSON (o plano do C3, spec 076) — o runtime liga o modo JSON
+  // quando tem um (Ollama `format`, Gemini `responseMimeType`); os outros seguem pelo prompt.
+  async function conversar(system, user, { rotina, label, temperature = 0.4, maxTokens, json = false } = {}) {
     const r = await callModel(system, user, {
       rotina, label: label || rotina || "conversa", temperature,
-      ...(maxTokens ? { maxTokens } : {}) });
+      ...(maxTokens ? { maxTokens } : {}), ...(json ? { forceJson: true } : {}) });
     if (typeof r === "string") return r;
     return (r && (r.texto || r.text)) || "";
   }

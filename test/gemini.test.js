@@ -67,7 +67,7 @@ function espiaFetch() {
   return { chamadas, restaurar: () => { globalThis.fetch = original; } };
 }
 
-async function comGemini(cb) {
+async function comGemini(cb, opts = {}) {
   const cfg = configuracao.carregar(true);
   cfg.runtime = "gemini";
   cfg.geminiKey = "AIza-SEGREDO-DE-TESTE";
@@ -77,7 +77,7 @@ async function comGemini(cb) {
                         hook: async (_p, dado) => dado });
   const espiao = espiaFetch();
   try {
-    return { texto: await Mente.conversar("sys", "faça algo", { rotina: "objetivos" }), ...espiao };
+    return { texto: await Mente.conversar("sys", "faça algo", { rotina: "objetivos", ...opts }), ...espiao };
   } finally {
     espiao.restaurar();
   }
@@ -158,4 +158,11 @@ test("Gemini: rotina com modelo próprio NÃO apaga a chave (segredo não-enumer
     "nenhuma chamada saiu: a chave sumiu no caminho da rotina");
   assert.strictEqual(espiao.chamadas[0].opts.headers["x-goog-api-key"],
     "AIza-SEGREDO-DE-TESTE");
+});
+
+test("spec 076: o plano pede JSON — `responseMimeType` só quando a rotina pede, nunca na narração", async () => {
+  const com = await comGemini(null, { json: true });
+  assert.strictEqual(com.chamadas[0].corpo.generationConfig.responseMimeType, "application/json");
+  const sem = await comGemini();
+  assert.strictEqual(sem.chamadas[0].corpo.generationConfig.responseMimeType, undefined);
 });

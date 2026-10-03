@@ -28,6 +28,19 @@ const { erros } = require("../acp/validar_schema");
 const { notificacao } = require("../acp/jsonrpc");
 const labels = require("../harness/labels");
 
+// O PLANO M (spec 076) a partir da lista antiga: cada linha vira um passo ATO, sem `com`, para
+// os testes que provam o laço e o resolvedor seguirem provando o mesmo; "- (nada)" vira plano
+// sem passos.
+function planoDeLista(texto, extra = {}) {
+  const linhas = String(texto || "").split("\n").map((l) => l.trim())
+    .filter((l) => /^[-*•]\s*\S/.test(l)).map((l) => l.replace(/^[-*•]\s*/, "").trim())
+    .filter((l) => !/^\(?\s*nada\s*\)?\.?$/i.test(l));
+  return JSON.stringify({
+    chain_of_thought: { condicao_fisica: "", avaliacao_de_viabilidade: extra.viabilidade || "",
+      passos_do_plano: linhas.map((acao) => ({ tipo: "ato", acao, com: [], espera: "" })) },
+    resposta: extra.resposta || "" });
+}
+
 const TOOLS = [
   { name: "take", description: "Pega um item para a mão do personagem que age.",
     inputSchema: { type: "object", properties: { item: { type: "string", enum: ["corda-velha"] } }, required: ["item"] },
@@ -48,7 +61,7 @@ async function turno() {
     config: () => ({ harness: {} }), ROTINAS: [],
     _contextoPayload: async () => ({}), _cenaEmProsa: () => "cena",
     custoDoTurno: () => ({ entrada: 0, saida: 0, chamadas: 0 }),
-    conversar: async () => "- Pegar a Corda Velha",
+    conversar: async () => planoDeLista("- Pegar a Corda Velha"),
     narrate: async () => "Você pega a corda.",
   };
   const f = async (e, c, ops, extra) => {

@@ -71,6 +71,11 @@ function criar({ mundo, cfg, extensoes, mente, sala, membro }) {
         caixas: [],
         // as chamadas ao mundo, classificadas (persistente/consultiva, pedida/não pedida)
         acoes: [],
+        // OS PASSOS DO PLANO (spec 076), um por passo, na ordem, com o DESFECHO de cada um —
+        // inclusive os que não foram ao mundo (fala, gesto). É daqui que o relatório tira o
+        // sinal de TOOL AUSENTE (ato sem capacidade, pelo `espera`) e a revisão offline lê
+        // as falas e os gestos.
+        passos: [],
         // a foto do caderno do desejo no início do turno
         desejo: null,
         // onde o turno quebrou, quando quebrou (item 80: o turno que quebra vira dado)
@@ -132,6 +137,9 @@ function criar({ mundo, cfg, extensoes, mente, sala, membro }) {
       // A caixa que está rodando agora — é o que `falha` grava quando o turno quebra.
       entrou(box) { caixaAtual = box; },
       acao(a) { linha.corpo.acoes.push(a); },
+      // {tipo, acao, com, espera, desfecho, tool?, motivo?, aceito?} — `desfecho`:
+      // executado | sem_tool | subiu | narrado | nao_tentado | defeito
+      passo(p) { if (p) linha.corpo.passos.push(p); },
       desejo(foto) { linha.corpo.desejo = foto || null; },
       falha(msg) {
         linha.corpo.falhas.push(String(msg));

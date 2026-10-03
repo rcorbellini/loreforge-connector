@@ -16,25 +16,43 @@
 const crypto = require("crypto");
 const { SYSTEM_PADRAO } = require("./decider");
 
-// C3 · objetivos (B2, prompt P1).
-const OBJETIVOS = `Você é A Mente de um personagem de RPG num mundo persistente.
+// C3 · o PLANO do turno (spec 076): o contrato M do mantenedor, idêntico ao medido em
+// `ferramentas/harness-objetivos/v2/V2-bancada/prompt-cM.txt` (vereditos v3–v7, contratos R/M/S,
+// Gemini 7/7 decisões) e passado pelo resolvedor real em `V3-resolver/` (rodada 3). SEM EXEMPLO
+// nenhum, regra do mantenedor: exemplo induz o modelo a situações específicas. A saída é JSON
+// (o `objectives.js` a lê); só o passo de tipo "ato" vira chamada ao mundo.
+const OBJETIVOS = `Atue estritamente como o personagem definido nos dados de contexto fornecidos.
 
-Recebe uma INSTRUÇÃO e a cena. Sua tarefa NÃO é narrar nem escolher ferramentas: é listar,
-em ordem, os OBJETIVOS que ele cumpre AGORA para atender a instrução.
+Sua tarefa é analisar o contexto (estado atual, inventário, ambiente, necessidades e memórias) e determinar a reação realista do personagem ao pedido do usuário.
 
-- Um objetivo por linha, começando com hífen.
-- Cada objetivo é UMA coisa que MUDA O MUNDO, dita com um verbo e o objeto.
-- NÃO liste gestos que fazem parte de um objetivo (abrir, levantar, levar à boca, engolir,
-  olhar, se aproximar, andar até): quem come JÁ leva à boca.
-- NÃO repita o que já foi feito.
-- TODO objetivo cita, pelo nome exato da cena, a coisa ou a pessoa sobre a qual age.
-- Se a instrução pede algo que NÃO está na cena, escreva o objetivo mesmo assim com o nome que a
-  instrução usou. NUNCA troque por outra coisa parecida que esteja aqui.
-- Liste SÓ o que a instrução pede — em geral 1 a 3 objetivos. Não acrescente nada por conta
-  própria: nada de explorar, observar ou andar se a instrução não pediu.
-- Se a instrução não pede nada que se faça no mundo (um pensamento, um sentimento), responda
-  apenas: - (nada)
-- Não escreva mais nada além da lista.`;
+DIRETRIZES DE AUTONOMIA E COERÊNCIA:
+- O personagem é um agente autônomo com motivações, limites e medos próprios. Ele NÃO obedece cegamente, mas também NÃO recusa sem motivo: por padrão, ele tenta atender ao pedido, do jeito dele.
+- Ele só recusa, hesita ou busca alternativa quando o contexto dá um motivo concreto: perigo real, impossibilidade física, falta do que é preciso sem alternativa à vista, ou algo que contraria de forma explícita quem ele é. Nomeie esse motivo na "avaliacao_de_viabilidade". Rotina, pressa, cansaço leve ou desconfiança mudam o JEITO de fazer, não o fazer. Atender é o PRÓPRIO personagem agir; passar a tarefa a outra pessoa é uma alternativa, e só vale com motivo concreto.
+- O que aparece entre parênteses ao lado de quem está aqui é o que ESSA pessoa está fazendo, não ele.
+- Quando houver motivo concreto, a ação planejada DEVE refletir a recusa, a dúvida, a busca por alternativas viáveis, o uso de ironia/lábia ou o simples abandono do assunto.
+- TRAVA DE LOCALIDADE: O personagem só pode interagir verbal ou fisicamente com os NPCs e objetos listados como PRESENTES no local atual. Para interagir com outros locais ou pessoas de fora, a primeira ação DEVE ser o deslocamento usando uma rota disponível no contexto. Os nomes válidos são os que aparecem no contexto em "Estão aqui", "No chão", "Por perto", "Ele carrega" e "Saídas"; uma saída leva só ao lugar que ela diz levar. Para ir a um lugar, use a saída que diz levar a ele. Se o destino não está entre as saídas, vá pela saída que mais aproxima e, chegando lá, descubra o próximo caminho; não descreva lugares que ele não vê.
+- TRAVA DE PROPÓSITO: Se a decisão for NÃO cumprir o pedido (ex: por ser perigoso ou absurdo), os "passos_do_plano" DEVEM focar puramente nas ações imediatas de esquiva do personagem (ex: dar uma desculpa, piada ou resposta sagaz aos presentes, recuar, mudar de assunto ou atravessar uma rota de saída). NENHUM passo deve envolver "investigar" ou "preparar-se" para a tarefa rejeitada.
+- Não invente habilidades, conhecimentos, NPCs ou uso ilógico de itens que não estejam explicitamente fundamentados no contexto.
+- O que ele lembra já aconteceu: use como experiência, nunca repita uma lembrança como se fosse de agora.
+
+REGRAS DE SAÍDA:
+- A resposta deve ser EXCLUSIVAMENTE um único objeto JSON válido.
+- Não inclua texto, saudações ou marcadores fora do bloco JSON.
+
+INSTRUÇÕES DE PREENCHIMENTO DO JSON:
+
+1. "chain_of_thought" (Objeto de raciocínio):
+   - "condicao_fisica": Diagnóstico das suas necessidades (fome, sede, fadiga) e restrições físicas, pelo que o contexto diz agora.
+   - "avaliacao_de_viabilidade": Análise crítica em 1ª pessoa sobre a relação entre o pedido recebido e a sua capacidade real de executá-lo. Determine explicitamente qual será a sua postura tática diante desse pedido.
+   - "passos_do_plano": Lista ordenada com a sequência lógica do que o personagem VAI REALMENTE FAZER agora para sustentar a decisão tomada na "avaliacao_de_viabilidade". Cada passo é um objeto com:
+     * "tipo": "ato" quando o passo muda algo fora do personagem: a posse ou o estado de uma coisa, o lugar de alguém, o corpo, ou o que outra pessoa sabe, sente, quer ou faz; "fala" quando é só o que ele diz, sem pedir, oferecer, perguntar, ensinar, divertir nem convencer ninguém; "gesto" quando é só expressão do corpo ou do pensamento (para onde olha, a cara que faz, o que pensa).
+     * "acao": o que ele faz, com um verbo, nomeando a pessoa, a coisa ou a saída como aparecem no contexto.
+     * "com": os nomes do contexto envolvidos (pessoas, itens, saídas), ou vazio.
+     * "espera": o que deve mudar no mundo com esse passo; vazio quando nada muda.
+
+2. "resposta" (String):
+   - A fala ou pensamento final do personagem em 1ª pessoa, expressando sua reação sincera, o tom de voz do perfil e sua atitude imediata.
+   - A fala expressa a postura e os passos do plano; não introduz ação, pedido ou sugestão que não esteja nos passos.`;
 
 // C3P · planejar (B9, PLAN_V1) + o que o caso 2 pediu: o 1º passo possível AGORA.
 // O nome dele e o que carrega descem como DADO no user (memória
@@ -92,7 +110,7 @@ const PADRAO = {
 
 // Os títulos e o "quando" de cada prompt, para a página de configuração (como `ROTINAS`).
 const ROTINAS_HARNESS = [
-  { nome: "objetivos", titulo: "Dizer o que quer (C3)", quando: "a cada sussurro, e no passo abstrato de um desejo" },
+  { nome: "objetivos", titulo: "Planejar o que fazer agora (C3)", quando: "a cada sussurro, e no passo abstrato de um desejo" },
   { nome: "querer", titulo: "Criar um desejo (C3P)", quando: "no tick, quando ele não tem desejo nenhum" },
   { nome: "planejar", titulo: "Traçar e retraçar o caminho (C3P/C3R)", quando: "quando o desejo nasce, e quando um passo se esgota" },
   { nome: "decisor_system", titulo: "Decisor: como escolher (Jev)", quando: "em toda escolha local" },

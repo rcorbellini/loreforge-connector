@@ -95,16 +95,20 @@ const ollama = http.createServer((req, res) => {
       const body = JSON.parse(corpo);
       // spec 075: três chamadas distintas passam por aqui.
       //  · o DECISOR (logprobs, 1 token): responde a letra A;
-      //  · a Mente nos OBJETIVOS (C3, sem tools): um objetivo com o alvo pelo nome;
+      //  · a Mente no PLANO (C3, sem tools, spec 076): o contrato M em JSON. Ela é reconhecida
+      //    pelo `format: "json"` no corpo — é a LIGAÇÃO do modo JSON: se ele não atravessar
+      //    `conversar` → `callModel` → `ollama`, o plano não chega e nenhum turno age;
       //  · a Mente na NARRAÇÃO.
       if (body.logprobs) {
         rodada++;
         return j({ message: { content: "A" }, prompt_eval_count: 40, eval_count: 1,
                    logprobs: [{ top_logprobs: [{ token: "A", logprob: -0.01 }, { token: "B", logprob: -5 }] }] });
       }
-      const sys = (body.messages && body.messages[0] && body.messages[0].content) || "";
-      if (/OBJETIVOS/.test(sys)) {
-        return j({ message: { content: "- Pegar a Corda Velha" }, prompt_eval_count: 100, eval_count: 20 });
+      if (body.format === "json") {
+        const plano = { chain_of_thought: { condicao_fisica: "", avaliacao_de_viabilidade: "Pego a corda.",
+          passos_do_plano: [{ tipo: "ato", acao: "Pegar a Corda Velha", com: ["Corda Velha"], espera: "a corda na mão" }] },
+          resposta: "" };
+        return j({ message: { content: JSON.stringify(plano) }, prompt_eval_count: 100, eval_count: 20 });
       }
       return j({ message: { content: "Você fecha a mão na corda áspera." },
                  prompt_eval_count: 80, eval_count: 12 });

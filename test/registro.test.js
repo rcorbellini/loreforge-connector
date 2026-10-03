@@ -151,3 +151,15 @@ test("sussurro manual não inventa racional de autonomia", async () => {
   await t.fechar();
   assert.strictEqual(mundo.linhas[0].corpo.racional_autonomo, null);
 });
+
+test("spec 076: os PASSOS do plano sobem no corpo, na ordem, com o desfecho de cada um", async () => {
+  const mundo = mundoQueAceita();
+  const t = registro.criar({ mundo, cfg: CFG, extensoes: EXT, mente: MENTE }).abrir();
+  t.passo({ tipo: "fala", acao: "Dizer que não", com: [], espera: "", desfecho: "narrado" });
+  t.passo({ tipo: "ato", acao: "Contar uma piada", com: ["Bruna"], espera: "Bruna ri", desfecho: "sem_tool" });
+  t.passo(null);
+  await t.fechar();
+  const [l] = mundo.linhas;
+  assert.deepStrictEqual(l.corpo.passos.map((p) => [p.tipo, p.desfecho, p.espera]),
+    [["fala", "narrado", ""], ["ato", "sem_tool", "Bruna ri"]]);
+});

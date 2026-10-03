@@ -243,7 +243,9 @@ class Laco {
     // turno. O mundo fica intacto — a verdade está nos arquivos, não aqui.
     const texto = e instanceof DeciderUnavailable
       ? `O decisor local não respondeu — ${e.message}. Confira o Ollama (ou o endpoint do decisor) e tente de novo.`
-      : `Algo interrompeu a cena: ${e.message}`;
+      : e instanceof H.objectives.PlanContractError
+        ? "A Mente não devolveu um plano que desse para seguir. Confira o modelo de planejar e tente de novo."
+        : `Algo interrompeu a cena: ${e.message}`;
     this._emite("erro", { texto });
     if (t) t.falha(e.message);
   }
@@ -264,30 +266,28 @@ class Laco {
     });
     if (t) t.caixa("C1", { ...d1, saida: { tools: c1.tools.length, nomes_citaveis: c1.idx.size } });
 
-    // C3 · o que ele quer agora (PAGO, sem tools)
-    const p3 = this._prompt("objetivos");
-    this._emite("rotina_ativa", { rotina: "objetivos", titulo: this._tituloDaRotina("objetivos") });
-    let c3, d3;
-    try {
-      [c3, d3] = await this._caixa(t, "C3", () => H.objectives.objectives({
-        mente: this.mente, ctx, instrucao: cena.texto, system: p3.texto }),
-      { prompt: p3, rotulo: label("C3") });
-    } finally {
-      this._emite("rotina_ociosa", { stopReason: "end_turn" });
-    }
-    if (t) t.caixa("C3", { ...d3, entrada: { instrucao: cena.texto }, saida: { objetivos: c3.objetivos } });
-    if (t) t.pensou({ pensamento: c3.objetivos.join(" · ") });
-    if (c3.objetivos.length) {
-      this._emite("objetivos", { texto: c3.objetivos.map((o) => `— ${o}`).join("\n"),
-                                 numeroTurno: this.numeroTurno });
-    }
+    // C3 · o PLANO do turno (spec 076): só o passo ATO vai ao resolvedor; fala e gesto são o
+    // que ele diz e expressa, e nunca chegam ao mundo.
+    const c3 = await this._planC3({ ctx, instrucao: cena.texto, t, entrada: { instrucao: cena.texto } });
 
     const desfechos = [];
     const naoAconteceu = [];
     const subidasParaPlano = [];
-    for (const objetivo of c3.objetivos.slice(0, MAX_OBJETIVOS)) {
-      const r = await this._resolverEAgir({ objetivo, ctx, tools: c1.tools, idx: c1.idx, t,
-                                            sussurro: cena.texto });
+    let atos = 0;
+    for (const step of c3.steps) {
+      if (step.type !== "ato") {
+        if (t) t.passo(_stepRecord(step, step.type === "defeito" ? "defeito" : "narrado"));
+        continue;
+      }
+      if (atos >= MAX_OBJETIVOS) {
+        if (t) t.passo(_stepRecord(step, "nao_tentado"));
+        continue;
+      }
+      atos += 1;
+      const objetivo = H.objectives.actText(step);
+      const r = _comoAto(await this._resolverEAgir({ objetivo, ctx, tools: c1.tools, idx: c1.idx, t,
+                                                    sussurro: cena.texto }));
+      if (t) t.passo(_stepRecord(step, _desfechoDoAto(r), r));
       if (r.out) desfechos.push(r.out);
       if (r.subiu) {
         const m = motivoEmMundo(r.subiu, objetivo, r);
@@ -311,7 +311,32 @@ class Laco {
     return this._fecharTurno(desfechos, ctx, naoAconteceu, t);
   }
 
-  // C4 → C6 → C7 → M2 para UM objetivo. → { out?, subiu?, objeto?, chamada? }
+  // C3 · O PLANO DO TURNO (spec 076, PAGO, sem tools), para o sussurro e para o passo
+  // abstrato de um desejo. A Mente devolve o contrato M; o registro guarda o plano inteiro e o
+  // racional sobe à camada visível. Plano fora do contrato LANÇA (`PlanContractError`) e o
+  // turno falha honesto em `_falhou`, sem fallback (Princípio VIII).
+  async _planC3({ ctx, instrucao, t, entrada }) {
+    const p3 = this._prompt("objetivos");
+    this._emite("rotina_ativa", { rotina: "objetivos", titulo: this._tituloDaRotina("objetivos") });
+    let c3, d3;
+    try {
+      [c3, d3] = await this._caixa(t, "C3", () => H.objectives.objectives({
+        mente: this.mente, ctx, instrucao, system: p3.texto }),
+      { prompt: p3, rotulo: label("C3") });
+    } finally {
+      this._emite("rotina_ociosa", { stopReason: "end_turn" });
+    }
+    if (t) t.caixa("C3", { ...d3, entrada, saida: { plano: c3.plan } });
+    if (t) t.pensou({ pensamento: c3.plan.stance || c3.steps.map((s) => s.action).join(" · ") });
+    const texto = H.labels.rationaleText(c3.plan);
+    if (texto) {
+      this._emite("objetivos", { texto, passos: c3.steps.map((s) => ({ tipo: s.type })),
+                                 numeroTurno: this.numeroTurno });
+    }
+    return c3;
+  }
+
+  // C4 → C6 → C7 → M2 para UM objetivo. → { out?, subiu?, objeto?, chamada?, tool? }
   async _resolverEAgir({ objetivo, ctx, tools, idx, t, sussurro, noDesejo }) {
     // C4 · onde está o alvo
     const [c4, d4] = await this._caixa(t, "C4", async () => {
@@ -349,7 +374,7 @@ class Laco {
       // a subida vai ao REGISTRO como caixa C7 (sem ela, o relatório não a veria)
       if (t) t.caixa("C7", { entrada: { objetivo, tool: c6.tool }, saida: { subiu: "alvo_desconhecido" } });
       this._bastidor("C7", { objetivo, tool: c6.tool, subiu: "alvo_desconhecido" });
-      return { subiu: "alvo_desconhecido" };
+      return { subiu: "alvo_desconhecido", tool: c6.tool };
     }
 
     // C7 · os parâmetros
@@ -362,7 +387,7 @@ class Laco {
                            decisao: c7.decisoes });
     this._bastidor("C7", { objetivo, tool: c6.tool, args: c7.args ? _semProsa(c7.args) : null,
                            subiu: c7.subiu || null });
-    if (!c7.args) return { subiu: c7.subiu, objeto: c7.objeto };
+    if (!c7.args) return { subiu: c7.subiu, objeto: c7.objeto, tool: c6.tool };
 
     // M2 · o mundo
     const out = await this._m2({ tool, args: c7.args, objetivo, ctx, t, sussurro, noDesejo });
@@ -736,13 +761,15 @@ class Laco {
     // Abstrato → o C3 concretiza (pago), com o passo como instrução.
     const concreto = H.target.cited(passo, idx).some((a) => a.onde === "aqui");
     let linhas = [passo];
+    let plano = null;            // os passos do plano (spec 076), quando o C3 rodou
+    const doPlano = new Map();   // texto do ato → passo do plano
+    const resolvidos = new Map(); // passo do plano → o que o resolvedor devolveu
     const tools = await this._ferramentas();
     if (!concreto) {
-      const p3 = this._prompt("objetivos");
-      const [c3, d3] = await this._caixa(t, "C3", () => H.objectives.objectives({
-        mente: this.mente, ctx, instrucao: passo, system: p3.texto }), { prompt: p3, rotulo: label("C3") });
-      if (t) t.caixa("C3", { ...d3, entrada: { passo }, saida: { objetivos: c3.objetivos } });
-      linhas = c3.objetivos.slice(0, MAX_ATOS_POR_PASSO);
+      plano = await this._planC3({ ctx, instrucao: passo, t, entrada: { passo } });
+      const atos = plano.steps.filter((s) => s.type === "ato").slice(0, MAX_ATOS_POR_PASSO);
+      for (const s of atos) doPlano.set(H.objectives.actText(s), s);
+      linhas = [...doPlano.keys()];
     }
     if (!d.step) d.step = H.progress.newStep(H.progress.stateSignature(ctx));
 
@@ -751,8 +778,9 @@ class Laco {
     let veredito = null;
     let antes = ctx;
     for (const linha of linhas.slice(0, MAX_ATOS_POR_PASSO)) {
-      const r = await this._resolverEAgir({ objetivo: linha, ctx: antes, tools, idx, t,
-                                            sussurro: null, noDesejo: d.id });
+      const r = _comoAto(await this._resolverEAgir({ objetivo: linha, ctx: antes, tools, idx, t,
+                                                     sussurro: null, noDesejo: d.id }));
+      if (doPlano.has(linha)) resolvidos.set(doPlano.get(linha), r);
       if (!r.chamada) {
         const m = motivoEmMundo(r.subiu, linha, r);
         if (m) naoAconteceu.push({ o_que_falhou: `${linha}: ${m}` });
@@ -797,6 +825,14 @@ class Laco {
                          aceita: r.out.ok, motivo: r.out.erro, progresso: c8.v.veredito === "progresso" });
       veredito = c8.v;
       if (veredito.veredito !== "sem_progresso") break;
+    }
+    // os passos do plano, na ORDEM, com o desfecho de cada um (spec 076)
+    if (t && plano) {
+      for (const s of plano.steps) {
+        if (s.type !== "ato") t.passo(_stepRecord(s, s.type === "defeito" ? "defeito" : "narrado"));
+        else if (resolvidos.has(s)) t.passo(_stepRecord(s, _desfechoDoAto(resolvidos.get(s)), resolvidos.get(s)));
+        else t.passo(_stepRecord(s, "nao_tentado"));
+      }
     }
     this.ultimoTurnoAplicou = desfechos.some((x) => x && x.ok);
 
@@ -907,6 +943,32 @@ class Laco {
 
 function c4Rotulo(objetivo, idx) {
   return H.target.whereIs(objetivo, idx).nome ? "C4" : "C4_SEM";
+}
+
+// O passo do plano no REGISTRO (spec 076): como veio, mais o desfecho e, quando houve, a
+// capacidade, o motivo da subida e se o mundo aceitou.
+function _stepRecord(step, desfecho, r) {
+  const p = { tipo: step.type, acao: step.action, com: step.with, espera: step.expects, desfecho };
+  if (r) {
+    const tool = (r.chamada && r.chamada.tool) || r.tool;
+    if (tool) p.tool = tool;
+    if (r.chamada) p.aceito = !!(r.out && r.out.ok);
+    if (r.subiu && r.subiu !== "sem_tool") p.motivo = r.subiu;
+  }
+  return p;
+}
+
+// O ATO do plano que a C6 não ligou a capacidade nenhuma é SEM TOOL, com ou sem alvo citado.
+// O "gesto" do resolvedor (NENHUMA e nada citado) vinha do tempo em que o objetivo não dizia o
+// que era; agora o plano diz que é ato, e o que não achou capacidade é o sinal de tool
+// ausente (e "não aconteceu" para a narração, nunca um gesto feito).
+function _comoAto(r) {
+  return r && r.subiu === "gesto" ? { ...r, subiu: "sem_tool" } : r;
+}
+
+function _desfechoDoAto(r) {
+  if (r.chamada) return "executado";
+  return r.subiu === "sem_tool" ? "sem_tool" : "subiu";
 }
 
 function _semProsa(args) {

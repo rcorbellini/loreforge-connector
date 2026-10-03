@@ -42,4 +42,17 @@ function motivoEmMundo(subiu, objetivo, extra) {
   }
 }
 
-module.exports = { ROTULOS, label, motivoEmMundo };
+// O RACIONAL do plano (spec 076) para a camada VISÍVEL: a postura, uma linha por passo e a
+// fala, como a Mente escreveu, em prosa. Sem nome de capacidade, id nem número (a guarda é o
+// `harness-front.test.js`). É o que ele PENSA e PRETENDE: o que aconteceu vem do mundo.
+function rationaleText(plan) {
+  const linhas = [];
+  if (plan && plan.stance) linhas.push(plan.stance);
+  for (const s of (plan && plan.steps) || []) {
+    if (s.action && s.type !== "defeito") linhas.push(`— ${s.action}`);
+  }
+  if (plan && plan.reply) linhas.push(`"${plan.reply}"`);
+  return linhas.join("\n");
+}
+
+module.exports = { ROTULOS, label, motivoEmMundo, rationaleText };

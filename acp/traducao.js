@@ -93,7 +93,8 @@ function _harness(evento, dados, sessionId) {
     return _su(sessionId, "agent_thought", {
       messageId: `objetivos-${dados.numeroTurno || Date.now()}`,
       content: [{ type: "text", text: dados.texto }],
-      _meta: { camada: "visivel", rotina: "objetivos" },
+      _meta: { camada: "visivel", rotina: "objetivos",
+               ...(Array.isArray(dados.passos) ? { passos: dados.passos } : {}) },
     });
   }
   if (evento === "harness") {
