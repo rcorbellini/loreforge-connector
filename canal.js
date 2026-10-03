@@ -485,6 +485,20 @@ function servir({ porta, sala, fila, cfg, expor, painel,
       return responder(res, 200, { ok: true, autonomia: r.autonomia });
     }
 
+    // A CHAVE DO PENSAR DO DONO (spec 077) — as mesmas guardas do interruptor da autonomia.
+    if (req.method === "POST" && url.pathname === "/pensar") {
+      const v = await gMembro(req, url);
+      if (!v.ok) return responder(res, v.status, { erro: v.erro });
+      const corpo = await corpoDe(req);
+      const personagem = String(corpo.personagem || "").trim();
+      const p = gPosse(v.sub, personagem);
+      if (!p.ok) return responder(res, p.status, { erro: p.erro });
+      const r = await sala.ligarPensar(personagem, !!corpo.ligado);
+      if (r.erro) return responder(res, 400, { erro: r.erro });
+      salvarSala();
+      return responder(res, 200, { ok: true, pensar: r.pensar });
+    }
+
     // ------------------------------------------------------------------- //
     // A autoridade do anfitrião — G-MAQUINA (spec 072, US5)
     // ------------------------------------------------------------------- //

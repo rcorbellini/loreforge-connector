@@ -141,6 +141,9 @@ function criar({ mundo, cfg, extensoes, mente, sala, membro }) {
       // executado | sem_tool | subiu | narrado | nao_tentado | defeito
       passo(p) { if (p) linha.corpo.passos.push(p); },
       desejo(foto) { linha.corpo.desejo = foto || null; },
+      // O PEDIDO da vez (spec 077): o que o jogador disse, o que falta, o fato e se valeu, a
+      // conferência antes e depois dos atos, o desfecho da vez e o estado do pedido depois dela.
+      pedido(dados) { if (dados) linha.corpo.pedido = { ...(linha.corpo.pedido || {}), ...dados }; },
       falha(msg) {
         linha.corpo.falhas.push(String(msg));
         if (!linha.corpo.falha) linha.corpo.falha = { box: caixaAtual, erro: String(msg) };

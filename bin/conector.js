@@ -55,6 +55,8 @@ O conector da Mente — Loreforge
   loreforge --verificar                            testa mundo, personagem e modelo
   loreforge --personagens                          lista quem existe no mundo
   --sala "<nome>"                                  batiza a mesa
+  --pensar                                         liga o pensar do personagem: o pedido que não
+                                                   acaba na vez fica aberto (linha vazia = a vez dele)
 
 Opções de modelo (guardadas na sua máquina, nunca enviadas ao mundo):
   --runtime local|remote|openrouter|gemini    --modelo <nome>
@@ -511,6 +513,12 @@ async function main() {
   const semeado = (await semear(args.personagem))
     || (args.personagem ? sala.assentoDe(args.personagem) : null)
     || (sala.assentos.size === 1 ? [...sala.assentos.values()][0] : null);
+  // `--pensar` (spec 077): a chave do pensar do personagem da linha de comando, ligada — o pedido
+  // que não acaba na vez fica aberto e anda nas vezes seguintes (linha vazia = a vez dele).
+  if (args.pensar && semeado) {
+    await sala.ligarPensar(semeado.personagem, true);
+    configuracao.gravarSala(cfg, sala);
+  }
 
   if (args.canal) {
     // O PAINEL: o que a página de configuração pode ler e escrever. Fica aqui,

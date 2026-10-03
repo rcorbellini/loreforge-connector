@@ -54,10 +54,10 @@ const DEFAULTS = {
   // E `/no_think` no prompt NÃO funciona nesta versão do Ollama — só o campo `think`
   // no corpo da requisição. Por isso ele viaja aqui, ao lado do modelo.
   //
-  // Rotina sem entrada aqui usa o `model`/`runtime` de cima, como sempre.
-  porRotina: {
-    planejar: { model: "qwen3:8b", think: false },
-  },
+  // Rotina sem entrada aqui usa o `model`/`runtime` de cima, como sempre. A entrada que
+  // existia (`planejar`) saiu com o planejador antigo (spec 077); o modelo do PENSAR do pedido
+  // (a rotina `objetivos`, o M2) se escolhe aqui, por mesa — e sempre sem thinking nativo.
+  porRotina: {},
   // o conector, nao mais o navegador
   mundo: "http://0.0.0.0:8777",
   // O ENDERECO DO MUNDO **PARA AS TELAS** (spec 072).

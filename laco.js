@@ -9,12 +9,19 @@
 // preencher os ids. Fazia as quatro mal e caro (~24 mil tokens por ação válida,
 // `ferramentas/harness-objetivos/v1/montagem`). Agora:
 //
-//   MENTE (paga)      C3  o que eu quero agora, em prosa, sem schema de tool
+//   MENTE (paga)      C3  o pensar do pedido (M2): o que fazer agora, o que fica para depois
+//                         e o fato que fecha, em prosa, sem schema de tool
 //   RESOLVEDOR (local, 0 token pago)
 //                     C4  onde está o alvo · C6 qual tool · C7 cada parâmetro
 //   MUNDO             M2  executa, aceita ou recusa com motivo
 //   HARNESS (regra)   C8  andou? · C8D acabou?
-//   MENTE (paga)      C3P planejar · C3R replanejar · C9 narrar
+//   MENTE (paga)      C3P o que eu quero (só com a autonomia ligada) · C9 narrar
+//
+// E O CICLO DO PEDIDO (spec 077). Com a chave do pensar ligada na tela do jogador, o pedido
+// que não acaba na vez fica ABERTO (o desejo: o mundo guarda a prosa, o caderno o andamento)
+// e anda nas vezes seguintes dele na fila — mesmo com a autonomia desligada —, repensado a
+// cada vez pelo M2 com o que já foi feito, até o fato fechar, o plano dizer que não há mais
+// nada, ou o limite.
 //
 // O laço NÃO DECIDE NADA SOZINHO e NÃO DESENHA NADA: chama as caixas
 // (`harness/`), EMITE o que cada uma fez e REGISTRA cada caixa com o mesmo nome da
@@ -55,10 +62,12 @@ function _breadcrumbDoLugar(place) {
   return cadeia.reverse();
 }
 
-// No máximo quantos objetivos um sussurro vira no mundo (o C3 raramente passa de 3).
+// No máximo quantos atos de um plano vão ao mundo numa vez (o C3 raramente passa de 3).
 const MAX_OBJETIVOS = 6;
-// No tick, no máximo quantos atos concretizam um passo.
-const MAX_ATOS_POR_PASSO = 2;
+// O CICLO DO PEDIDO (spec 077), parametrizável por mesa em `cfg.harness`: o teto de vezes de um
+// pedido, e quantas vezes seguidas sem avanço abrem o ponto de intervenção (K).
+const TETO_VEZES = 12;
+const VEZES_SEM_AVANCO = 2;
 
 // AS DUAS FAIXAS DA MESA (spec 072, US3). A mesa ouve os FATOS; cada jogador lê a
 // INTERPRETAÇÃO do próprio personagem. O DEFAULT é `dono`: um evento novo que ninguém
@@ -78,7 +87,7 @@ const _soma = (c) => ((c && c.entrada) || 0) + ((c && c.saida) || 0);
 
 
 class Laco {
-  constructor({ mundo, mente, extensoes, registro, emitir, decider, notebook }) {
+  constructor({ mundo, mente, extensoes, registro, emitir, decider, notebook, pensar }) {
     this.mundo = mundo;
     this.mente = mente;
     this.extensoes = extensoes || { hook: async (_p, d) => d, prompts: {} };
@@ -86,6 +95,9 @@ class Laco {
     this.emitir = emitir || (() => {});
     this._deciderInjetado = decider || null;
     this._notebookInjetado = notebook || null;
+    // A CHAVE DO PENSAR (spec 077): uma função (o assento da mesa a dá) ou um booleano (o
+    // terminal, `--pensar`). Desligada, o sussurro roda o plano uma vez e nada é carregado.
+    this.pensar = pensar || false;
     this.ocupado = false;
     this.ocupadoDesde = null;
     this.numeroTurno = 0;
@@ -135,6 +147,39 @@ class Laco {
     return this._nb;
   }
 
+  _pensarLigado() {
+    return typeof this.pensar === "function" ? !!this.pensar() : !!this.pensar;
+  }
+
+  // A FILA PERGUNTA (spec 077): há pedido do jogador aberto? É o que dá a vez a quem está com a
+  // autonomia desligada. O caderno pode estar velho (o jogador fechou o desejo pela tela); a
+  // vez sincroniza com o mundo e, sem nada, descarta.
+  temPedidoAberto() {
+    return this._pensarLigado() && !!this._notebook().ativo({ soPedido: true });
+  }
+
+  // A CHAVE DESLIGADA COM PEDIDO ABERTO (FR-013): o pedido se fecha, sem lembrança de
+  // desistência — quem parou foi o jogador. Com um turno em voo, fecha quando ele acabar.
+  async fecharPedidoDoJogador() {
+    if (this.ocupado) { this._fecharAoLiberar = true; return { adiado: true }; }
+    return this._fecharPedidoDoJogadorAgora();
+  }
+
+  async _fecharPedidoDoJogadorAgora() {
+    try {
+      const ctx = await this.mundo.contexto();
+      const nb = this._notebook();
+      nb.sync((ctx.self || {}).intentions);
+      const d = nb.ativo({ soPedido: true });
+      if (!d) return { ok: true, fechado: null };
+      await this._fecharPedido(d, "abandonada");
+      return { ok: true, fechado: d.id };
+    } catch (e) {
+      log("FECHAR O PEDIDO DO JOGADOR FALHOU", e.message);
+      return { erro: e.message };
+    }
+  }
+
   // A trava do conector. NÃO substitui a do mundo (Princípio III); só evita que o
   // próprio conector se atropele. `ocupadoDesde` distingue um turno de 20 s de um
   // PENDURADO há vinte minutos.
@@ -153,6 +198,10 @@ class Laco {
       this.ocupado = false;
       this.ocupadoDesde = null;
       this._emite("estado", { ocupado: false, ocupadoDesde: null });
+      if (this._fecharAoLiberar) {
+        this._fecharAoLiberar = false;
+        this._fecharPedidoDoJogadorAgora();
+      }
     }
   }
 
@@ -220,14 +269,10 @@ class Laco {
         const contexto = await this.mundo.contexto();
         if (t) t.pretendia((contexto.self || {}).intentions);
         if (t) t.sussurro(texto, origem);
-        // O SUSSURRO DURANTE UM BLOQUEIO é a intervenção do jogador (FR-009c): ela
-        // fecha a janela e vira dado do próximo replanejamento.
+        // O caderno alinhado com o mundo antes do plano: o pedido aberto (spec 077) é lido daqui.
+        // O sussurro durante um travamento é a voz do jogador: entra no plano como o pedido novo.
         const nb = this._notebook();
         const d = nb.sync((contexto.self || {}).intentions);
-        if (d && d.intervencao && !d.intervencao.sussurro_recebido) {
-          d.intervencao.sussurro_recebido = texto;
-          nb.salvar();
-        }
         if (t && d) t.desejo(nb.foto(d.id));
         await this._turno(texto, contexto, t);
       } catch (e) {
@@ -266,62 +311,41 @@ class Laco {
     });
     if (t) t.caixa("C1", { ...d1, saida: { tools: c1.tools.length, nomes_citaveis: c1.idx.size } });
 
-    // C3 · o PLANO do turno (spec 076): só o passo ATO vai ao resolvedor; fala e gesto são o
-    // que ele diz e expressa, e nunca chegam ao mundo.
-    const c3 = await this._planC3({ ctx, instrucao: cena.texto, t, entrada: { instrucao: cena.texto } });
+    // C3 · o PLANO do turno (specs 076 e 077): só o passo ATO vai ao resolvedor; fala e gesto são
+    // o que ele diz e expressa, e nunca chegam ao mundo. Com o pensar ligado e um pedido do
+    // jogador aberto, o plano recebe o pedido anterior e o que já foi feito (sem o resto do plano
+    // velho: medido, ele puxava o personagem para o pedido velho por cima do sussurro novo).
+    const pensar = this._pensarLigado();
+    const aberto = pensar ? this._notebook().ativo({ soPedido: true }) : null;
+    const andamento = aberto ? { antes: _palavrasDe(aberto), feito: this._feito(aberto) } : null;
+    const c3 = await this._planC3({ ctx, instrucao: cena.texto, t, andamento,
+                                   entrada: { instrucao: cena.texto, ...(andamento ? { andamento } : {}) } });
 
-    const desfechos = [];
-    const naoAconteceu = [];
-    const subidasParaPlano = [];
-    let atos = 0;
-    for (const step of c3.steps) {
-      if (step.type !== "ato") {
-        if (t) t.passo(_stepRecord(step, step.type === "defeito" ? "defeito" : "narrado"));
-        continue;
-      }
-      if (atos >= MAX_OBJETIVOS) {
-        if (t) t.passo(_stepRecord(step, "nao_tentado"));
-        continue;
-      }
-      atos += 1;
-      const objetivo = H.objectives.actText(step);
-      const r = _comoAto(await this._resolverEAgir({ objetivo, ctx, tools: c1.tools, idx: c1.idx, t,
-                                                    sussurro: cena.texto }));
-      if (t) t.passo(_stepRecord(step, _desfechoDoAto(r), r));
-      if (r.out) desfechos.push(r.out);
-      if (r.subiu) {
-        const m = motivoEmMundo(r.subiu, objetivo, r);
-        if (m) naoAconteceu.push({ o_que_falhou: `${objetivo}: ${m}` });
-        if (r.subiu === "alvo_longe" || r.subiu === "alvo_desconhecido") subidasParaPlano.push(objetivo);
-      }
-    }
-
-    // O QUE NÃO SE RESOLVE AQUI SOBE PARA O PLANO (contrato 01): o alvo está longe ou
-    // ele não sabe onde está — isso é um DESEJO, e o harness o assume (C3P).
-    if (subidasParaPlano.length) {
-      const nb = this._notebook();
-      if (!nb.ativo()) {
-        await this._criarDesejo(subidasParaPlano[0], ctx, c1.idx, t);
-      }
-    }
+    const ex = await this._executarAtos({ plan: c3.plan, ctx, tools: c1.tools, idx: c1.idx, t,
+                                          sussurro: cena.texto, d: aberto });
+    // O PEDIDO (spec 077): com o pensar ligado, o que o plano deixou para depois abre ou regrava
+    // o pedido; "nada a carregar" fecha o que estava aberto. Desligado, nada é carregado.
+    const extras = pensar
+      ? await this._pedidoDoSussurro({ texto: cena.texto, plan: c3.plan, ctx, ex, aberto, t })
+      : [];
 
     // O turno que mudou alguma coisa (spec 072, FR-032) — a sala lê para decidir se o
     // assento está girando à toa.
-    this.ultimoTurnoAplicou = desfechos.some((d) => d && d.ok);
-    return this._fecharTurno(desfechos, ctx, naoAconteceu, t);
+    this.ultimoTurnoAplicou = ex.desfechos.some((d) => d && d.ok);
+    return this._fecharTurno(ex.desfechos, ctx, ex.naoAconteceu, t, extras);
   }
 
-  // C3 · O PLANO DO TURNO (spec 076, PAGO, sem tools), para o sussurro e para o passo
-  // abstrato de um desejo. A Mente devolve o contrato M; o registro guarda o plano inteiro e o
-  // racional sobe à camada visível. Plano fora do contrato LANÇA (`PlanContractError`) e o
+  // C3 · O PLANO DO TURNO (specs 076 e 077, PAGO, sem tools), para o sussurro e para a vez de
+  // um pedido ou desejo aberto. A Mente devolve o contrato M2; o registro guarda o plano inteiro
+  // e o racional sobe à camada visível. Plano fora do contrato LANÇA (`PlanContractError`) e o
   // turno falha honesto em `_falhou`, sem fallback (Princípio VIII).
-  async _planC3({ ctx, instrucao, t, entrada }) {
+  async _planC3({ ctx, instrucao, t, entrada, andamento }) {
     const p3 = this._prompt("objetivos");
     this._emite("rotina_ativa", { rotina: "objetivos", titulo: this._tituloDaRotina("objetivos") });
     let c3, d3;
     try {
       [c3, d3] = await this._caixa(t, "C3", () => H.objectives.objectives({
-        mente: this.mente, ctx, instrucao, system: p3.texto }),
+        mente: this.mente, ctx, instrucao, system: p3.texto, andamento }),
       { prompt: p3, rotulo: label("C3") });
     } finally {
       this._emite("rotina_ociosa", { stopReason: "end_turn" });
@@ -591,50 +615,21 @@ class Laco {
       .then((p) => this.mente._cenaEmProsa(p));
   }
 
-  // C3P · planeja o desejo e o GRAVA no world (create). → desejo do caderno, ou null
-  async _criarDesejo(desejoTexto, ctx, idx, t) {
-    const pp = this._prompt("planejar");
-    this._emite("rotina_ativa", { rotina: "planejar", titulo: this._tituloDaRotina("planejar") });
-    let pl, dp;
-    try {
-      const prosaCena = await this._prosaCena(ctx);
-      [pl, dp] = await this._caixa(t, "C3P", () => H.plan.plan({
-        mente: this.mente, ctx, idx, desejo: desejoTexto, system: pp.texto, prosaCena }),
-      { prompt: pp, rotulo: label("C3P") });
-    } finally {
-      this._emite("rotina_ociosa", { stopReason: "end_turn" });
-    }
-    if (t) t.caixa("C3P", { ...dp, entrada: { desejo: desejoTexto },
-                            saida: { passos: pl.passos, fim: pl.fim, problemas: pl.problemas,
-                                     tentativas_de_plano: pl.tentativasDePlano } });
-    if (!pl.passos.length) return null;
-    const fim = H.ending.groundEnding(H.ending.extractEnding(pl.fim), desejoTexto, pl.passos);
-    const content = H.desire.formatContent(desejoTexto, pl.passos, fim.texto);
-    await this.mundo.criarIntencao(content);
-    // o world é a verdade: relê e sincroniza o caderno com o id que nasceu lá
-    const ctx2 = await this.mundo.contexto();
-    const nb = this._notebook();
-    const d = nb.sync((ctx2.self || {}).intentions);
-    if (d) {
-      nb.pay(d.id, _soma(dp.custo_pago));
-      this._emitePlano(d);
-    }
-    return d;
-  }
-
+  // O que fica para depois sobe à tela como o plano do ACP (só leitura): os itens do último
+  // `depois`, todos pendentes — quem diz o que já aconteceu é o mundo, não esta lista.
   _emitePlano(d) {
     if (!d) return;
     this._emite("plano", {
       desejo: d.desejo,
-      entries: d.passos.map((p, i) => ({
-        content: p,
-        status: i < d.passo_atual ? "completed" : i === d.passo_atual ? "in_progress" : "pending" })),
+      entries: (d.passos || []).map((p) => ({ content: p, status: "pending" })),
     });
   }
 
-  // O TICK AUTÔNOMO (contrato 01). O relógio é da SALA (spec 072); aqui só se JOGA o
-  // turno quando mandam, e se diz se ele mudou alguma coisa.
-  async talvezAgirSozinho() {
+  // A VEZ DELE NA FILA (contrato 01; spec 077). O relógio é da SALA (spec 072); aqui só se
+  // JOGA a vez quando mandam, e se diz se ela mudou alguma coisa. Com a autonomia desligada,
+  // só o pedido do JOGADOR anda (a autonomia governa o que ele inventa); ligada, anda o desejo
+  // mais recente e, sem desejo nenhum, ele pensa no que quer.
+  async talvezAgirSozinho({ autonomia = true } = {}) {
     return this.comTurno(async () => {
       const t = this.registro ? this.registro.abrir() : null;
       if (t) this.mundo.turnoId = t.id;
@@ -646,7 +641,7 @@ class Laco {
         if (t) t.pretendia(self.intentions);
         // QUEM DORME FUNDO NÃO DECIDE — 0 token (o Motor recusaria o `wake_up`).
         if (self.is_deep_asleep) { if (t) t.descartar("sono"); return; }
-        // EM TRÂNSITO: a viagem leva ticks; o desejo ESPERA a chegada (research R6).
+        // EM TRÂNSITO: a viagem leva ticks; o pedido ESPERA a chegada (research R6 da 075).
         if (self.transit) {
           const destino = self.transit.journey_to_name || self.transit.to_name || "";
           this._emite("harness", { box: "C8", texto: label("TRANSITO", { destino }) });
@@ -654,15 +649,17 @@ class Laco {
           return;
         }
         const nb = this._notebook();
-        const d = nb.sync(self.intentions);
+        nb.sync(self.intentions);
+        const d = autonomia ? nb.ativo() : (this._pensarLigado() ? nb.ativo({ soPedido: true }) : null);
         if (t) t.sussurro(null, "autonoma");
         const idx = sceneIndex(ctx);
         if (!d) {
-          await this._tickSemDesejo(ctx, idx, t);
+          if (autonomia) await this._tickSemDesejo(ctx, idx, t);
+          else if (t) t.descartar("sem_pedido");
           return;
         }
         if (t) t.desejo(nb.foto(d.id));
-        await this._tickDesejo(d, ctx, idx, t);
+        await this._vezDoPedido(d, ctx, idx, t);
       } catch (e) {
         this._falhou(e, t);
       } finally {
@@ -671,8 +668,9 @@ class Laco {
     });
   }
 
-  // Sem desejo: "o que eu quero agora?" (C3P · querer) e o plano. Nada age no mundo
-  // neste tick — o próximo já anda.
+  // Sem desejo, com a autonomia ligada: "o que eu quero agora?" (C3P · querer). O desejo nasce
+  // só com o texto; a vez seguinte o pensa pelo M2, como um pedido (spec 077: o planejador
+  // antigo saiu). Nada age no mundo nesta vez.
   async _tickSemDesejo(ctx, idx, t) {
     const pq = this._prompt("querer");
     this._emite("rotina_ativa", { rotina: "querer", titulo: this._tituloDaRotina("querer") });
@@ -691,258 +689,322 @@ class Laco {
     if (t) t.caixa("C3P", { ...dq, entrada: { querer: true }, saida: { desejo } });
     if (!desejo) { if (t) t.descartar("sem_desejo"); return; }
     this._emite("objetivos", { texto: desejo, numeroTurno: this.numeroTurno });
-    await this._criarDesejo(desejo, ctx, idx, t);
+    await this.mundo.criarIntencao(H.desire.formatContent(desejo, [], null));
+    const ctx2 = await this.mundo.contexto();
+    this._notebook().sync((ctx2.self || {}).intentions);
   }
 
-  async _tickDesejo(d, ctx, idx, t) {
+  // A VEZ DE UM PEDIDO OU DESEJO ABERTO (spec 077, research D3): confere o fato, os limites e a
+  // janela de intervenção; repensa o pedido inteiro pelo M2 com o andamento; executa só os atos;
+  // e fecha, regrava ou trava.
+  async _vezDoPedido(d, ctx, idx, t) {
     const nb = this._notebook();
     const cfg = this._cfg();
     const h = cfg.harness || {};
     const mente0 = this.mente.custoDoTurno ? _soma(this.mente.custoDoTurno()) : 0;
     const pagar = () => {
       if (!this.mente.custoDoTurno) return;
-      const agora = _soma(this.mente.custoDoTurno());
-      nb.pay(d.id, agora - (pagar._ja || mente0));
-      pagar._ja = agora;
+      nb.pay(d.id, _soma(this.mente.custoDoTurno()) - mente0);
     };
+    const palavras = _palavrasDe(d);
+    const base = { id: d.id, origem: d.origem, palavras };
 
-    // C8D · acabou? (regra; o losango do Jev só em sombra)
+    // C8D · o fato que fecha já é verdade? (regra, 0 token)
     const [fimOk, dfd] = await this._caixa(t, "C8D", async () => H.ending.isDone(d.fim, ctx),
       { rotulo: label("C8D") });
     if (t) t.caixa("C8D", { ...dfd, entrada: { fim: d.fim }, saida: { cumprido: fimOk } });
     if (fimOk === true) {
-      await this.mundo.fecharIntencao(d.id, "concluida");
-      nb.sync(((await this.mundo.contexto()).self || {}).intentions);
+      await this._fecharPedido(d, "concluida");
+      if (t) t.pedido({ ...base, conferido: { antes: true }, desfecho: "andou", estado: "cumprido",
+                        vezes: d.vezes || 0 });
       this.ultimoTurnoAplicou = true;
-      return this._fecharTurno([], ctx, [], t, [`o desejo de ${_minusc(d.desejo)} se cumpriu`]);
+      return this._fecharTurno([], ctx, [], t, [_fatoCumprido(palavras)]);
     }
 
-    // BLOQUEIO com a janela de intervenção aberta: espera o jogador (0 token)
-    if (d.bloqueio && d.intervencao && !d.intervencao.sussurro_recebido
-        && (d.intervencao.ticks || 0) < (h.janelaIntervencaoTicks || 1)) {
-      d.intervencao.ticks = (d.intervencao.ticks || 0) + 1;
-      nb.salvar();
-      if (t) t.descartar("intervencao");
-      return;
-    }
-    if (d.bloqueio) {
-      await this._replanejar(d, ctx, idx, t);
-      pagar();
+    // O TETO do pedido: vezes demais, ou custo demais, sem fechar (FR-009)
+    if ((d.vezes || 0) >= (h.tetoVezesPedido || TETO_VEZES) || H.progress.overBudget(d.tokens_pagos, cfg)) {
+      await this._fecharPedido(d, "abandonada", { lembrar: true });
+      this._emite("sistema", { texto: `Ele desiste: ${_minusc(palavras.join("; "))}.` });
+      if (t) t.pedido({ ...base, desfecho: "teto", estado: "largado", vezes: d.vezes || 0 });
       return;
     }
 
-    // O TETO DE CUSTO (FR-009b)
-    if (H.progress.overBudget(d.tokens_pagos, cfg)) {
-      return this._bloquear(d, "custo", t);
-    }
-
-    // DESEJO SEM PLANO (escrito à mão pelo dono no client, ou por outro conector): o
-    // harness planeja antes de andar (C3P) e grava o plano no world.
-    if (!d.passos.length) {
-      await this._planejarDesejo(d, ctx, idx, t);
-      pagar();
-      return;
-    }
-
-    const passo = d.passos[d.passo_atual];
-    if (!passo) {
-      // O plano acabou. Fim conferível ainda falso → replaneja; sem fim conferível,
-      // o fim é por vontade: o plano cumprido É o desejo cumprido.
-      if (fimOk === false) {
-        d.bloqueio = { motivo: "plano_acabou", passo: d.passo_atual, instante: new Date().toISOString() };
+    // O PONTO DE INTERVENÇÃO aberto espera a voz do jogador por uma janela de vezes (0 token);
+    // vencida, ele segue repensando com as recusas.
+    if (d.intervencao) {
+      if ((d.intervencao.ticks || 0) < (h.janelaIntervencaoTicks || 1)) {
+        d.intervencao.ticks = (d.intervencao.ticks || 0) + 1;
         nb.salvar();
-        await this._replanejar(d, ctx, idx, t);
-        pagar();
+        if (t) t.descartar("intervencao");
+        if (t) t.pedido({ ...base, desfecho: "esperando", estado: "aberto", vezes: d.vezes || 0 });
         return;
       }
-      await this.mundo.fecharIntencao(d.id, "concluida");
-      nb.sync(((await this.mundo.contexto()).self || {}).intentions);
-      return this._fecharTurno([], ctx, [], t, [`ele deu por cumprido o que queria: ${_minusc(d.desejo)}`]);
-    }
-    this._emitePlano(d);
-
-    // O PASSO É CONCRETO? (C4 = aqui no próprio passo) → resolvedor direto, 0 token pago.
-    // Abstrato → o C3 concretiza (pago), com o passo como instrução.
-    const concreto = H.target.cited(passo, idx).some((a) => a.onde === "aqui");
-    let linhas = [passo];
-    let plano = null;            // os passos do plano (spec 076), quando o C3 rodou
-    const doPlano = new Map();   // texto do ato → passo do plano
-    const resolvidos = new Map(); // passo do plano → o que o resolvedor devolveu
-    const tools = await this._ferramentas();
-    if (!concreto) {
-      plano = await this._planC3({ ctx, instrucao: passo, t, entrada: { passo } });
-      const atos = plano.steps.filter((s) => s.type === "ato").slice(0, MAX_ATOS_POR_PASSO);
-      for (const s of atos) doPlano.set(H.objectives.actText(s), s);
-      linhas = [...doPlano.keys()];
-    }
-    if (!d.step) d.step = H.progress.newStep(H.progress.stateSignature(ctx));
-
-    const desfechos = [];
-    const naoAconteceu = [];
-    let veredito = null;
-    let antes = ctx;
-    for (const linha of linhas.slice(0, MAX_ATOS_POR_PASSO)) {
-      const r = _comoAto(await this._resolverEAgir({ objetivo: linha, ctx: antes, tools, idx, t,
-                                                     sussurro: null, noDesejo: d.id }));
-      if (doPlano.has(linha)) resolvidos.set(doPlano.get(linha), r);
-      if (!r.chamada) {
-        const m = motivoEmMundo(r.subiu, linha, r);
-        if (m) naoAconteceu.push({ o_que_falhou: `${linha}: ${m}` });
-        veredito = H.progress.after(d.step, { tool: "(nada)", args: { passo: linha }, aceita: false,
-          recusa: r.subiu, estadoDepois: null, saber: false, cfg });
-        nb.attempt(d.id, { passo: d.passo_atual, tool: null, objetivo: linha, subiu: r.subiu, progresso: false });
-        if (veredito.veredito === "blocked") break;
-        continue;
-      }
-      const pre = H.progress.before(d.step, r.chamada.tool, r.chamada.args);
-      desfechos.push(r.out);
-      // C8 · andou?
-      const [c8, d8] = await this._caixa(t, "C8", async () => {
-        let depois = antes;
-        try { depois = await this.mundo.contexto(); } catch (_) { /* segue com a foto velha */ }
-        const saber = H.progress.newKnowledge(antes, depois);
-        const estadoDepois = H.progress.stateSignature(depois);
-        const v = pre ? { veredito: "blocked", motivo: pre.bloqueio }
-          : H.progress.after(d.step, { tool: r.chamada.tool, args: r.chamada.args, aceita: r.out.ok,
-              recusa: r.out.erro, estadoDepois, saber: saber.length > 0, cfg });
-        let sombra = null;
-        if ((h.losangosJev || "sombra") !== "desligado") {
-          try {
-            const mudou = diffTextual(antes, depois).concat(r.out.aconteceu || []).join(" ");
-            sombra = await H.progress.shadow({ decider: this._decider(), pergunta: this._prompt("c8_passo").texto,
-                                              passo, mudou: estadoDepois !== d.step.vistos[0] ? mudou : "" });
-            if (d.fim && d.fim.familia === "nenhuma") {
-              const s2 = await H.ending.shadow({ decider: this._decider(), pergunta: this._prompt("c8d_fim").texto,
-                                                desejo: d.desejo, fim: d.fim, memoriasNovas: saber });
-              if (s2) sombra = [sombra, s2].filter(Boolean);
-            }
-          } catch (e) { log("LOSANGO EM SOMBRA FALHOU (sem efeito)", e.message); }
-        }
-        antes = depois;
-        return { v, saber, estadoDepois, sombra };
-      }, { rotulo: label("C8") });
-      if (t) t.caixa("C8", { ...d8, entrada: { passo, tool: r.chamada.tool },
-                             saida: { veredito: c8.v.veredito, motivo: c8.v.motivo || null,
-                                      saber_novo: c8.saber.length }, sombra: c8.sombra });
-      if (c8.sombra) { d.sombra = (d.sombra || []).concat([].concat(c8.sombra)).slice(-40); }
-      nb.attempt(d.id, { passo: d.passo_atual, tool: r.chamada.tool, args: _semProsa(r.chamada.args),
-                         aceita: r.out.ok, motivo: r.out.erro, progresso: c8.v.veredito === "progresso" });
-      veredito = c8.v;
-      if (veredito.veredito !== "sem_progresso") break;
-    }
-    // os passos do plano, na ORDEM, com o desfecho de cada um (spec 076)
-    if (t && plano) {
-      for (const s of plano.steps) {
-        if (s.type !== "ato") t.passo(_stepRecord(s, s.type === "defeito" ? "defeito" : "narrado"));
-        else if (resolvidos.has(s)) t.passo(_stepRecord(s, _desfechoDoAto(resolvidos.get(s)), resolvidos.get(s)));
-        else t.passo(_stepRecord(s, "nao_tentado"));
-      }
-    }
-    this.ultimoTurnoAplicou = desfechos.some((x) => x && x.ok);
-
-    if (veredito && veredito.veredito === "progresso") {
-      d.passo_atual += 1;
+      d.intervencao = null;
+      d.bloqueio = null;
+      d.vezes_sem_avanco = 0;
       d.step = null;
       nb.salvar();
-      this._emitePlano(d);
-    } else if (veredito && veredito.veredito === "blocked") {
-      nb.salvar();
-      await this._bloquear(d, veredito.motivo, t, true);
+    }
+
+    // C3 · o M2 repensa o pedido inteiro, com o que já foi feito e o que faltava
+    const andamento = { feito: this._feito(d), faltava: d.passos || [] };
+    const instrucao = palavras[palavras.length - 1];
+    const c3 = await this._planC3({ ctx, instrucao, t, andamento, entrada: { instrucao, andamento } });
+    const plan = c3.plan;
+    const tools = await this._ferramentas();
+    const ex = await this._executarAtos({ plan, ctx, tools, idx, t, sussurro: null, d });
+    for (const x of ex.tentativas) nb.attempt(d.id, { vez: (d.vezes || 0) + 1, ...x });
+    // O LOSANGO DO FIM em SOMBRA (075, B15 reprovado): sem fato conferível, o Jev lê o que ele
+    // acabou de saber; a resposta só é gravada ao lado da regra, sem efeito.
+    if (((h.losangosJev || "sombra") !== "desligado") && (!d.fim || d.fim.familia === "nenhuma")) {
+      try {
+        const sombra = await H.ending.shadow({ decider: this._decider(), pergunta: this._prompt("c8d_fim").texto,
+          desejo: palavras.join("; "), fim: d.fim, memoriasNovas: H.progress.newKnowledge(ctx, ex.ctxDepois || ctx) });
+        if (sombra && t) t.caixa("C8D", { saida: { sombra: true }, sombra });
+      } catch (e) { log("LOSANGO EM SOMBRA FALHOU (sem efeito)", e.message); }
+    }
+
+    // O fato desta vez: o do plano novo, se valer; senão o que já valia (um fato conferível não
+    // se perde porque o plano desta vez não o repetiu).
+    const fi = H.ending.fromPlan(plan.doneWhen, palavras, _textosDoPlano(plan), ctx);
+    const fim = fi.fim.familia !== "nenhuma" ? fi.fim : (d.fim || fi.fim);
+    const depoisCtx = ex.ctxDepois || ctx;
+    const conferido = H.ending.isDone(fim, depoisCtx);
+    const semAto = !plan.steps.some((x) => x.type === "ato");
+    const reg = { ...base, depois: plan.later, defeitos: plan.defects,
+                  fato: { texto: fi.fim.texto, valeu: fi.fim.familia !== "nenhuma",
+                          motivo: fi.motivo || (plan.defects.includes("pronto_quando") ? "formato" : null) },
+                  conferido: { antes: fimOk, depois: conferido } };
+    let estado = "aberto";
+    let desfecho = ex.andou ? "andou" : "sem_aceite";
+    const extras = [];
+    if (conferido === true) {
+      await this._fecharPedido(d, "concluida");
+      estado = "cumprido";
+      extras.push(_fatoCumprido(palavras));
+    } else if (!plan.later.length && semAto) {
+      // ELE DESISTIU (a decisão é dele, numa vez sem sussurro): a desistência vira lembrança.
+      await this._fecharPedido(d, "abandonada", { lembrar: true });
+      estado = "largado";
+      this._emite("sistema", { texto: `Ele desiste: ${_minusc(palavras.join("; "))}.` });
+    } else if (!plan.later.length && (!fim || fim.familia === "nenhuma") && ex.aceitos > 0) {
+      await this._fecharPedido(d, "concluida");
+      estado = "vontade";
+      extras.push(_fatoCumprido(palavras));
     } else {
-      nb.salvar();
+      const content = H.desire.formatContent(palavras, plan.later, fim && fim.texto);
+      await this.mundo.atualizarIntencao(d.id, content);
+      nb.regravar(d.id, { palavras, passos: plan.later, fim, content });
+      nb.contarVez(d.id, ex.andou);
+      const kSem = h.vezesSemAvanco || VEZES_SEM_AVANCO;
+      if (ex.bloqueio || (d.vezes_sem_avanco || 0) >= kSem) {
+        await this._abrirIntervencao(d, ex.bloqueio || "sem_avanco", ex, t);
+        desfecho = "intervencao";
+      }
+      this._emitePlano(d);
     }
     pagar();
-    return this._fecharTurno(desfechos, ctx, naoAconteceu, t);
+    if (t) t.pedido({ ...reg, desfecho, estado, vezes: (d.vezes || 0) + (estado === "aberto" ? 0 : 1) });
+    this.ultimoTurnoAplicou = ex.desfechos.some((x) => x && x.ok);
+    return this._fecharTurno(ex.desfechos, ctx, ex.naoAconteceu, t, extras);
   }
 
-  async _planejarDesejo(d, ctx, idx, t) {
+  // O SUSSURRO COM O PENSAR LIGADO (spec 077, research D7): o que o plano deixou para depois
+  // ABRE o pedido (sem pedido aberto) ou o REGRAVA (com as palavras em sequência); "nada a
+  // carregar" FECHA o que estava aberto, sem lembrança de desistência — quem mudou foi o
+  // jogador. → os fatos extras da narração.
+  async _pedidoDoSussurro({ texto, plan, ctx, ex, aberto, t }) {
     const nb = this._notebook();
-    const pp = this._prompt("planejar");
-    this._emite("rotina_ativa", { rotina: "planejar", titulo: this._tituloDaRotina("planejar") });
-    let pl, dp;
-    try {
-      const prosaCena = await this._prosaCena(ctx);
-      [pl, dp] = await this._caixa(t, "C3P", () => H.plan.plan({
-        mente: this.mente, ctx, idx, desejo: d.desejo, system: pp.texto, prosaCena }),
-      { prompt: pp, rotulo: label("C3P") });
-    } finally {
-      this._emite("rotina_ociosa", { stopReason: "end_turn" });
+    const palavras = aberto ? _palavrasDe(aberto).concat([texto]) : [texto];
+    const fi = H.ending.fromPlan(plan.doneWhen, palavras, _textosDoPlano(plan), ctx);
+    const depoisCtx = ex.ctxDepois || ctx;
+    const conferido = H.ending.isDone(fi.fim, depoisCtx);
+    const reg = { palavras, depois: plan.later, defeitos: plan.defects,
+                  fato: { texto: fi.fim.texto, valeu: fi.fim.familia !== "nenhuma",
+                          motivo: fi.motivo || (plan.defects.includes("pronto_quando") ? "formato" : null) },
+                  conferido: { antes: null, depois: conferido } };
+    if (aberto) {
+      for (const x of ex.tentativas) nb.attempt(aberto.id, { vez: (aberto.vezes || 0) + 1, ...x });
+      const base = { ...reg, id: aberto.id, origem: aberto.origem };
+      if (conferido === true) {
+        await this._fecharPedido(aberto, "concluida");
+        if (t) t.pedido({ ...base, desfecho: ex.andou ? "andou" : "sem_aceite", estado: "cumprido",
+                          vezes: (aberto.vezes || 0) + 1 });
+        return [_fatoCumprido(palavras)];
+      }
+      if (!plan.later.length) {
+        await this._fecharPedido(aberto, "abandonada");
+        if (t) t.pedido({ ...base, desfecho: ex.andou ? "andou" : "sem_aceite", estado: "cancelado",
+                          vezes: (aberto.vezes || 0) + 1 });
+        return [];
+      }
+      const fim = fi.fim.familia !== "nenhuma" ? fi.fim : (aberto.fim || fi.fim);
+      const content = H.desire.formatContent(palavras, plan.later, fim && fim.texto);
+      await this.mundo.atualizarIntencao(aberto.id, content);
+      nb.regravar(aberto.id, { palavras, passos: plan.later, fim, content });
+      // a voz do jogador desfaz o travamento: o "andou?" recomeça daqui
+      aberto.bloqueio = null;
+      aberto.intervencao = null;
+      aberto.vezes_sem_avanco = 0;
+      aberto.step = null;
+      nb.contarVez(aberto.id, ex.andou);
+      this._emitePlano(aberto);
+      if (t) t.pedido({ ...base, desfecho: ex.andou ? "andou" : "sem_aceite", estado: "aberto",
+                        vezes: aberto.vezes });
+      return [];
     }
-    if (t) t.caixa("C3P", { ...dp, entrada: { desejo: d.desejo, sem_plano: true },
-                            saida: { passos: pl.passos, fim: pl.fim, problemas: pl.problemas } });
-    if (!pl.passos.length) return;
-    // o fim já declarado (o `pronto_quando` legado, ou o "Pronto quando" escrito à mão)
-    // vale mais que o que o C3P sugeriu agora
-    const fim = d.fim && d.fim.familia !== "nenhuma" ? d.fim
-      : H.ending.groundEnding(H.ending.extractEnding(pl.fim), d.desejo, pl.passos);
-    const content = H.desire.formatContent(d.desejo, pl.passos, fim.texto);
-    await this.mundo.atualizarIntencao(d.id, content);
-    nb.replan(d.id, pl.passos, fim, content);
-    this._emitePlano(nb.get(d.id));
+    if (!plan.later.length || conferido === true) return [];
+    // ABRE: o desejo nasce no mundo (a prosa) e o caderno o marca como pedido do jogador.
+    const content = H.desire.formatContent(palavras, plan.later, fi.fim.texto);
+    const antes = new Set(Object.keys(nb.dados.desejos));
+    await this.mundo.criarIntencao(content);
+    const ctx2 = await this.mundo.contexto();
+    nb.sync((ctx2.self || {}).intentions);
+    const novo = Object.values(nb.dados.desejos).find((x) => !antes.has(x.id)) || null;
+    if (novo) {
+      nb.marcarOrigem(novo.id, "pedido");
+      for (const x of ex.tentativas) nb.attempt(novo.id, { vez: 1, ...x });
+      nb.contarVez(novo.id, ex.andou);
+      novo.step = H.progress.newStep(H.progress.stateSignature(ctx2));
+      nb.salvar();
+      this._emitePlano(novo);
+    }
+    if (t) t.pedido({ ...reg, id: novo && novo.id, origem: "pedido", desfecho: "abriu", estado: "aberto",
+                      vezes: 1 });
+    return [];
   }
 
-  // BLOCKED sobe ao front como PONTO DE INTERVENÇÃO (FR-009c) e abre a janela.
-  async _bloquear(d, motivo, t, semNarrar) {
+  // OS ATOS DE UM PLANO (specs 076 e 077, research D4), no sussurro e na vez do pedido: só o
+  // passo ATO vai ao resolvedor, na ordem. Param no primeiro ato ACEITO que muda o lugar (os
+  // seguintes eram da cena velha) e no primeiro que o MUNDO RECUSA (a recusa muda o plano: o
+  // próximo a recebe como dado); o que sobe sem ir ao mundo não muda a cena e não para os
+  // seguintes. Com um pedido (`d`), o "andou?" da 075 roda sobre o pedido inteiro.
+  async _executarAtos({ plan, ctx, tools, idx, t, sussurro, d }) {
+    const cfg = this._cfg();
+    const r = { desfechos: [], naoAconteceu: [], tentativas: [], aceitos: 0, andou: false,
+                parou: null, bloqueio: null, ctxDepois: null };
+    let antes = ctx;
+    let atos = 0;
+    const lugar0 = _lugarDe(ctx);
+    if (d && !d.step) d.step = H.progress.newStep(H.progress.stateSignature(ctx));
+    for (const step of plan.steps) {
+      if (step.type !== "ato") {
+        if (t) t.passo(_stepRecord(step, step.type === "defeito" ? "defeito" : "narrado"));
+        continue;
+      }
+      if (r.parou || atos >= MAX_OBJETIVOS) {
+        if (t) t.passo({ ..._stepRecord(step, "nao_tentado"), ...(r.parou ? { motivo: r.parou } : {}) });
+        continue;
+      }
+      atos += 1;
+      const objetivo = H.objectives.actText(step);
+      const res = _comoAto(await this._resolverEAgir({ objetivo, ctx: antes, tools, idx, t, sussurro,
+                                                      noDesejo: d ? d.id : null }));
+      if (t) t.passo(_stepRecord(step, _desfechoDoAto(res), res));
+      if (res.out) r.desfechos.push(res.out);
+      if (!res.chamada) {
+        const m = motivoEmMundo(res.subiu, objetivo, res);
+        if (m) r.naoAconteceu.push({ o_que_falhou: `${objetivo}: ${m}` });
+        r.tentativas.push({ acao: step.action, tool: null, aceita: false, mundo: m || null });
+        if (d) {
+          const v = H.progress.after(d.step, { tool: "(nada)", args: { passo: objetivo }, aceita: false,
+            recusa: res.subiu, estadoDepois: null, saber: false, cfg });
+          if (v.veredito === "blocked") { r.bloqueio = v.motivo; r.parou = "bloqueio"; }
+        }
+        continue;
+      }
+      // FOI AO MUNDO: a cena é relida — o próximo ato, a conferência e o "andou?" leem a nova.
+      let depois = antes;
+      try { depois = await this.mundo.contexto(); } catch (_) { /* segue com a foto velha */ }
+      r.tentativas.push({ acao: step.action, tool: res.chamada.tool, aceita: !!res.out.ok,
+                          mundo: _mundoDisse(res.out) });
+      const estadoDepois = H.progress.stateSignature(depois);
+      const saber = H.progress.newKnowledge(antes, depois).length > 0;
+      if (res.out.ok) {
+        r.aceitos += 1;
+        if (estadoDepois !== H.progress.stateSignature(antes) || saber) r.andou = true;
+      }
+      if (d) {
+        const pre = H.progress.before(d.step, res.chamada.tool, res.chamada.args);
+        const v = pre ? { veredito: "blocked", motivo: pre.bloqueio }
+          : H.progress.after(d.step, { tool: res.chamada.tool, args: res.chamada.args, aceita: res.out.ok,
+              recusa: res.out.erro, estadoDepois, saber, cfg });
+        if (t) t.caixa("C8", { entrada: { acao: step.action, tool: res.chamada.tool },
+                               saida: { veredito: v.veredito, motivo: v.motivo || null } });
+        if (v.veredito === "progresso") r.andou = true;
+        if (v.veredito === "blocked") { r.bloqueio = v.motivo; r.parou = "bloqueio"; }
+      }
+      antes = depois;
+      if (!res.out.ok) r.parou = r.parou || "recusa";
+      else if (_lugarDe(depois) !== lugar0) r.parou = r.parou || "lugar";
+    }
+    r.ctxDepois = antes;
+    return r;
+  }
+
+  // O que ele já fez pelo pedido, em palavras de mundo, para o M2 (contrato `andamento.md`):
+  // a ação do plano e o que o mundo disse. NUNCA nome de capacidade: a Mente não recebe schema
+  // (invariante 1); tentativas antigas (da 075, sem `acao`) ficam de fora.
+  _feito(d) {
+    return ((d && d.tentativas) || []).filter((x) => x && x.acao).slice(-8).map((x) => {
+      if (!x.tool) return `${x.acao} → nenhuma ação possível daqui${x.mundo ? ` (${x.mundo})` : ""}`;
+      if (x.aceita) return `${x.acao} → deu certo${x.mundo ? `: ${x.mundo}` : ""}`;
+      return `${x.acao} → o mundo recusou${x.mundo ? `: ${x.mundo}` : ""}`;
+    });
+  }
+
+  // O PONTO DE INTERVENÇÃO (FR-009): sobe à tela em palavras de mundo — onde ele empacou e o
+  // que o mundo disse por último — e a janela espera a voz do jogador.
+  async _abrirIntervencao(d, motivo, ex, t) {
     const nb = this._notebook();
-    d.bloqueio = { motivo, passo: d.passo_atual, instante: new Date().toISOString() };
-    d.intervencao = { ticks: 0, sussurro_recebido: null };
+    d.bloqueio = { motivo, instante: new Date().toISOString() };
+    d.intervencao = { ticks: 0 };
     nb.salvar();
-    const passo = d.passos[d.passo_atual] || d.desejo;
-    const texto = motivo === "custo"
-      ? `Isto está custando esforço demais sem render: ${_minusc(d.desejo)}. Ele vai repensar.`
-      : `Ele desiste de ${_minusc(passo)} desse jeito — vai tentar outro caminho.`;
+    const ultima = [...((ex && ex.tentativas) || [])].reverse().find((x) => x.mundo);
+    const texto = `Ele empacou em ${_minusc(_palavrasDe(d).join("; "))}`
+      + (ultima ? `: ${_minusc(ultima.mundo)}.` : ": nada do que tentou adiantou.");
     this._emite("bloqueio", { texto, motivo, desejo: d.desejo });
     if (t) t.caixa("C8", { saida: { veredito: "blocked", motivo, intervencao: true } });
-    if (!semNarrar) this._emite("sistema", { texto });
   }
 
-  // C3R · replaneja com as tentativas do passo como dado; ou desiste do desejo.
-  async _replanejar(d, ctx, idx, t) {
-    const nb = this._notebook();
-    const pp = this._prompt("planejar");
-    const tentativas = d.tentativas.filter((x) => x.passo === d.bloqueio.passo)
-      .slice(-6).map((x) => (x.tool
-        ? `${x.tool} ${Object.values(x.args || {}).join(", ")} → "${x.aceita ? "aceito, sem mudar nada" : (x.motivo || "recusado")}"`
-        : `"${x.objetivo}" → nenhuma ação possível daqui`));
-    if (d.intervencao && d.intervencao.sussurro_recebido) {
-      tentativas.push(`o jogador sugeriu: "${d.intervencao.sussurro_recebido}"`);
-    }
-    if (d.bloqueio.motivo === "custo") tentativas.push("isto já custou esforço demais sem render");
-    this._emite("rotina_ativa", { rotina: "planejar", titulo: this._tituloDaRotina("planejar") });
-    let pl, dp;
-    try {
-      const prosaCena = await this._prosaCena(ctx);
-      [pl, dp] = await this._caixa(t, "C3R", () => H.plan.plan({
-        mente: this.mente, ctx, idx, desejo: d.desejo, tentativas, system: pp.texto, prosaCena }),
-      { prompt: pp, rotulo: label("C3R") });
-    } finally {
-      this._emite("rotina_ociosa", { stopReason: "end_turn" });
-    }
-    if (t) t.caixa("C3R", { ...dp, entrada: { desejo: d.desejo, bloqueio: d.bloqueio, tentativas },
-                            saida: { passos: pl.passos, fim: pl.fim, problemas: pl.problemas } });
-    // DESISTIR é decisão do personagem, e a desistência vira memória (spec 073, FR-015):
-    // plano vazio, ou o teto de custo estourado de novo depois de um replanejamento.
-    const desiste = !pl.passos.length
-      || (d.bloqueio.motivo === "custo" && d.replanejamentos_por_custo >= 1);
-    if (desiste) {
-      await this.mundo.fecharIntencao(d.id, "abandonada", { lembrar: true });
-      nb.sync(((await this.mundo.contexto()).self || {}).intentions);
-      this._emite("sistema", { texto: `Ele larga o que queria: ${_minusc(d.desejo)}.` });
-      return;
-    }
-    const porCusto = d.bloqueio.motivo === "custo";
-    if (porCusto) d.replanejamentos_por_custo = (d.replanejamentos_por_custo || 0) + 1;
-    const fim = d.fim && d.fim.familia !== "nenhuma" && d.fim.fonte === "pronto_quando" ? d.fim
-      : H.ending.groundEnding(H.ending.extractEnding(pl.fim), d.desejo, pl.passos);
-    const content = H.desire.formatContent(d.desejo, pl.passos, fim.texto);
-    await this.mundo.atualizarIntencao(d.id, content);
-    nb.replan(d.id, pl.passos, fim, content);
-    // o teto é por PLANO: um plano novo, depois de estourar, recomeça a conta (e se
-    // estourar de novo, ele desiste — acima)
-    if (porCusto) nb.get(d.id).tokens_pagos = 0;
-    nb.salvar();
-    this._emitePlano(nb.get(d.id));
+  // Fecha o desejo no mundo (o mundo é a verdade) e realinha o caderno.
+  async _fecharPedido(d, status, { lembrar = false } = {}) {
+    await this.mundo.fecharIntencao(d.id, status, { lembrar });
+    this._notebook().sync(((await this.mundo.contexto()).self || {}).intentions);
   }
+}
+
+// As palavras do jogador de um desejo (as linhas da prosa antes do que falta); o desejo que ele
+// inventou tem uma só.
+function _palavrasDe(d) {
+  const p = (d && d.palavras) || [];
+  return p.length ? p : [String((d && d.desejo) || "").trim()].filter(Boolean);
+}
+
+// O texto contra o qual o fato é aterrado: o que falta e as ações dos passos.
+function _textosDoPlano(plan) {
+  return ((plan && plan.later) || []).concat(((plan && plan.steps) || []).map((x) => x.action));
+}
+
+// Onde ele está: o lugar, ou a rota em que entrou (o trânsito também muda a cena).
+function _lugarDe(ctx) {
+  const lugar = ctx && ctx.scene && ctx.scene.place && ctx.scene.place.id;
+  const tr = ctx && ctx.self && ctx.self.transit;
+  return `${lugar || ""}|${tr ? (tr.to_id || tr.route_id || "transito") : ""}`;
+}
+
+// O que o mundo disse de um ato, numa linha: o que aconteceu, ou o motivo da recusa. Sem o
+// "só valem: …" do corretor de campos, que é mecânica.
+function _mundoDisse(out) {
+  if (!out) return null;
+  const t = out.ok ? (out.aconteceu || []).join(" ") : (out.erro || "");
+  const linha = String(t || "").replace(/\s+/g, " ").trim();
+  return linha ? (linha.length > 200 ? linha.slice(0, 199) + "…" : linha) : null;
+}
+
+// O fato extra da narração quando o pedido se cumpre (em palavras de mundo, sem estado).
+function _fatoCumprido(palavras) {
+  return `ele conseguiu o que buscava: ${_minusc(palavras.join("; "))}`;
 }
 
 function c4Rotulo(objetivo, idx) {

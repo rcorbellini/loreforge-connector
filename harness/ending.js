@@ -100,6 +100,27 @@ function isDone(fim, ctx) {
   return null;
 }
 
+// O FIM DE UM PLANO M2 (spec 077): o `pronto_quando` lido, aterrado ao pedido e conferido contra
+// a cena que o PLANO viu. Três falhas medidas no M2 (vereditos-m1m2.md) e o que vale em cada uma:
+//   · o fato fora do pedido (o alvo não aparece nas palavras nem no plano) → "nenhum" (o
+//     aterramento acima);
+//   · o fato que JÁ era verdade quando o plano nasceu (o qwen pôs "posse de Peixe Assado" no peixe
+//     que o Sorin já carregava) → "nenhum": fecharia o pedido sem ele fazer nada;
+//   · o nome que não existe no mundo ("Peixe Fresco") → fica como está: só fecha se um dia for
+//     verdade; senão o pedido fecha pela vontade ou pelo limite.
+// → { fim, motivo } — `motivo` é null quando o fato vale.
+function fromPlan(prontoQuando, palavras, passos, ctxVisto) {
+  const lido = extractEnding(prontoQuando);
+  if (lido.familia === "nenhuma") return { fim: lido, motivo: null };
+  const aterrado = groundEnding(lido, [].concat(palavras || []).join(" "), passos);
+  if (aterrado.familia === "nenhuma") return { fim: aterrado, motivo: "fora do pedido" };
+  if (isDone(aterrado, ctxVisto) === true) {
+    return { fim: { familia: "nenhuma", texto: "nenhum", fonte: "prosa", descartado: aterrado.texto },
+             motivo: "já era verdade" };
+  }
+  return { fim: aterrado, motivo: null };
+}
+
 // O losango em SOMBRA (FR-010a, hipótese): o Jev lê o fim em prosa e o que ele acabou
 // de saber. A resposta é GRAVADA ao lado da decisão da regra; só tem efeito com
 // `cfg.harness.losangosJev === "ligado"`, depois da bateria B15.
@@ -114,4 +135,4 @@ async function shadow({ decider, pergunta, desejo, fim, memoriasNovas }) {
   return { losango: "c8d_fim", resposta: r.vencedora, margem: r.margem };
 }
 
-module.exports = { BOX, extractEnding, groundEnding, isDone, shadow };
+module.exports = { BOX, extractEnding, groundEnding, isDone, fromPlan, shadow };

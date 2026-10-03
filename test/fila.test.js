@@ -299,3 +299,34 @@ test("072: o descanso desce no estado da fila (a tela não lê silêncio como pa
   await espera(40);
   assert.ok(f.estado().descansoMs > 0, JSON.stringify(f.estado()));
 });
+
+// --- spec 077: o pedido do jogador aberto também dá a vez ------------------------------ //
+
+test("077: com a autonomia DESLIGADA, o assento com pedido do jogador aberto ganha a vez — e o laço sabe que não pode inventar", async () => {
+  const { s, f, diario } = await mesa({ quantos: 2, intervaloMs: 60 });
+  const recebido = [];
+  const p1 = s.assentoDe("p1");
+  p1.laco.temPedidoAberto = () => true;
+  p1.laco.talvezAgirSozinho = async (opts) => {
+    recebido.push(opts);
+    diario.push({ personagem: "p1", classe: "autonoma" });
+  };
+  p1.pensar.ligado = true;
+  f.iniciar();
+  await espera(250);
+  f.parar();
+  assert.ok(diario.some((x) => x.personagem === "p1"), "o pedido aberto não ganhou a vez");
+  assert.ok(!diario.some((x) => x.personagem === "p2"), "quem não tem pedido nem autonomia jogou");
+  assert.deepStrictEqual(recebido[0], { autonomia: false });
+});
+
+test("077: sem a chave do pensar, o pedido não dá a vez (desligar a chave é parar de carregar)", async () => {
+  const { s, f, diario } = await mesa({ quantos: 1, intervaloMs: 60 });
+  const p1 = s.assentoDe("p1");
+  p1.laco.temPedidoAberto = () => true;
+  p1.pensar.ligado = false;
+  f.iniciar();
+  await espera(200);
+  f.parar();
+  assert.strictEqual(diario.length, 0);
+});

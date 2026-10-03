@@ -14,8 +14,7 @@ const ROTULOS = {
   C7: "escolhendo com o quê…",
   C8: "vendo se adiantou…",
   C8D: "conferindo se já conseguiu…",
-  C3P: "traçando um caminho…",
-  C3R: "tentando outro jeito…",
+  C3P: "pensando no que quer…",
   C9: "",
   TRANSITO: "a caminho de {destino}…",
   SUBIU: "isso não dá para fazer assim.",
@@ -42,17 +41,31 @@ function motivoEmMundo(subiu, objetivo, extra) {
   }
 }
 
-// O RACIONAL do plano (spec 076) para a camada VISÍVEL: a postura, uma linha por passo e a
-// fala, como a Mente escreveu, em prosa. Sem nome de capacidade, id nem número (a guarda é o
-// `harness-front.test.js`). É o que ele PENSA e PRETENDE: o que aconteceu vem do mundo.
+// O RACIONAL do plano (specs 076 e 077) para a camada VISÍVEL: a postura, uma linha por passo,
+// o que fica para depois e a fala, como a Mente escreveu, em prosa. Sem nome de capacidade, id
+// nem número (a guarda é o `harness-front.test.js`). É o que ele PENSA e PRETENDE: o que
+// aconteceu vem do mundo.
 function rationaleText(plan) {
   const linhas = [];
   if (plan && plan.stance) linhas.push(plan.stance);
   for (const s of (plan && plan.steps) || []) {
-    if (s.action && s.type !== "defeito") linhas.push(`— ${s.action}`);
+    if (s.action && s.type !== "defeito") linhas.push(`— ${_acaoComNomes(s)}`);
   }
+  const depois = ((plan && plan.later) || []).filter(Boolean);
+  if (depois.length) linhas.push(`Depois: ${depois.join("; ")}.`.replace(/\.\.$/, "."));
   if (plan && plan.reply) linhas.push(`"${plan.reply}"`);
   return linhas.join("\n");
+}
+
+// A linha do passo no racional: a ação como a Mente escreveu e, quando os nomes da cena ficaram só no
+// `com` (o qwen escreve "Seguir" e põe "Ladeira do Sal" à parte), os nomes junto — a mesma leitura do
+// resolvedor. Sem isso a tela lia "— Seguir", "— Ir" (achado da revisão da 076 e da bateria da 077).
+function _acaoComNomes(s) {
+  const nomes = (s.with || []).filter(Boolean);
+  const acao = String(s.action || "");
+  const baixo = acao.toLowerCase();
+  const faltam = nomes.filter((n) => !baixo.includes(String(n).toLowerCase()));
+  return faltam.length ? `${acao} — ${faltam.join(", ")}` : acao;
 }
 
 module.exports = { ROTULOS, label, motivoEmMundo, rationaleText };

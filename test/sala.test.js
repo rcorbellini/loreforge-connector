@@ -363,3 +363,37 @@ test("072: os tetos atravessam o disco e voltam", () => {
   assert.strictEqual(volta.maxAssentos, 4);
   assert.strictEqual(volta.maxPorJogador, 2);
 });
+
+// --- spec 077: a chave do pensar ---------------------------------------------------- //
+
+test("077: a chave do pensar nasce DESLIGADA, é do dono, e sobrevive a sair e voltar e ao disco", async () => {
+  const { s } = salaComDois();
+  await s.assentar({ personagem: "elga", sub: "sub-A" });
+  assert.deepStrictEqual(s.assentoDe("elga").pensar, { ligado: false });
+  const r = await s.ligarPensar("elga", true);
+  assert.deepStrictEqual(r, { ok: true, pensar: { ligado: true } });
+  assert.deepStrictEqual(s.paraTela().assentos.find((a) => a.personagem === "elga").pensar, { ligado: true });
+  s.desassentar("elga");
+  await s.assentar({ personagem: "elga", sub: "sub-A" });
+  assert.strictEqual(s.assentoDe("elga").pensar.ligado, true, "a chave não voltou na reentrada");
+  const s2 = Sala.deConfig(s.paraConfig(), { credenciais: credenciaisFalsas(), fabricas: fabricasFalsas() });
+  s2.acrescentarMembro({ sub: "sub-A", email: "a@x", nome: "A", jwt: "jwt-de-A" });
+  await s2.assentar({ personagem: "elga", sub: "sub-A" });
+  assert.strictEqual(s2.assentoDe("elga").pensar.ligado, true, "a chave não atravessou o disco");
+});
+
+test("077: DESLIGAR a chave com pedido do jogador aberto o fecha — e o laço lê a chave pelo assento", async () => {
+  const { s } = salaComDois();
+  await s.assentar({ personagem: "elga", sub: "sub-A" });
+  const a = s.assentoDe("elga");
+  let fechou = 0;
+  a.laco.fecharPedidoDoJogador = async () => { fechou += 1; return { ok: true }; };
+  assert.strictEqual(a.laco.pensar(), false);
+  await s.ligarPensar("elga", true);
+  assert.strictEqual(a.laco.pensar(), true, "o laço não vê a chave");
+  await s.ligarPensar("elga", true);
+  assert.strictEqual(fechou, 0, "ligar fechou o pedido");
+  await s.ligarPensar("elga", false);
+  assert.strictEqual(fechou, 1, "desligar não fechou o pedido do jogador");
+  assert.deepStrictEqual(await s.ligarPensar("ninguem", true), { erro: "este personagem não está na sala" });
+});

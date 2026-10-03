@@ -16,11 +16,13 @@
 const crypto = require("crypto");
 const { SYSTEM_PADRAO } = require("./decider");
 
-// C3 · o PLANO do turno (spec 076): o contrato M do mantenedor, idêntico ao medido em
-// `ferramentas/harness-objetivos/v2/V2-bancada/prompt-cM.txt` (vereditos v3–v7, contratos R/M/S,
-// Gemini 7/7 decisões) e passado pelo resolvedor real em `V3-resolver/` (rodada 3). SEM EXEMPLO
-// nenhum, regra do mantenedor: exemplo induz o modelo a situações específicas. A saída é JSON
-// (o `objectives.js` a lê); só o passo de tipo "ato" vira chamada ao mundo.
+// C3 · o PLANO e o PENSAR do pedido (spec 077): o contrato M2 do mantenedor, idêntico ao medido em
+// `ferramentas/harness-objetivos/v2/V2-bancada/prompt-cM2.txt` (vereditos-m1m2.md: no Gemini, recusa limpa
+// 8/8, fato de fechar certo 7/8, `depois` útil 7/7; no qwen3:8b o `depois` vaza em toda recusa). É o M
+// da 076 sem a `condicao_fisica` (o corpo virou uma frase da postura) e com o `depois` (o que ainda falta
+// além desta cena) e o `pronto_quando` (o fato que fecha). SEM EXEMPLO nenhum, regra do mantenedor:
+// exemplo induz o modelo a situações específicas. Na vez N de um pedido, o andamento chega como DADO no
+// `user` e este texto não muda (medido em `V4-andamento/`: a diretriz no prompt não rendeu).
 const OBJETIVOS = `Atue estritamente como o personagem definido nos dados de contexto fornecidos.
 
 Sua tarefa é analisar o contexto (estado atual, inventário, ambiente, necessidades e memórias) e determinar a reação realista do personagem ao pedido do usuário.
@@ -42,42 +44,18 @@ REGRAS DE SAÍDA:
 INSTRUÇÕES DE PREENCHIMENTO DO JSON:
 
 1. "chain_of_thought" (Objeto de raciocínio):
-   - "condicao_fisica": Diagnóstico das suas necessidades (fome, sede, fadiga) e restrições físicas, pelo que o contexto diz agora.
-   - "avaliacao_de_viabilidade": Análise crítica em 1ª pessoa sobre a relação entre o pedido recebido e a sua capacidade real de executá-lo. Determine explicitamente qual será a sua postura tática diante desse pedido.
+   - "avaliacao_de_viabilidade": Análise crítica em 1ª pessoa sobre a relação entre o pedido recebido e a sua capacidade real de executá-lo. Determine explicitamente qual será a sua postura tática diante desse pedido. Leve em conta o corpo dele (fome, sede, cansaço) pelo que o contexto diz agora.
    - "passos_do_plano": Lista ordenada com a sequência lógica do que o personagem VAI REALMENTE FAZER agora para sustentar a decisão tomada na "avaliacao_de_viabilidade". Cada passo é um objeto com:
      * "tipo": "ato" quando o passo muda algo fora do personagem: a posse ou o estado de uma coisa, o lugar de alguém, o corpo, ou o que outra pessoa sabe, sente, quer ou faz; "fala" quando é só o que ele diz, sem pedir, oferecer, perguntar, ensinar, divertir nem convencer ninguém; "gesto" quando é só expressão do corpo ou do pensamento (para onde olha, a cara que faz, o que pensa).
      * "acao": o que ele faz, com um verbo, nomeando a pessoa, a coisa ou a saída como aparecem no contexto.
      * "com": os nomes do contexto envolvidos (pessoas, itens, saídas), ou vazio.
      * "espera": o que deve mudar no mundo com esse passo; vazio quando nada muda.
+   - "depois": Lista ordenada do que ainda precisa acontecer para o pedido se cumprir, além do que ele faz agora: o que depende de estar em outro lugar, de outra pessoa ou de mais tempo. Cada item diz O QUE precisa acontecer, em linguagem de mundo, sem dizer como. Lista vazia quando o pedido se resolve com o que ele faz agora, ou quando ele recusa.
+   - "pronto_quando": O fato que mostra que o pedido foi cumprido, numa destas formas: "posse de <nome da coisa>", "estar em <nome do lugar>", "fome saciada", "sede saciada", "sono saciado", "lembrança sobre <nome de alguém ou de algo>"; ou "nenhum", quando o pedido não se confere por um fato desses ou quando ele recusa.
 
 2. "resposta" (String):
    - A fala ou pensamento final do personagem em 1ª pessoa, expressando sua reação sincera, o tom de voz do perfil e sua atitude imediata.
    - A fala expressa a postura e os passos do plano; não introduz ação, pedido ou sugestão que não esteja nos passos.`;
-
-// C3P · planejar (B9, PLAN_V1) + o que o caso 2 pediu: o 1º passo possível AGORA.
-// O nome dele e o que carrega descem como DADO no user (memória
-// `restricao-conhecida-desce-como-dado`), não como proibição aqui.
-const PLANEJAR = `Você é A Mente de um personagem de RPG num mundo persistente.
-
-Recebe um DESEJO do personagem e a cena. Sua tarefa NÃO é agir: é PLANEJAR o caminho até o desejo.
-
-Responda exatamente neste formato:
-DESEJO: <o desejo, em uma linha>
-PASSOS:
-- <um passo por linha, na ordem>
-FIM: uma destas formas, com o nome REAL — "posse de Faca de Mercador", "estar em Cais Velho", "fome saciada",
-     "sede saciada", "sono saciado", "lembrança sobre Nuno" — ou "nenhum"
-
-Regras dos passos:
-- 2 a 6 passos. Cada passo é UM objetivo, não um gesto.
-- O PRIMEIRO passo é algo que ele consegue fazer AGORA, com o que está na cena ou com o que carrega.
-- Um passo PODE ser abstrato quando ainda não se sabe como fazê-lo ("descobrir onde o Nuno está").
-- Quando o passo for concreto, cite pelo nome exato da cena a pessoa, a coisa ou o lugar.
-- NUNCA invente pessoas, lugares ou objetos que não estão na cena nem nas lembranças dele. Se precisar
-  de algo que ele ainda não conhece, o passo é DESCOBRIR (perguntar, procurar, lembrar).
-- Não declare o desejo cumprido; quem confere é o mundo.
-
-Regra do FIM: use "nenhum" quando o desejo não se confere por um fato simples (amizade, ajudar, aprender).`;
 
 // C3P no tick sem desejo: "o que eu quero agora?" (o antigo `refletir`, agora com formato).
 const QUERER = `Você é A Mente de um personagem de RPG num mundo persistente, num momento sem nada a fazer.
@@ -92,31 +70,25 @@ Responda com UMA linha só, em 1ª pessoa, começando com "Quero": o desejo, e n
 const C6_TOOL = "Qual capacidade executa este passo do roteiro?";
 // C7 · a pergunta do parâmetro (B6). `{papel}`, `{tool}` e `{desc}` são preenchidos.
 const C7_PARAM = "Neste passo, quem ou o que ocupa o papel '{papel}' da capacidade '{tool}'? {desc}";
-// C8 · losango "o que o passo espera" (hipótese, FR-009a — roda em SOMBRA).
-const C8_PASSO = "O personagem tentava cumprir este passo. Pelo que mudou, o passo:";
 // C8D · losango "o fim chegou?" (hipótese, FR-010a — roda em SOMBRA).
 const C8D_FIM = "O personagem quer isto. Pelo que ele acabou de saber ou viver, o desejo:";
 
 const PADRAO = {
   decisor_system: SYSTEM_PADRAO,
   objetivos: OBJETIVOS,
-  planejar: PLANEJAR,
   querer: QUERER,
   c6_tool: C6_TOOL,
   c7_param: C7_PARAM,
-  c8_passo: C8_PASSO,
   c8d_fim: C8D_FIM,
 };
 
 // Os títulos e o "quando" de cada prompt, para a página de configuração (como `ROTINAS`).
 const ROTINAS_HARNESS = [
-  { nome: "objetivos", titulo: "Planejar o que fazer agora (C3)", quando: "a cada sussurro, e no passo abstrato de um desejo" },
-  { nome: "querer", titulo: "Criar um desejo (C3P)", quando: "no tick, quando ele não tem desejo nenhum" },
-  { nome: "planejar", titulo: "Traçar e retraçar o caminho (C3P/C3R)", quando: "quando o desejo nasce, e quando um passo se esgota" },
+  { nome: "objetivos", titulo: "Pensar o pedido e o que fazer agora (C3)", quando: "a cada sussurro, e a cada vez de um pedido ou desejo aberto" },
+  { nome: "querer", titulo: "Criar um desejo (C3P)", quando: "no tick com a autonomia ligada, quando ele não tem desejo nenhum" },
   { nome: "decisor_system", titulo: "Decisor: como escolher (Jev)", quando: "em toda escolha local" },
   { nome: "c6_tool", titulo: "Decisor: qual capacidade (C6)", quando: "a cada objetivo" },
   { nome: "c7_param", titulo: "Decisor: com quem, com o quê (C7)", quando: "a cada parâmetro com mais de uma opção" },
-  { nome: "c8_passo", titulo: "Decisor: o passo andou? (C8, em sombra)", quando: "depois de cada ação de um desejo" },
   { nome: "c8d_fim", titulo: "Decisor: o desejo se cumpriu? (C8D, em sombra)", quando: "quando o fim não se confere por regra" },
 ];
 

@@ -210,3 +210,20 @@ test("072/US1: entrar na sala confere a posse com o JWT de QUEM ENTRA", async ()
   assert.strictEqual(sala.dono("draven"), "sub-B");
   await c.fechar();
 });
+
+test("077: POST /pensar — só o DONO liga a chave do pensar do personagem dele", async () => {
+  const { c, post, sala } = await mesa();
+  try {
+    const alheio = await post("/pensar", { personagem: "draven", ligado: true }, "jwt-A");
+    assert.strictEqual(alheio.status, 403);
+    assert.strictEqual(sala.assentoDe("draven").pensar.ligado, false);
+    const meu = await post("/pensar", { personagem: "draven", ligado: true }, "jwt-B");
+    assert.strictEqual(meu.status, 200);
+    assert.deepStrictEqual((await meu.json()).pensar, { ligado: true });
+    assert.strictEqual(sala.assentoDe("draven").pensar.ligado, true);
+    const semToken = await post("/pensar", { personagem: "draven", ligado: false });
+    assert.ok(semToken.status === 401 || semToken.status === 403);
+  } finally {
+    c.servidor.close();
+  }
+});

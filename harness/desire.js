@@ -9,13 +9,20 @@
 //        Pronto quando: posse de Ungüento de Arnica."
 //     É o que atravessa de um conector para outro (a portabilidade que motivou a opção 2).
 //
-//   · no CONECTOR, o CADERNO: passo corrente, tentativas, estados vistos, tokens pagos,
-//     bloqueio, janela de intervenção. É estado que o harness escreve — não verdade do
-//     mundo —, e por isso não vai para o `.md` da intenção. Perdido o caderno, o desejo,
-//     o plano e o fim voltam a ser derivados da prosa.
+//   · no CONECTOR, o CADERNO: a origem (pedido do jogador ou vontade dele), as vezes, as
+//     tentativas com o que o mundo respondeu, o estado do "andou?" do pedido, os tokens
+//     pagos, o travamento e a janela de intervenção. É estado que o harness escreve — não
+//     verdade do mundo —, e por isso não vai para o `.md` da intenção. Perdido o caderno, o
+//     desejo, as palavras do jogador, o que falta e o fim voltam a ser derivados da prosa, e a
+//     origem vira "vontade" (falha segura: com a autonomia desligada, ele não anda sozinho).
+//
+// Desde a spec 077 a prosa é a do PEDIDO: as palavras do jogador (uma linha por sussurro), o
+// que falta (o último `depois` do M2) e o fato que fecha. O desejo que ele inventa tem uma
+// linha só até a primeira vez.
 //
 // O caderno nunca contradiz o world: o que não está mais ativo lá é arquivado aqui, e se
-// o `content` mudou (o jogador editou pelo client), passos e fim são re-derivados.
+// o `content` mudou por fora (o jogador editou pela tela), o que falta e o fim são
+// re-derivados e o travamento se desfaz (a voz do jogador é a intervenção).
 
 "use strict";
 
@@ -48,12 +55,16 @@ function parseContent(content) {
       passos.push(l.replace(/^([-*•]|\d+[.)])\s*/, "").trim());
     } else if (!passos.length) cabeca.push(l);
   }
+  const palavras = cabeca.map((l) => l.replace(/\.$/, "").trim()).filter(Boolean);
   return { desejo: cabeca.join(" ").replace(/\.$/, "") || String(content || "").split("\n")[0],
-           passos, fim };
+           palavras, passos, fim };
 }
 
+// `desejo` é o texto do desejo ou a LISTA das palavras do jogador (uma linha por sussurro).
 function formatContent(desejo, passos, fimTexto) {
-  let s = String(desejo || "").trim().replace(/\.?$/, ".");
+  const cabeca = (Array.isArray(desejo) ? desejo : [desejo])
+    .map((l) => String(l || "").trim()).filter(Boolean);
+  let s = cabeca.map((l) => l.replace(/\.?$/, ".")).join("\n");
   if (passos && passos.length) s += "\n" + passos.map((p) => `- ${p}`).join("\n");
   if (fimTexto && !/^nenhum/i.test(fimTexto)) s += `\nPronto quando: ${fimTexto}.`;
   return s;
@@ -100,10 +111,15 @@ class Notebook {
       const d = this.dados.desejos[id];
       if (d && d.content_hash === h) continue;
       const p = parseContent(i.content);
+      // A ORIGEM, AS VEZES E AS TENTATIVAS SOBREVIVEM a uma edição de fora (o jogador mexeu
+      // na prosa pela tela); o travamento e o "andou?" se desfazem, porque a voz dele é a
+      // intervenção.
       this.dados.desejos[id] = {
-        id, desejo: p.desejo, passos: p.passos, fim: extractEnding(p.fim, i),
-        content_hash: h, passo_atual: 0, step: null, tentativas: (d && d.tentativas) || [],
-        tokens_pagos: (d && d.tokens_pagos) || 0, bloqueio: null, intervencao: null, sombra: [],
+        id, desejo: p.desejo, palavras: p.palavras, passos: p.passos, fim: extractEnding(p.fim, i),
+        content_hash: h, origem: (d && d.origem) || "vontade",
+        vezes: (d && d.vezes) || 0, vezes_sem_avanco: 0, step: null,
+        tentativas: (d && d.tentativas) || [], tokens_pagos: (d && d.tokens_pagos) || 0,
+        bloqueio: null, intervencao: null,
         criado_em: (d && d.criado_em) || new Date().toISOString(),
       };
     }
@@ -119,31 +135,49 @@ class Notebook {
   // desejo que acabou de nascer — pelo jogador ou pelo próprio tick. O desejo novo é a
   // vontade de agora. A idade vem do id da intenção (`int-<epoch ms>-…`), que é o
   // instante em que o world a criou; sem ele, a hora em que o caderno a viu.
-  ativo() {
+  //
+  // `soPedido` (spec 077): com a autonomia desligada, só o pedido do JOGADOR anda — o que
+  // ele inventou espera a autonomia.
+  ativo({ soPedido = false } = {}) {
     const quando = (d) => {
       const m = String(d.id || "").match(/^int-(\d{10,13})/);
       if (m) return Number(m[1].length === 10 ? m[1] + "000" : m[1]);
       return Date.parse(d.criado_em) || 0;
     };
-    const ds = Object.values(this.dados.desejos);
+    const ds = Object.values(this.dados.desejos).filter((d) => !soPedido || d.origem === "pedido");
     ds.sort((a, b) => quando(b) - quando(a));
     return ds[0] || null;
   }
 
   get(id) { return this.dados.desejos[id] || null; }
 
-  // Depois de um `update` no world, o novo `content` já é o do plano: guarda o hash para o
-  // próximo `sync` não zerar o passo à toa.
-  replan(id, passos, fim, content) {
+  // O desejo que nasceu de um sussurro (spec 077): a origem é o que deixa ele andar com a
+  // autonomia desligada.
+  marcarOrigem(id, origem) {
     const d = this.get(id);
     if (!d) return;
-    d.passos = passos;
+    d.origem = origem;
+    this.salvar();
+  }
+
+  // Depois de um `update` no world, o novo `content` já é o da vez: guarda o hash para o
+  // próximo `sync` não tratar a regravação como edição de fora.
+  regravar(id, { palavras, passos, fim, content }) {
+    const d = this.get(id);
+    if (!d) return;
+    if (palavras) d.palavras = palavras;
+    d.passos = passos || [];
     d.fim = fim;
-    d.passo_atual = 0;
-    d.step = null;
-    d.bloqueio = null;
-    d.intervencao = null;
     d.content_hash = _hash(content);
+    this.salvar();
+  }
+
+  // Uma vez do pedido se passou: andou (estado novo ou saber novo) ou não.
+  contarVez(id, andou) {
+    const d = this.get(id);
+    if (!d) return;
+    d.vezes = (d.vezes || 0) + 1;
+    d.vezes_sem_avanco = andou ? 0 : (d.vezes_sem_avanco || 0) + 1;
     this.salvar();
   }
 
@@ -165,7 +199,8 @@ class Notebook {
   foto(id) {
     const d = this.get(id);
     if (!d) return null;
-    return { id: d.id, desejo: d.desejo, passo: d.passo_atual, passos: d.passos.length,
+    return { id: d.id, desejo: d.desejo, origem: d.origem, vezes: d.vezes || 0,
+             vezes_sem_avanco: d.vezes_sem_avanco || 0, passos: d.passos.length,
              fim: d.fim && d.fim.texto, bloqueio: d.bloqueio, tokens_pagos: d.tokens_pagos };
   }
 }

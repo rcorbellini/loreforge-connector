@@ -68,6 +68,12 @@ class Assento {
     // apagaria a vontade debaixo do bloqueio e liberar viraria chute.
     this.autonomia = { permitido: true, ligado: false, motivo: null };
 
+    // A CHAVE DO PENSAR (spec 077), do DONO: ligada, o pedido que não acaba na vez fica aberto
+    // e anda nas vezes dele mesmo com a autonomia desligada. Solução inicial, para validar a
+    // ideia (o mantenedor não a quer como final). O laço lê a chave por esta função.
+    this.pensar = { ligado: false };
+    if (this.laco) this.laco.pensar = () => !!(this.pensar && this.pensar.ligado);
+
     this.intervaloMs = intervaloMs;
     this.restanteMs = intervaloMs;
     this.semEfeito = 0;               // turnos autônomos seguidos sem passo aplicado
@@ -81,6 +87,13 @@ class Assento {
   // quem sabe disso é a fila.
   querAgirSozinho() {
     return !!(this.autonomia.permitido && this.autonomia.ligado);
+  }
+
+  // O PEDIDO DO JOGADOR ABERTO (spec 077): também dá a vez, com a autonomia desligada — ele foi
+  // pedido. Quem sabe se há um é o laço (o caderno do desejo).
+  temPedidoAberto() {
+    return !!(this.pensar && this.pensar.ligado && this.laco
+              && typeof this.laco.temPedidoAberto === "function" && this.laco.temPedidoAberto());
   }
 
   // O intervalo EFETIVO, já com o recuo de quem não está conseguindo fazer nada.
@@ -110,6 +123,7 @@ class Assento {
     return {
       personagem: this.personagem, dono: this.dono, nome: this.nome,
       autonomia: { ...this.autonomia },
+      pensar: { ...this.pensar },
       intervaloMs: this.intervaloMs, restanteMs: this.restanteMs,
       ocupado: !!(this.laco && this.laco.ocupado),
       custo: { ...this.custo },
@@ -123,7 +137,8 @@ class Assento {
 
   paraConfig() {
     return { personagem: this.personagem, dono: this.dono, nome: this.nome,
-             autonomia: { ...this.autonomia }, intervaloMs: this.intervaloMs };
+             autonomia: { ...this.autonomia }, pensar: { ...this.pensar },
+             intervaloMs: this.intervaloMs };
   }
 }
 
@@ -328,6 +343,7 @@ class Sala {
     const guardado = this._guardados && this._guardados.get(personagem);
     if (guardado) {
       a.autonomia = { ...guardado.autonomia };
+      a.pensar = { ligado: false, ...(guardado.pensar || {}) };
       a.intervaloMs = guardado.intervaloMs || a.intervaloMs;
       a.restanteMs = a.intervaloEfetivo();
     }
@@ -360,7 +376,8 @@ class Sala {
   _lembrar(assento) {
     if (!this._guardados) this._guardados = new Map();
     this._guardados.set(assento.personagem, {
-      autonomia: { ...assento.autonomia }, intervaloMs: assento.intervaloMs });
+      autonomia: { ...assento.autonomia }, pensar: { ...assento.pensar },
+      intervaloMs: assento.intervaloMs });
   }
 
   // --- os dois bits ------------------------------------------------------- //
@@ -378,6 +395,21 @@ class Sala {
     if (a.autonomia.ligado) a.restanteMs = a.intervaloEfetivo();
     this.emitir("sala", this.paraTela());
     return { ok: true, autonomia: { ...a.autonomia } };
+  }
+
+  // A CHAVE DO PENSAR, DO DONO (spec 077). Desligar com um pedido do jogador aberto o FECHA,
+  // sem lembrança de desistência (FR-013) — quem parou foi o jogador; o laço adia o fechamento
+  // se há um turno em voo.
+  async ligarPensar(personagem, ligado) {
+    const a = this.assentos.get(personagem);
+    if (!a) return { erro: "este personagem não está na sala" };
+    const antes = !!a.pensar.ligado;
+    a.pensar.ligado = !!ligado;
+    if (antes && !a.pensar.ligado && a.laco && typeof a.laco.fecharPedidoDoJogador === "function") {
+      await a.laco.fecharPedidoDoJogador();
+    }
+    this.emitir("sala", this.paraTela());
+    return { ok: true, pensar: { ...a.pensar } };
   }
 
   // O TETO, DO ANFITRIÃO. NUNCA toca `ligado` (FR-037) — é isso que faz `liberar` saber
@@ -479,6 +511,7 @@ class Sala {
       if (!a || !a.personagem) continue;
       s._guardados.set(a.personagem, {
         autonomia: { permitido: true, ligado: false, motivo: null, ...(a.autonomia || {}) },
+        pensar: { ligado: false, ...(a.pensar || {}) },
         intervaloMs: a.intervaloMs || 45000 });
     }
     return s;

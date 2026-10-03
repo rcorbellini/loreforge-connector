@@ -320,37 +320,6 @@ function cenaCom(extra) {
   return c;
 }
 
-test("TICK sem desejo: QUERER → PLANEJAR → o desejo é gravado no world (create)", async () => {
-  const semDesejo = cenaCom({ self: { id: "t1", needs: { thirst: "com sede" } } });
-  const comDesejo = cenaCom({ self: { id: "t1", intentions: [{ id: "int-1", status: "ativa",
-    content: "Matar a sede.\n- Beber do Cantil de Água\nPronto quando: sede saciada." }] } });
-  const mundo = mundoDe({ contextos: [semDesejo, comDesejo] });
-  mundo.personagem = "t1";
-  const mente = menteDe({ porRotina: {
-    querer: "Quero matar a sede",
-    planejar: "DESEJO: matar a sede\nPASSOS:\n- Beber do Cantil de Água\n- Descansar\nFIM: sede saciada" } });
-  const c = coletor();
-  await lacoDe({ mundo, mente, emitir: c.emitir }).talvezAgirSozinho();
-  const create = mundo.intencoes.find((i) => i.op === "create");
-  assert.ok(create, "o desejo não foi gravado no world");
-  assert.match(create.content, /- Beber do Cantil de Água/);
-  assert.match(create.content, /Pronto quando: sede saciada/);
-  assert.ok(c.eventos.some((e) => e.ev === "plano"));
-});
-
-test("TICK com passo CONCRETO: resolve localmente, 0 token pago antes do narrar", async () => {
-  const ctx = cenaCom({ self: { id: "t2", intentions: [{ id: "int-2", status: "ativa",
-    content: "Matar a sede.\n- Beber do Cantil de Água\nPronto quando: sede saciada." }] } });
-  const depois = cenaCom({ self: { id: "t2", needs: { thirst: "sem sede" }, intentions: ctx.self.intentions } });
-  const mundo = mundoDe({ respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["Bebeu."] } }],
-                          contextos: [ctx, depois] });
-  mundo.personagem = "t2";
-  const mente = menteDe();
-  await lacoDe({ mundo, mente }).talvezAgirSozinho();
-  assert.deepStrictEqual(mundo.chamadas.map((x) => [x.nome, x.args.item]), [["drink", "cantil"]]);
-  assert.strictEqual(mente.conversas.length, 0, "pagou a Mente antes de narrar");
-});
-
 test("TICK: o fim conferível verdadeiro FECHA o desejo no world (concluida) sem perguntar à Mente", async () => {
   const ctx = cenaCom({ self: { id: "t3", needs: { thirst: "sem sede" }, intentions: [{ id: "int-3", status: "ativa",
     content: "Matar a sede.\n- Beber do Cantil de Água\nPronto quando: sede saciada." }] } });
@@ -373,22 +342,6 @@ test("TICK EM TRÂNSITO: espera a chegada — nada de C3, nada de tentativa", as
   assert.strictEqual(mundo.chamadas.length, 0);
   assert.strictEqual(mente.conversas.length, 0);
   assert.ok(c.eventos.some((e) => e.ev === "harness" && /a caminho de Taverna/.test(e.texto)));
-});
-
-test("TICK: o TETO DE CUSTO bloqueia o desejo e sobe como ponto de intervenção", async () => {
-  const H = require("../harness");
-  const ctx = cenaCom({ self: { id: "t5", intentions: [{ id: "int-5", status: "ativa",
-    content: "Conseguir o Ungüento.\n- Pegar a Corda de Cânhamo\nPronto quando: posse de Ungüento." }] } });
-  const nb = new H.desire.Notebook("t5");
-  nb.sync(ctx.self.intentions);
-  nb.pay("int-5", 9000);
-  const mundo = mundoDe({ contextos: [ctx] });
-  mundo.personagem = "t5";
-  const c = coletor();
-  await lacoDe({ mundo, mente: menteDe(), emitir: c.emitir }).talvezAgirSozinho();
-  const b = c.eventos.find((e) => e.ev === "bloqueio");
-  assert.ok(b && b.motivo === "custo");
-  assert.strictEqual(mundo.chamadas.length, 0);
 });
 
 test("MESA (SC-011): um prompt do Jev tunado em extensoes/prompts muda a versão gravada", async () => {
@@ -491,7 +444,7 @@ test("PLANO M: o racional sobe na camada visível com o tipo de cada passo em _m
   assert.deepStrictEqual(rac.passos, [{ tipo: "gesto" }, { tipo: "ato" }]);
 });
 
-test("TICK com passo ABSTRATO (spec 076): o C3 planeja no contrato M e só o ATO anda; os passos sobem na ordem", async () => {
+test("VEZ DO DESEJO (spec 077): o M2 repensa o desejo e só o ATO anda; os passos sobem na ordem", async () => {
   const ctx = cenaCom({ self: { id: "t3", intentions: [{ id: "int-3", status: "ativa",
     content: "Ter algo para amarrar.\n- Conseguir alguma coisa que sirva de amarra\nPronto quando: posse de Corda de Cânhamo." }] } });
   const depois = cenaCom({ self: { id: "t3", inventory: [{ id: "corda", name: "Corda de Cânhamo" }],
@@ -510,4 +463,305 @@ test("TICK com passo ABSTRATO (spec 076): o C3 planeja no contrato M e só o ATO
   assert.deepStrictEqual(mundo.chamadas.map((x) => x.nome), ["take"]);
   const linha = mundoDe.registrados[0];
   assert.deepStrictEqual(linha.corpo.passos.map((p) => [p.tipo, p.desfecho]), [["gesto", "narrado"], ["ato", "executado"]]);
+});
+
+// --- spec 077: o ciclo do pedido ----------------------------------------------------- //
+//
+// Um mundo que GUARDA as intenções e muda de cena: a vez seguinte enxerga o que a anterior fez.
+
+function mundoVivo({ personagem, cenas, inicial, respostas = [] }) {
+  const ativas = [];
+  const ops = [];
+  const chamadas = [];
+  let atual = inicial;
+  let seq = 0;
+  const m = {
+    personagem, chamadas, ops, ativas, turnoId: null,
+    get cena() { return atual; },
+    vaiPara(c) { atual = c; },
+    conhece: (nome) => TOOLS.some((t) => t.name === nome),
+    listarCapacidades: async () => TOOLS,
+    descricaoDe: (nome) => (TOOLS.find((t) => t.name === nome) || {}).description || "",
+    contexto: async () => {
+      const c = JSON.parse(JSON.stringify(cenas[atual]));
+      c.self.intentions = ativas.map((i) => ({ ...i }));
+      return c;
+    },
+    chamarCapacidade: async (nome, args) => {
+      chamadas.push({ nome, args });
+      const r = respostas.shift();
+      if (!r) throw new Error("o teste não previu mais chamadas");
+      if (r._cena) atual = r._cena;
+      const { _cena, ...resto } = r;
+      return resto;
+    },
+    criarIntencao: async (content) => {
+      const id = `int-${1790000000000 + (++seq)}`;
+      ativas.push({ id, status: "ativa", content });
+      ops.push({ op: "create", id, content });
+      return { ok: true, id };
+    },
+    atualizarIntencao: async (id, content) => {
+      const i = ativas.find((x) => x.id === id);
+      if (i) i.content = content;
+      ops.push({ op: "update", id, content });
+      return { ok: true };
+    },
+    fecharIntencao: async (id, status, o) => {
+      const k = ativas.findIndex((x) => x.id === id);
+      if (k >= 0) ativas.splice(k, 1);
+      ops.push({ op: "close", id, status, ...(o || {}) });
+      return { ok: true };
+    },
+    registrar: async (l) => { (m.registrados = m.registrados || []).push(l); return true; },
+  };
+  return m;
+}
+
+function planoM2(passos, { depois = [], pronto = "nenhum", viabilidade = "", resposta = "" } = {}) {
+  return JSON.stringify({ chain_of_thought: { avaliacao_de_viabilidade: viabilidade, passos_do_plano: passos,
+    depois, pronto_quando: pronto }, resposta });
+}
+
+// a Mente devolve os planos NA ORDEM, um por chamada da rotina "objetivos"
+function menteEmFila(planos, extra = {}) {
+  const fila = planos.slice();
+  return menteDe({ porRotina: { objetivos: () => fila.shift(), ...extra } });
+}
+
+function lacoComPensar({ mundo, mente, emitir, pensar = true }) {
+  const reg = registroMod.criar({ mundo, cfg: { personagem: mundo.personagem, runtime: "local", model: "x" },
+                                  extensoes: extVazio(), mente });
+  return new Laco({ mundo, mente, decider: deciderDe(), extensoes: extVazio(), registro: reg,
+                    emitir: emitir || (() => {}), pensar });
+}
+
+const ACEITO = (frase, cena) => ({ recusado: false, texto: "", narrativa: { aconteceu: [frase] }, ...(cena ? { _cena: cena } : {}) });
+const RECUSADO = (motivo) => ({ recusado: true, texto: motivo, narrativa: {} });
+const NOMES_DE_TOOL = /\b(take|drink|recognize|sleep|enter_route|travel_to)\b/;
+
+function cenasDoFulano(id) {
+  const base = cenaCom({ self: { id, needs: { thirst: "com sede" } } });
+  const comCorda = cenaCom({ self: { id, needs: { thirst: "com sede" }, inventory: [{ id: "corda", name: "Corda de Cânhamo" }] } });
+  const saciado = cenaCom({ self: { id, needs: { thirst: "sem sede" }, inventory: [{ id: "corda", name: "Corda de Cânhamo" }] } });
+  const outroLugar = cenaCom({ self: { id, needs: { thirst: "com sede" } }, scene: { place: { id: "taverna", name: "Taverna" } } });
+  return { base, comCorda, saciado, outroLugar };
+}
+
+test("PEDIDO (LIGAÇÃO): o sussurro que deixa algo para depois ABRE o pedido; a vez seguinte, com a autonomia DESLIGADA, o repensa com o andamento e o fato FECHA", async () => {
+  const mundo = mundoVivo({ personagem: "p077a", cenas: cenasDoFulano("p077a"), inicial: "base",
+    respostas: [ACEITO("Fulano pegou a corda.", "comCorda"), ACEITO("Fulano bebeu do cantil.", "saciado")] });
+  const mente = menteEmFila([
+    planoM2([{ tipo: "ato", acao: "Pegar a Corda de Cânhamo", com: ["Corda de Cânhamo"], espera: "a corda na mão" }],
+            { depois: ["beber do Cantil de Água"], pronto: "sede saciada" }),
+    planoM2([{ tipo: "ato", acao: "Beber do Cantil de Água", com: ["Cantil de Água"], espera: "sede saciada" }],
+            { depois: [], pronto: "sede saciada" }),
+  ]);
+  const laco = lacoComPensar({ mundo, mente });
+  await laco.sussurrar("mate a sede");
+  const criado = mundo.ops.find((o) => o.op === "create");
+  assert.ok(criado, "o pedido não abriu");
+  assert.strictEqual(criado.content, "mate a sede.\n- beber do Cantil de Água\nPronto quando: sede saciada.");
+  const nb = laco._notebook();
+  assert.strictEqual(nb.get(criado.id).origem, "pedido");
+  assert.strictEqual(mundo.registrados[0].corpo.pedido.desfecho, "abriu");
+  assert.ok(laco.temPedidoAberto(), "a fila não saberia do pedido aberto");
+
+  await laco.talvezAgirSozinho({ autonomia: false });
+  const userVez2 = mente.conversas[mente.conversas.length - 1].user;
+  assert.match(userVez2, /INSTRUÇÃO: mate a sede/);
+  assert.match(userVez2, /O QUE ELE JÁ FEZ POR ESTE PEDIDO:\n- Pegar a Corda de Cânhamo → deu certo: Fulano pegou a corda\./);
+  assert.match(userVez2, /O QUE FALTAVA:\n- beber do Cantil de Água/);
+  assert.doesNotMatch(userVez2, NOMES_DE_TOOL, "nome de capacidade desceu à Mente no andamento");
+  assert.ok(mundo.ops.some((o) => o.op === "close" && o.id === criado.id && o.status === "concluida"));
+  assert.strictEqual(mundo.registrados[1].corpo.pedido.estado, "cumprido");
+  assert.ok((mente.ultimo.aconteceu || []).some((f) => /conseguiu o que buscava: mate a sede/.test(f)));
+  assert.ok(!laco.temPedidoAberto());
+});
+
+test("PEDIDO: com o pensar DESLIGADO nada é carregado, nem o que o plano deixou para depois", async () => {
+  const mundo = mundoVivo({ personagem: "p077b", cenas: cenasDoFulano("p077b"), inicial: "base",
+    respostas: [ACEITO("Fulano pegou a corda.", "comCorda")] });
+  const mente = menteEmFila([planoM2([{ tipo: "ato", acao: "Pegar a Corda de Cânhamo", com: [], espera: "" }],
+                                     { depois: ["beber do Cantil de Água"], pronto: "sede saciada" })]);
+  const laco = lacoComPensar({ mundo, mente, pensar: false });
+  await laco.sussurrar("mate a sede");
+  assert.strictEqual(mundo.ops.length, 0, "o pedido abriu com o pensar desligado");
+  assert.strictEqual(mundo.registrados[0].corpo.pedido, undefined);
+});
+
+test("RECUSA: o plano sem nada para depois não abre pedido", async () => {
+  const mundo = mundoVivo({ personagem: "p077c", cenas: cenasDoFulano("p077c"), inicial: "base" });
+  const mente = menteEmFila([planoM2([{ tipo: "fala", acao: "Dizer que não vai", com: [], espera: "" }],
+                                     { depois: [], pronto: "nenhum", viabilidade: "Não vou matar dragão." })]);
+  const laco = lacoComPensar({ mundo, mente });
+  await laco.sussurrar("mate um dragão");
+  assert.strictEqual(mundo.ops.length, 0);
+});
+
+test("OS ATOS PARAM no primeiro deslocamento aceito (o resto era da cena velha) e na primeira recusa; o que sobe sem ir ao mundo NÃO para", async () => {
+  const mov = mundoVivo({ personagem: "p077d", cenas: cenasDoFulano("p077d"), inicial: "base",
+    respostas: [ACEITO("Fulano pegou a corda e saiu.", "outroLugar")] });
+  mundoDe.registrados = [];
+  const m1 = menteEmFila([planoM2([
+    { tipo: "ato", acao: "Pegar a Corda de Cânhamo", com: ["Corda de Cânhamo"], espera: "" },
+    { tipo: "ato", acao: "Beber do Cantil de Água", com: ["Cantil de Água"], espera: "" }])]);
+  await lacoComPensar({ mundo: mov, mente: m1, pensar: false }).sussurrar("faça algo");
+  assert.deepStrictEqual(mov.chamadas.map((c) => c.nome), ["take"], "um ato da cena velha foi ao mundo");
+  const p1 = mov.registrados[0].corpo.passos;
+  assert.deepStrictEqual(p1.map((p) => [p.desfecho, p.motivo || null]), [["executado", null], ["nao_tentado", "lugar"]]);
+
+  const rec = mundoVivo({ personagem: "p077e", cenas: cenasDoFulano("p077e"), inicial: "base",
+    respostas: [RECUSADO("a corda está presa no poste")] });
+  const m2 = menteEmFila([planoM2([
+    { tipo: "ato", acao: "Pegar a Corda de Cânhamo", com: ["Corda de Cânhamo"], espera: "" },
+    { tipo: "ato", acao: "Beber do Cantil de Água", com: ["Cantil de Água"], espera: "" }])]);
+  await lacoComPensar({ mundo: rec, mente: m2, pensar: false }).sussurrar("faça algo");
+  assert.deepStrictEqual(rec.chamadas.map((c) => c.nome), ["take"]);
+  assert.strictEqual(rec.registrados[0].corpo.passos[1].motivo, "recusa");
+
+  const sobe = mundoVivo({ personagem: "p077f", cenas: cenasDoFulano("p077f"), inicial: "base",
+    respostas: [ACEITO("Fulano pegou a corda.", "comCorda")] });
+  const m3 = menteEmFila([planoM2([
+    { tipo: "ato", acao: "Contar uma piada para distrair todo mundo", com: [], espera: "todos riem" },
+    { tipo: "ato", acao: "Pegar a Corda de Cânhamo", com: ["Corda de Cânhamo"], espera: "" }])]);
+  const decider = deciderDe(["(nenhuma)", "take"]);
+  const reg = registroMod.criar({ mundo: sobe, cfg: { personagem: "p077f", runtime: "local", model: "x" },
+                                  extensoes: extVazio(), mente: m3 });
+  await new Laco({ mundo: sobe, mente: m3, decider, extensoes: extVazio(), registro: reg, emitir: () => {} })
+    .sussurrar("faça algo");
+  assert.deepStrictEqual(sobe.chamadas.map((c) => c.nome), ["take"], "a subida sem mundo parou o ato seguinte");
+});
+
+test("O FATO que já era verdade quando o plano nasceu NÃO fecha o pedido (o qwen e o peixe que o Sorin carregava)", async () => {
+  const mundo = mundoVivo({ personagem: "p077g", cenas: cenasDoFulano("p077g"), inicial: "comCorda",
+    respostas: [ACEITO("Fulano olhou a corda.")] });
+  const mente = menteEmFila([planoM2([{ tipo: "ato", acao: "Olhar a Corda de Cânhamo", com: ["Corda de Cânhamo"], espera: "" }],
+                                     { depois: ["beber do Cantil de Água"], pronto: "posse de Corda de Cânhamo" })]);
+  const laco = lacoComPensar({ mundo, mente });
+  await laco.sussurrar("guarde a corda e beba do cantil");
+  assert.ok(mundo.ops.some((o) => o.op === "create"), "o pedido não abriu");
+  assert.ok(!mundo.ops.some((o) => o.op === "close"), "o fato que já era verdade fechou o pedido");
+  assert.strictEqual(mundo.registrados[0].corpo.pedido.fato.motivo, "já era verdade");
+});
+
+test("SUSSURRO com pedido aberto: o plano recebe o pedido anterior e o que já foi feito, SEM o que faltava; 'nada a carregar' FECHA sem lembrança", async () => {
+  const mundo = mundoVivo({ personagem: "p077h", cenas: cenasDoFulano("p077h"), inicial: "base",
+    respostas: [ACEITO("Fulano pegou a corda.", "comCorda")] });
+  const mente = menteEmFila([
+    planoM2([{ tipo: "ato", acao: "Pegar a Corda de Cânhamo", com: ["Corda de Cânhamo"], espera: "" }],
+            { depois: ["beber do Cantil de Água"], pronto: "sede saciada" }),
+    planoM2([{ tipo: "fala", acao: "Dizer que tudo bem", com: [], espera: "" }], { depois: [], pronto: "nenhum" }),
+  ]);
+  const laco = lacoComPensar({ mundo, mente });
+  await laco.sussurrar("mate a sede");
+  const id = mundo.ops.find((o) => o.op === "create").id;
+  await laco.sussurrar("esquece isso");
+  const user = mente.conversas[mente.conversas.length - 1].user;
+  assert.match(user, /INSTRUÇÃO: esquece isso\n\nANTES, O JOGADOR TINHA PEDIDO: mate a sede\n\nO QUE ELE JÁ FEZ POR ESTE PEDIDO:/);
+  assert.doesNotMatch(user, /O QUE FALTAVA/, "o resto do plano velho foi junto (medido: puxa o pedido velho)");
+  const close = mundo.ops.find((o) => o.op === "close");
+  assert.deepStrictEqual([close.id, close.status, !!close.lembrar], [id, "abandonada", false]);
+  assert.strictEqual(mundo.registrados[1].corpo.pedido.estado, "cancelado");
+});
+
+test("SUSSURRO com pedido aberto que AJUSTA: as palavras viram uma sequência e o pedido é regravado", async () => {
+  const mundo = mundoVivo({ personagem: "p077i", cenas: cenasDoFulano("p077i"), inicial: "base",
+    respostas: [ACEITO("Fulano pegou a corda.", "comCorda")] });
+  const mente = menteEmFila([
+    planoM2([{ tipo: "ato", acao: "Pegar a Corda de Cânhamo", com: ["Corda de Cânhamo"], espera: "" }],
+            { depois: ["beber do Cantil de Água"], pronto: "sede saciada" }),
+    planoM2([{ tipo: "fala", acao: "Dizer que vai beber devagar", com: [], espera: "" }],
+            { depois: ["beber do Cantil de Água devagar"], pronto: "sede saciada" }),
+  ]);
+  const laco = lacoComPensar({ mundo, mente });
+  await laco.sussurrar("mate a sede");
+  await laco.sussurrar("beba devagar");
+  const upd = mundo.ops.filter((o) => o.op === "update").pop();
+  assert.strictEqual(upd.content, "mate a sede.\nbeba devagar.\n- beber do Cantil de Água devagar\nPronto quando: sede saciada.");
+});
+
+test("TRAVAMENTO: duas vezes sem avanço abrem o ponto de intervenção, em palavras de mundo; a janela espera a voz do jogador SEM pagar a Mente", async () => {
+  const c = coletor();
+  const mundo = mundoVivo({ personagem: "p077j", cenas: cenasDoFulano("p077j"), inicial: "base",
+    respostas: [RECUSADO("a corda está presa no poste"), RECUSADO("a corda está presa no poste")] });
+  const preso = (n) => planoM2([{ tipo: "ato", acao: "Pegar a Corda de Cânhamo", com: ["Corda de Cânhamo"], espera: "" }],
+                              { depois: ["amarrar o barco"], pronto: "posse de Corda de Cânhamo" });
+  const mente = menteEmFila([preso(1), preso(2)]);
+  const laco = lacoComPensar({ mundo, mente, emitir: c.emitir });
+  await laco.sussurrar("amarre o barco com a corda");
+  await laco.talvezAgirSozinho({ autonomia: false });
+  const b = c.eventos.find((e) => e.ev === "bloqueio");
+  assert.ok(b, "duas vezes sem avanço e nenhum ponto de intervenção");
+  assert.match(b.texto, /empacou em amarre o barco com a corda: a corda está presa no poste/);
+  assert.doesNotMatch(b.texto, NOMES_DE_TOOL);
+  const pagas = mente.conversas.length;
+  await laco.talvezAgirSozinho({ autonomia: false });
+  assert.strictEqual(mente.conversas.length, pagas, "a janela de intervenção pagou a Mente");
+  assert.strictEqual(mundo.registrados[mundo.registrados.length - 1].corpo.pedido.desfecho, "esperando");
+});
+
+test("TETO: o pedido que chega ao teto de vezes, ou de custo, é largado COM a lembrança da desistência", async () => {
+  const H = require("../harness");
+  for (const [pers, marcar] of [["p077k", (nb, id) => { nb.get(id).vezes = 12; nb.salvar(); }],
+                                ["p077l", (nb, id) => nb.pay(id, 9000)]]) {
+    const c = coletor();
+    const mundo = mundoVivo({ personagem: pers, cenas: cenasDoFulano(pers), inicial: "base" });
+    await mundo.criarIntencao("mate a sede.\n- beber do Cantil de Água\nPronto quando: sede saciada.");
+    const id = mundo.ativas[0].id;
+    const nb = new H.desire.Notebook(pers);
+    nb.sync(mundo.ativas);
+    nb.marcarOrigem(id, "pedido");
+    marcar(nb, id);
+    const mente = menteEmFila([]);
+    const laco = lacoComPensar({ mundo, mente, emitir: c.emitir });
+    laco._nb = null;
+    await laco.talvezAgirSozinho({ autonomia: false });
+    const close = mundo.ops.find((o) => o.op === "close");
+    assert.ok(close && close.status === "abandonada" && close.lembrar === true, `${pers}: o teto não largou com lembrança`);
+    assert.strictEqual(mente.conversas.length, 0);
+    assert.ok(c.eventos.some((e) => e.ev === "sistema" && /desiste: mate a sede/.test(e.texto)));
+  }
+});
+
+test("DESISTÊNCIA dele (vez sem sussurro, plano sem depois e sem ato) larga COM lembrança; VONTADE (depois vazio, fato nenhum, depois de agir) fecha cumprido", async () => {
+  const H = require("../harness");
+  const abrir = async (pers, inicial, respostas) => {
+    const mundo = mundoVivo({ personagem: pers, cenas: cenasDoFulano(pers), inicial, respostas });
+    await mundo.criarIntencao("arrume a praça.\n- juntar a corda");
+    const nb = new H.desire.Notebook(pers);
+    nb.sync(mundo.ativas);
+    nb.marcarOrigem(mundo.ativas[0].id, "pedido");
+    return mundo;
+  };
+  const m1 = await abrir("p077m", "base");
+  await lacoComPensar({ mundo: m1, mente: menteEmFila([planoM2([{ tipo: "fala", acao: "Dizer que cansou", com: [], espera: "" }])]) })
+    .talvezAgirSozinho({ autonomia: false });
+  const c1 = m1.ops.find((o) => o.op === "close");
+  assert.deepStrictEqual([c1.status, c1.lembrar], ["abandonada", true]);
+
+  const m2 = await abrir("p077n", "base", [ACEITO("Fulano pegou a corda.", "comCorda")]);
+  await lacoComPensar({ mundo: m2, mente: menteEmFila([planoM2([{ tipo: "ato", acao: "Pegar a Corda de Cânhamo", com: ["Corda de Cânhamo"], espera: "" }])]) })
+    .talvezAgirSozinho({ autonomia: false });
+  const c2 = m2.ops.find((o) => o.op === "close");
+  assert.strictEqual(c2.status, "concluida");
+  assert.strictEqual(m2.registrados[0].corpo.pedido.estado, "vontade");
+});
+
+test("AUTONOMIA DESLIGADA: o desejo que ELE inventou não anda, e nada é pago; ligada, sem desejo, o QUERER faz nascer um desejo só com o texto", async () => {
+  const H = require("../harness");
+  const mundo = mundoVivo({ personagem: "p077o", cenas: cenasDoFulano("p077o"), inicial: "base" });
+  await mundo.criarIntencao("Quero comer alguma coisa.");
+  new H.desire.Notebook("p077o").sync(mundo.ativas);
+  const mente = menteEmFila([]);
+  await lacoComPensar({ mundo, mente }).talvezAgirSozinho({ autonomia: false });
+  assert.strictEqual(mente.conversas.length, 0);
+  assert.strictEqual(mundo.registrados[0].corpo.descartado, "sem_pedido");
+
+  const vazio = mundoVivo({ personagem: "p077p", cenas: cenasDoFulano("p077p"), inicial: "base" });
+  const m2 = menteEmFila([], { querer: "Quero matar a sede" });
+  await lacoComPensar({ mundo: vazio, mente: m2 }).talvezAgirSozinho({ autonomia: true });
+  const criado = vazio.ops.find((o) => o.op === "create");
+  assert.strictEqual(criado.content, "Quero matar a sede.");
+  assert.deepStrictEqual(m2.conversas.map((x) => x.opts.rotina), ["querer"], "o planejador antigo ainda é chamado");
 });

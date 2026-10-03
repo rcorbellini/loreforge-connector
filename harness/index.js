@@ -2,14 +2,14 @@
 // de arquitetura (https://claude.ai/artifact/Aq484wT6jwv6F8F4XRoX4q) e do registro.
 //
 //   C1  scene.js       a cena como índice (regra)
-//   C3  objectives.js  o que eu quero agora (Mente, pago)
+//   C3  objectives.js  o pensar do pedido e o que fazer agora, no contrato M2 (Mente, pago)
 //   C4  target.js      onde está o alvo (regra)
 //   C6  tool.js        qual capacidade (Jev, local)
 //   C7  params.js      os parâmetros (Jev + regra do dono, local)
 //   M2  mundo.js       o mundo executa (tools, MCP)
-//   C8  progress.js    andou? exaustão? (regra; losango do Jev em sombra)
+//   C8  progress.js    andou? exaustão? — do pedido inteiro, vez a vez (regra)
 //   C8D ending.js      acabou? (regra; losango do Jev em sombra)
-//   C3P/C3R plan.js    planejar / replanejar (Mente, pago)
+//   C3P laco._tickSemDesejo  o que eu quero agora, com a autonomia ligada (Mente, pago)
 //   C9  mente.narrate  narrar (Mente, pago)
 //
 // O laço (`laco.js`) orquestra: chama as caixas, emite os eventos e registra cada caixa.
@@ -17,7 +17,7 @@
 
 "use strict";
 
-const BOXES = ["C1", "C3", "C4", "C6", "C7", "M2", "C8", "C8D", "C3P", "C3R", "C9"];
+const BOXES = ["C1", "C3", "C4", "C6", "C7", "M2", "C8", "C8D", "C3P", "C9"];
 
 module.exports = {
   BOXES,
@@ -27,7 +27,6 @@ module.exports = {
   tool: require("./tool"),
   params: require("./params"),
   objectives: require("./objectives"),
-  plan: require("./plan"),
   progress: require("./progress"),
   ending: require("./ending"),
   desire: require("./desire"),

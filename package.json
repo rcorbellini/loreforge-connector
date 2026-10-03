@@ -1,6 +1,6 @@
 {
   "name": "loreforge-conector",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "O conector da Mente — voce roda, voce audita, sua chave nunca sai daqui.",
   "type": "commonjs",
   "bin": {

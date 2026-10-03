@@ -178,7 +178,8 @@ class Fila {
       if (proxima.classe === "manual") {
         await assento.laco.sussurrar(proxima.texto, "manual");
       } else {
-        await assento.laco.talvezAgirSozinho();
+        // a autonomia diz o que ele pode inventar; o pedido do jogador anda de qualquer jeito
+        await assento.laco.talvezAgirSozinho({ autonomia: assento.querAgirSozinho() });
       }
     } catch (e) {
       log("TURNO FALHOU (a mesa segue)", `${proxima.personagem}: ${e.message}`);
@@ -258,7 +259,8 @@ class Fila {
   // três últimos são o que impede a fila de encher: o tempo de quem está jogando ou
   // esperando NÃO CONTA. É a generalização do `!this.ocupado` que morava no laço.
   _elegivel(a) {
-    if (!a.querAgirSozinho()) return false;
+    // a vontade (autonomia) OU um pedido do jogador aberto (spec 077): o pedido foi pedido.
+    if (!a.querAgirSozinho() && !(typeof a.temPedidoAberto === "function" && a.temPedidoAberto())) return false;
     if (!this.sala.ehMembroAtivo(a.dono)) return false;
     if (this.jogando === a.personagem) return false;
     if (a.laco && a.laco.ocupado) return false;

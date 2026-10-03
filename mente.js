@@ -131,12 +131,12 @@ function criarMente({ mundo, extensoes } = {}) {
   // === O DIALETO DE CADA PROVEDOR ===========================================
   // `dialeto.js` MORREU na spec 075. Ele traduzia o schema das TOOLS e o histórico de
   // tool calling para cada provedor — e a Mente não recebe mais tool nenhuma: ela só
-  // conversa (objetivos, planejar, narrar). Cada runtime abaixo fala texto puro.
+  // conversa (objetivos, querer, narrar). Cada runtime abaixo fala texto puro.
 
   async function callModel(system, user, opts = {}) {
     // A ROTINA PODE TROCAR O MODELO E AS OPÇÕES (item 79, spec 073 T026).
     //
-    // `opts.rotina` é o nome da rotina (`planejar`, `narrar`…). Quando `porRotina`
+    // `opts.rotina` é o nome da rotina (`objetivos`, `narrar`…). Quando `porRotina`
     // tem entrada para ela, o que estiver ali SOBREPÕE o config geral — inclusive
     // `think`, que não é detalhe: pensando, o `qwen3` gasta 86 s e devolve plano
     // vazio em 6 de 8. Sem entrada, nada muda e o caminho é byte-a-byte o de antes.
@@ -883,7 +883,7 @@ RESTRIÇÕES SEVERAS:
 
 
   // Os textos PADRÃO de cada rotina, para a página de configuração mostrar o que
-  // está em uso e o que se está substituindo. Os do harness (objetivos, planejar,
+  // está em uso e o que se está substituindo. Os do harness (objetivos, querer,
   // querer, e os do decisor) vivem em `harness/prompts.js` — um lugar só, com versão.
   function promptsPadrao() {
     return { narrar: NARRATE_SYSTEM, ...HARNESS_PROMPTS.PADRAO };

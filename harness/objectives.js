@@ -1,10 +1,15 @@
-// C3 · O PLANO DO TURNO — a única chamada PAGA antes de o mundo agir (spec 076).
+// C3 · O PLANO E O PENSAR DO PEDIDO — a única chamada PAGA antes de o mundo agir (specs 076 e 077).
 //
 // A Mente recebe a instrução e a cena em PROSA, e NUNCA o schema das tools (invariante 1
-// do contrato 01). Ela devolve o plano no CONTRATO M do mantenedor: a condição do corpo, a
-// postura diante do pedido, os passos marcados (ato, fala, gesto) e a fala. Só o passo ATO
-// vira chamada ao mundo, e quem aponta tool e ids é o resolvedor local, de graça. Fala e
+// do contrato 01). Ela devolve o plano no CONTRATO M2 do mantenedor: a postura diante do
+// pedido (com o corpo numa frase), os passos marcados (ato, fala, gesto), o que ainda falta
+// além desta cena (`depois`), o fato que fecha o pedido (`pronto_quando`) e a fala. Só o passo
+// ATO vira chamada ao mundo, e quem aponta tool e ids é o resolvedor local, de graça. Fala e
 // gesto são o que ele diz e expressa: entram no racional, nunca no mundo.
+//
+// Na vez N de um pedido aberto (spec 077), o ANDAMENTO chega como dado no `user` — o que ele
+// já fez e o que o mundo respondeu, o que faltava, a sugestão do jogador, o pedido anterior — e
+// o prompt não muda (medido em `ferramentas/harness-objetivos/v2/V4-andamento/`).
 //
 // Saída fora do contrato é FALHA (Princípio VIII; memória "juízo ausente é falha"): não há
 // volta ao formato antigo de lista, que esconderia a mesa que ficou com o prompt velho.
@@ -13,6 +18,8 @@
 // (`_cenaEmProsa(_contextoPayload(ctx, {comCapacidades:false}))`).
 
 "use strict";
+
+const { extractEnding } = require("./ending");
 
 const BOX = "C3";
 const TYPES = new Set(["ato", "fala", "gesto"]);
@@ -79,7 +86,24 @@ function _names(com) {
   return t ? [t] : [];
 }
 
-// → { body, stance, reply, steps: [{ type, action, with, expects }] }
+// O que ainda falta (spec 077): só os itens que são texto. Lista ausente, ou que não é lista, não
+// é inventada — vale "nada a carregar", e o defeito vai ao registro.
+function _later(v, defects) {
+  if (!Array.isArray(v)) { defects.push("depois"); return []; }
+  return v.map((x) => _text(x)).filter(Boolean);
+}
+
+// O fato que fecha (spec 077): uma das formas do C8D, ou "nenhum". Fora das formas, ou ausente,
+// vale "nenhum" com o defeito registrado — nunca um fato adivinhado.
+function _doneWhen(v, defects) {
+  const t = _text(v);
+  if (!t) { defects.push("pronto_quando"); return "nenhum"; }
+  if (/^nenhum[a]?\.?$/i.test(t)) return "nenhum";
+  if (extractEnding(t).familia === "nenhuma") { defects.push("pronto_quando"); return "nenhum"; }
+  return t.replace(/\.$/, "");
+}
+
+// → { stance, reply, steps: [{ type, action, with, expects }], later, doneWhen, defects }
 // `type` é "ato" | "fala" | "gesto", ou "defeito" quando o passo veio sem tipo válido ou
 // sem ação: na dúvida, o passo não muda o mundo.
 function parsePlan(text) {
@@ -100,11 +124,16 @@ function parsePlan(text) {
       expects: _text(o.espera),
     };
   });
+  const defects = [];
+  const later = _later(cot.depois !== undefined ? cot.depois : obj.depois, defects);
+  const doneWhen = _doneWhen(cot.pronto_quando !== undefined ? cot.pronto_quando : obj.pronto_quando, defects);
   return {
-    body: _text(cot.condicao_fisica) || _text(obj.condicao_fisica),
     stance: _text(cot.avaliacao_de_viabilidade) || _text(obj.avaliacao_de_viabilidade),
     reply: _text(obj.resposta),
     steps,
+    later,
+    doneWhen,
+    defects,
   };
 }
 
@@ -114,18 +143,39 @@ function actText(step) {
   return step.with.length ? `${step.action} — ${step.with.join(", ")}` : step.action;
 }
 
-async function userOf(mente, ctx, instrucao) {
+// O ANDAMENTO da vez N (contrato `specs/077-ciclo-do-pedido/contracts/andamento.md`):
+//   { antes: [palavras anteriores do jogador], feito: [linhas "ação → o que o mundo disse"],
+//     faltava: [o último `depois`], sugestao: "o que o jogador sugeriu na intervenção" }
+// Quando o jogador fala de novo (há `antes`), o "O QUE FALTAVA" NÃO vai: era o plano do pedido
+// velho e, medido, puxava o personagem para ele por cima do sussurro novo (V4-andamento, V7).
+function andamentoText(andamento) {
+  const a = andamento || {};
+  const partes = [];
+  const antes = (a.antes || []).map(_text).filter(Boolean);
+  if (antes.length) partes.push("ANTES, O JOGADOR TINHA PEDIDO: " + antes.join(" · "));
+  const bloco = [];
+  const feito = (a.feito || []).map(_text).filter(Boolean);
+  if (feito.length) bloco.push("O QUE ELE JÁ FEZ POR ESTE PEDIDO:\n" + feito.map((f) => "- " + f).join("\n"));
+  const faltava = (a.faltava || []).map(_text).filter(Boolean);
+  if (faltava.length && !antes.length) bloco.push("O QUE FALTAVA:\n" + faltava.map((f) => "- " + f).join("\n"));
+  if (_text(a.sugestao)) bloco.push("O JOGADOR SUGERIU: " + _text(a.sugestao));
+  if (bloco.length) partes.push(bloco.join("\n"));
+  return partes.join("\n\n");
+}
+
+async function userOf(mente, ctx, instrucao, andamento) {
   const prosa = mente._cenaEmProsa(await mente._contextoPayload(ctx, { comCapacidades: false }));
-  return "O que ele faz?\n\nINSTRUÇÃO: " + instrucao + "\n\n" + prosa;
+  const extra = andamentoText(andamento);
+  return "O que ele faz?\n\nINSTRUÇÃO: " + instrucao + "\n\n" + (extra ? extra + "\n\n" : "") + prosa;
 }
 
 // → { plan, steps, cru, user } — ou lança PlanContractError (o laço registra a falha e não age)
-async function objectives({ mente, ctx, instrucao, system }) {
-  const user = await userOf(mente, ctx, instrucao);
+async function objectives({ mente, ctx, instrucao, system, andamento }) {
+  const user = await userOf(mente, ctx, instrucao, andamento);
   const cru = await mente.conversar(system, user,
     { rotina: "objetivos", label: "PLANO (C3)", temperature: 0.4, maxTokens: 1200, json: true });
   const plan = parsePlan(cru);
   return { plan, steps: plan.steps, cru, user };
 }
 
-module.exports = { BOX, PlanContractError, objectives, parsePlan, actText, userOf };
+module.exports = { BOX, PlanContractError, objectives, parsePlan, actText, userOf, andamentoText };

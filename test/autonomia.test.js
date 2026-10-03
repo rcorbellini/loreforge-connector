@@ -18,10 +18,18 @@ const Mente = require("../mente").criarMente();
 
 test("as rotinas do harness são EDITÁVEIS no painel — as da Mente e as do Jev", () => {
   const nomes = Mente.ROTINAS.map((r) => r.nome);
-  for (const n of ["objetivos", "querer", "planejar", "narrar",
-                   "decisor_system", "c6_tool", "c7_param", "c8_passo", "c8d_fim"]) {
+  for (const n of ["objetivos", "querer", "narrar",
+                   "decisor_system", "c6_tool", "c7_param", "c8d_fim"]) {
     assert.ok(nomes.includes(n), `a rotina '${n}' não aparece para quem tuna`);
     assert.ok(Object.keys(Mente.promptsPadrao()).includes(n), `a rotina '${n}' não tem texto padrão`);
+  }
+});
+
+test("o planejador antigo MORREU (spec 077): nada de planejar nem do losango do passo — o M2 pensa o pedido", () => {
+  const nomes = Mente.ROTINAS.map((r) => r.nome);
+  for (const morta of ["planejar", "c8_passo"]) {
+    assert.ok(!nomes.includes(morta), `a rotina '${morta}' ainda existe`);
+    assert.ok(!Object.keys(Mente.promptsPadrao()).includes(morta), `o prompt '${morta}' ainda existe`);
   }
 });
 

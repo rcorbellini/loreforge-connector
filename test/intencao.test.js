@@ -7,7 +7,8 @@
 //   · o CADERNO nunca contradiz o world (arquiva o que fechou, re-deriva o que mudou);
 //   · o C8 separa progresso de ciclo, e bloqueia por exaustão (B8: 24/24);
 //   · o C8D confere as quatro famílias de fim (B11: 32/32);
-//   · o C3P rejeita o plano que fala consigo ou abre com o que não está aqui (caso 2);
+//   · a prosa do PEDIDO (spec 077): as palavras do jogador, o que falta e o fato que fecha;
+//   · o fato de um plano: aterrado ao pedido, e nunca o que já era verdade;
 //   · a rotina escolhe modelo e `think` no CORPO da requisição (item 79).
 
 "use strict";
@@ -67,23 +68,31 @@ test("o caderno ARQUIVA o desejo que o world não tem mais como ativo", () => {
   assert.ok(nb.dados.arquivados["int-1"]);
 });
 
-test("o caderno RE-DERIVA passos e zera o passo quando o jogador edita o content", () => {
+test("o caderno RE-DERIVA o que falta quando o jogador edita a prosa — guarda a origem e as vezes, desfaz o travamento", () => {
   const nb = new H.desire.Notebook("edita");
   let d = nb.sync([{ id: "int-2", status: "ativa", content: "A.\n- x\n- y" }]);
-  d.passo_atual = 1;
+  nb.marcarOrigem("int-2", "pedido");
+  nb.contarVez("int-2", false);
+  d.bloqueio = { motivo: "sem_avanco" };
+  d.intervencao = { ticks: 0 };
   nb.salvar();
-  d = nb.sync([{ id: "int-2", status: "ativa", content: "A.\n- z" }]);
+  d = nb.sync([{ id: "int-2", status: "ativa", content: "A.\nB.\n- z" }]);
   assert.deepStrictEqual(d.passos, ["z"]);
-  assert.strictEqual(d.passo_atual, 0);
+  assert.deepStrictEqual(d.palavras, ["A", "B"]);
+  assert.strictEqual(d.origem, "pedido");
+  assert.strictEqual(d.vezes, 1);
+  assert.strictEqual(d.bloqueio, null);
+  assert.strictEqual(d.intervencao, null);
 });
 
 test("o caderno SOBREVIVE ao processo (arquivo 0600) — e sem ele, re-deriva do world", () => {
   const a = new H.desire.Notebook("persiste");
   a.sync([{ id: "int-3", status: "ativa", content: "A.\n- x\n- y" }]);
-  a.get("int-3").passo_atual = 1;
-  a.salvar();
+  a.contarVez("int-3", true);
+  a.marcarOrigem("int-3", "pedido");
   const b = new H.desire.Notebook("persiste");
-  assert.strictEqual(b.get("int-3").passo_atual, 1);
+  assert.strictEqual(b.get("int-3").vezes, 1);
+  assert.strictEqual(b.get("int-3").origem, "pedido");
   const arq = fs.readdirSync(process.env.LOREFORGE_HARNESS_DIR).find((f) => f.startsWith("persiste"));
   const modo = fs.statSync(path.join(process.env.LOREFORGE_HARNESS_DIR, arq)).mode & 0o777;
   assert.strictEqual(modo, 0o600);
@@ -173,31 +182,40 @@ test("C8D: EM TRÂNSITO não se está em lugar nenhum — o fim de lugar espera 
 });
 
 // --------------------------------------------------------------------------- //
-// 5. C3P — o plano possível agora (caso 2)
+// 5. O PEDIDO em prosa (spec 077)
 // --------------------------------------------------------------------------- //
 
-test("C3P: planejar falar CONSIGO MESMA é rejeitado (a Mira e a Mira)", () => {
-  const ctx = { self: { name: "Mira, a Vigia da Praça", inventory: [] },
-                scene: { characters: [{ id: "mira", name: "Mira, a Vigia da Praça" }, { id: "hulda", name: "Hulda" }],
-                         items: [], objects: [], exits: [] } };
-  const idx = H.scene.sceneIndex(ctx);
-  const p = H.plan.validatePlan(["Falar com Mira sobre o Pé de Cabra", "Perguntar à Hulda"], idx, ctx);
-  assert.ok(p.some((x) => /você mesmo/.test(x)));
+test("o pedido em prosa: as palavras do jogador (uma linha por sussurro), o que falta e o fato", () => {
+  const c = H.desire.formatContent(["consiga peixe fresco no cais", "traga dois"],
+    ["chegar ao cais", "comprar o peixe"], "posse de Peixe Fresco");
+  assert.strictEqual(c, "consiga peixe fresco no cais.\ntraga dois.\n- chegar ao cais\n- comprar o peixe\nPronto quando: posse de Peixe Fresco.");
+  const p = H.desire.parseContent(c);
+  assert.deepStrictEqual(p.palavras, ["consiga peixe fresco no cais", "traga dois"]);
+  assert.deepStrictEqual(p.passos, ["chegar ao cais", "comprar o peixe"]);
+  assert.strictEqual(p.fim, "posse de Peixe Fresco");
 });
 
-test("C3P: o 1º passo tem de usar o que está AQUI — ou ser um passo de descobrir", () => {
-  const ctx = { self: { id: "t", name: "Torvin", inventory: [] },
-                scene: { characters: [{ id: "obadiah", name: "Obadiah, o Mascate" }], items: [], objects: [], exits: [] } };
-  const idx = H.scene.sceneIndex(ctx);
-  assert.deepStrictEqual(H.plan.validatePlan(["Perguntar ao Obadiah o preço", "Comprar"], idx, ctx), []);
-  assert.deepStrictEqual(H.plan.validatePlan(["Descobrir onde fica a forja", "Ir lá"], idx, ctx), []);
-  assert.ok(H.plan.validatePlan(["Aproximar-se sem chamar atenção", "Comprar"], idx, ctx).length);
+test("com a autonomia desligada, só o pedido do JOGADOR anda — o que ele inventou espera", () => {
+  const nb = new H.desire.Notebook("so-pedido");
+  nb.sync([{ id: "int-1700000000001", status: "ativa", content: "Quero comer." },
+           { id: "int-1700000000002", status: "ativa", content: "Quero dormir." }]);
+  assert.strictEqual(nb.ativo({ soPedido: true }), null);
+  nb.marcarOrigem("int-1700000000001", "pedido");
+  assert.strictEqual(nb.ativo().id, "int-1700000000002");
+  assert.strictEqual(nb.ativo({ soPedido: true }).id, "int-1700000000001");
 });
 
-test("C3P: a resposta do modelo vira passos e fim", () => {
-  const r = H.plan.parsePlanReply("DESEJO: matar a sede\nPASSOS:\n- Beber do Cantil\n- Descansar\nFIM: sede saciada");
-  assert.deepStrictEqual(r.passos, ["Beber do Cantil", "Descansar"]);
-  assert.strictEqual(r.fim, "sede saciada");
+test("o fato de um plano: o que JÁ era verdade não fecha nada; fora do pedido vale 'nenhum'; o resto vale", () => {
+  const ctx = { self: { inventory: [{ id: "peixe", name: "Peixe Assado" }], needs: { hunger: "faminto" } },
+                scene: { place: { id: "t", name: "Taverna do Gancho" } } };
+  const ja = H.ending.fromPlan("posse de Peixe Assado", ["coma o peixe assado"], ["Comer o Peixe Assado"], ctx);
+  assert.strictEqual(ja.fim.familia, "nenhuma");
+  assert.strictEqual(ja.motivo, "já era verdade");
+  const fora = H.ending.fromPlan("estar em Cais Velho", ["coma o peixe assado"], ["Comer o Peixe Assado"], ctx);
+  assert.strictEqual(fora.motivo, "fora do pedido");
+  const vale = H.ending.fromPlan("fome saciada", ["coma o peixe assado"], ["Comer o Peixe Assado"], ctx);
+  assert.strictEqual(vale.fim.familia, "necessidade");
+  assert.strictEqual(vale.motivo, null);
 });
 
 // --------------------------------------------------------------------------- //
@@ -215,13 +233,16 @@ function espia(resposta) {
   return { chamadas, restaurar: () => { globalThis.fetch = original; } };
 }
 
-test("a rotina `planejar` manda `think:false` e o modelo DELA no corpo da requisição", async () => {
+test("a rotina com entrada em `porRotina` manda o `think` e o modelo DELA no corpo da requisição", async () => {
   const cfg = configuracao.carregar(true);
-  assert.ok(cfg.porRotina && cfg.porRotina.planejar);
-  const e = espia("- um passo");
-  try { await Mente.conversar("sys", "user", { rotina: "planejar" }); } finally { e.restaurar(); }
+  cfg.porRotina = { objetivos: { model: "modelo-do-pensar", think: false } };
+  configuracao.gravar(cfg);
+  const e = espia("{}");
+  try { await Mente.conversar("sys", "user", { rotina: "objetivos" }); } finally { e.restaurar(); }
   assert.strictEqual(e.chamadas[0].corpo.think, false);
-  assert.strictEqual(e.chamadas[0].corpo.model, cfg.porRotina.planejar.model);
+  assert.strictEqual(e.chamadas[0].corpo.model, "modelo-do-pensar");
+  cfg.porRotina = {};
+  configuracao.gravar(cfg);
 });
 
 test("o `think` GERAL desce para a rotina que não declara o dela (objetivos)", async () => {

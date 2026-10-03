@@ -1,4 +1,5 @@
-// C8 · ANDOU? — progresso e exaustão de um passo, por REGRA (0 token pago).
+// C8 · ANDOU? — progresso e exaustão, por REGRA (0 token pago). Desde a spec 077 o "passo" é o
+// PEDIDO inteiro: a vez repensa o plano, e o que se mede é se o pedido andou.
 //
 // Porta de `v1/progresso.py::Passo` (B8: 24/24 loops reais pegos cedo — o `wake_up` do
 // Draven parado na 2ª tentativa, e não na 192ª).
@@ -111,18 +112,4 @@ function overBudget(tokensPagos, cfg) {
   return tokensPagos > teto;
 }
 
-// O losango "o que o passo espera" em SOMBRA (FR-009a, hipótese): quando houve estado
-// novo, o Jev lê o passo e o que mudou. Resolve a teimosia (a acusação 8× muda o estado
-// toda vez) se a bateria B15 aprovar; até lá, só é gravado ao lado da decisão da regra.
-async function shadow({ decider, pergunta, passo, mudou }) {
-  if (!mudou) return null;
-  const r = await decider.choose(
-    { passo, o_que_mudou: mudou },
-    pergunta,
-    [["cumpriu", "cumpriu o passo"],
-     ["aproximou", "aproximou do passo, mas não o cumpriu"],
-     ["sem_relacao", "o que mudou não tem relação com o passo"]]);
-  return { losango: "c8_passo", resposta: r.vencedora, margem: r.margem };
-}
-
-module.exports = { BOX, stateSignature, newKnowledge, newStep, before, after, overBudget, limits, shadow };
+module.exports = { BOX, stateSignature, newKnowledge, newStep, before, after, overBudget, limits };
