@@ -99,7 +99,7 @@ function menteDe({ objetivos = "- Pegar a Corda de Cânhamo", narracao = "prosa"
   const m = {
     conversas: [],
     custo: { entrada: 0, saida: 0, chamadas: 0 },
-    config: () => ({ harness: { abordagens: 3, repeticoes: 3, tetoTokensDesejo: 8000,
+    config: () => ({ harness: { abordagens: 3, repeticoes: 3, tetoTokensPedido: 50000,
                                 janelaIntervencaoTicks: 1, losangosJev: "desligado" } }),
     ROTINAS: [{ nome: "objetivos", titulo: "Dizer o que quer" }, { nome: "narrar", titulo: "Narrar" }],
     _contextoPayload: async () => ({}),
@@ -770,12 +770,16 @@ test("AUTONOMIA DESLIGADA: o desejo que ELE inventou não anda, e nada é pago; 
   assert.deepStrictEqual(m2.conversas.map((x) => x.opts.rotina), ["querer"], "o planejador antigo ainda é chamado");
 });
 
-test("O TETO DE CUSTO é do pedido inteiro (M2 a cada vez): 9 mil tokens não largam mais — o de 8 mil largava na 3ª vez", async () => {
+test("O TETO DE CUSTO é do pedido inteiro (M2 a cada vez), e o padrão da CONFIGURAÇÃO de verdade não repõe os 8 mil", async () => {
   const H = require("../harness");
-  assert.strictEqual(H.progress.overBudget(9000, {}), false);
-  assert.strictEqual(H.progress.overBudget(60000, {}), true);
-  assert.strictEqual(H.progress.overBudget(9000, { harness: { tetoTokensDesejo: 8000 } }), true,
-    "a mesa que já declarou o teto antigo perdeu o dela");
+  const configuracao = require("../config");
+  const cfg = configuracao.carregar(true);
+  assert.strictEqual(cfg.harness.tetoTokensPedido, 50000);
+  assert.strictEqual(cfg.harness.tetoVezesPedido, 12);
+  assert.strictEqual(H.progress.overBudget(9000, cfg), false, "o padrão da configuração larga o pedido na 3ª vez");
+  assert.strictEqual(H.progress.overBudget(60000, cfg), true);
+  assert.strictEqual(H.progress.overBudget(9000, { harness: { tetoTokensDesejo: 8000 } }), false,
+    "a chave antiga (do desejo, plano de uma vez) voltou a valer");
 });
 
 test("PLANO FORA DO CONTRATO numa vez do meio: a vez falha honesta e CONTA como vez sem avanço (não prende o pedido)", async () => {

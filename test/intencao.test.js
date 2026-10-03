@@ -149,9 +149,10 @@ test("C8: a assinatura de estado IGNORA `status.action` (toda ação o reescreve
   assert.strictEqual(H.progress.stateSignature(a), H.progress.stateSignature(b));
 });
 
-test("C8: o teto de custo do desejo (FR-009b)", () => {
-  assert.strictEqual(H.progress.overBudget(9000, { harness: { tetoTokensDesejo: 8000 } }), true);
-  assert.strictEqual(H.progress.overBudget(100, { harness: { tetoTokensDesejo: 8000 } }), false);
+test("C8: o teto de custo do PEDIDO (FR-009b da 075; spec 077) é o da mesa, e o padrão cabe ~12 vezes do M2", () => {
+  assert.strictEqual(H.progress.overBudget(9000, { harness: { tetoTokensPedido: 8000 } }), true);
+  assert.strictEqual(H.progress.overBudget(100, { harness: { tetoTokensPedido: 8000 } }), false);
+  assert.strictEqual(H.progress.overBudget(35000, {}), false, "12 vezes do M2 (~2,9 mil cada) estouram o padrão");
 });
 
 // --------------------------------------------------------------------------- //

@@ -86,8 +86,12 @@ const DEFAULTS = {
   harness: {
     abordagens: 3,             // abordagens distintas sem progresso até BLOCKED
     repeticoes: 3,             // o mesmo verbo+alvo no passo até BLOCKED (teimosia)
-    tetoTokensDesejo: 8000,    // tokens pagos num desejo até BLOCKED por custo
-    janelaIntervencaoTicks: 1, // ticks esperando o sussurro do jogador num BLOCKED
+    // O PEDIDO (spec 077): o M2 roda a CADA vez (~2,9 mil tokens por vez no qwen, medido no caso 3), e
+    // o teto antigo do desejo (8 mil, de quando o plano rodava uma vez) largava o pedido na 3ª vez.
+    tetoTokensPedido: 50000,   // tokens de um pedido até largar (≈ 12 vezes)
+    tetoVezesPedido: 12,       // vezes de um pedido até largar
+    vezesSemAvanco: 2,         // vezes seguidas sem avanço até o ponto de intervenção
+    janelaIntervencaoTicks: 1, // vezes esperando o sussurro do jogador na intervenção
     losangosJev: "sombra",     // desligado | sombra | ligado (só depois da bateria B15)
   },
 };
@@ -302,7 +306,8 @@ function aplicar(cfg, vindo) {
   }
   if (vindo.harness && typeof vindo.harness === "object") {
     const h = { ...(cfg.harness || DEFAULTS.harness) };
-    for (const k of ["abordagens", "repeticoes", "tetoTokensDesejo", "janelaIntervencaoTicks"]) {
+    for (const k of ["abordagens", "repeticoes", "tetoTokensPedido", "tetoVezesPedido", "vezesSemAvanco",
+                     "janelaIntervencaoTicks"]) {
       if (Number(vindo.harness[k]) > 0) h[k] = Number(vindo.harness[k]);
     }
     if (["desligado", "sombra", "ligado"].includes(vindo.harness.losangosJev)) {
