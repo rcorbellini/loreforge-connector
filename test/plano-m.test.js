@@ -90,3 +90,13 @@ test("o racional: postura, uma linha por passo e a fala; defeito e partes vazias
                       { acao: "sem tipo" }] }, resposta: "" }));
   assert.strictEqual(rationaleText(p), "Vou.\n— Ir pela Rua do Mercador");
 });
+
+test("pedida (spec 076): o pedido literal com o verbo conjugado e curto CONTA como pedido; a agência extra não", () => {
+  const { wasAsked } = require("../harness/evidence");
+  assert.strictEqual(wasAsked("dá uma moeda de cobre — Tibério", "dê uma moeda de cobre ao Tibério"), true);
+  assert.strictEqual(wasAsked("Ir para o quarto de hóspedes — Escada dos Hóspedes", "vá para o quarto descansar"), true);
+  assert.strictEqual(wasAsked("Pegar a Corda Velha", "pegue a corda"), true);
+  assert.strictEqual(wasAsked("Atravessar a porta baixa — Portão Lateral", "conte uma piada para a Bruna"), false);
+  assert.strictEqual(wasAsked("sobe pela Ladeira do Sal — Ladeira do Sal", "vai matar essa fome"), false);
+  assert.strictEqual(wasAsked("Pegar a Corda Velha", null), false);
+});

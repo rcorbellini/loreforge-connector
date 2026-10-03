@@ -3,8 +3,12 @@
 //   persistente · aceita pelo mundo e com desfecho que mudou algo (`aconteceu`/`viradas`)
 //   consultiva  · consulta do mundo (`readOnlyHint`) ou tool local de extensão
 //   pedida      · o verbo do objetivo aparece no sussurro (regra de radical — a mesma da
-//                 pista do verbo). "Não pedida" é a agência extra do C3 (~1 por caso no
-//                 B2): executa, e fica marcada para o mantenedor medir.
+//                 pista do verbo), OU o ato e o sussurro falam da mesma coisa (uma palavra de
+//                 conteúdo em comum). "Não pedida" é a agência extra do plano: executa, e fica
+//                 marcada para o mantenedor medir. A segunda via é da spec 076: o plano M escreve
+//                 o verbo conjugado e curto ("dá uma moeda de cobre — Tibério" para "dê uma moeda
+//                 de cobre ao Tibério"), e o radical de 3 letras sozinho marcava o pedido literal
+//                 como não pedido.
 
 "use strict";
 
@@ -26,10 +30,12 @@ function isPersistent(out, consultiva) {
 // vazias saem ("com" não é o verbo "comer").
 function wasAsked(objetivo, sussurro) {
   if (!sussurro) return false;           // tick autônomo: ninguém pediu, é o desejo
+  const palavras = norm(sussurro).split(" ").filter((w) => w.length >= 3 && !STOP.has(w));
   const v = primeiroVerbo(objetivo);
-  if (v.length < 3) return false;
-  const r = v.slice(0, 3);
-  return norm(sussurro).split(" ").some((w) => w.length >= 3 && !STOP.has(w) && w.slice(0, 3) === r);
+  if (v.length >= 3 && palavras.some((w) => w.slice(0, 3) === v.slice(0, 3))) return true;
+  // a mesma coisa nos dois: uma palavra de conteúdo (4+ letras) do ato que o sussurro também diz
+  const doAto = new Set(norm(objetivo).split(" ").filter((w) => w.length >= 4 && !STOP.has(w)));
+  return palavras.some((w) => w.length >= 4 && doAto.has(w));
 }
 
 module.exports = { isConsultive, isPersistent, wasAsked };
