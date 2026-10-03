@@ -50,7 +50,7 @@ const CENA = { self: { id: "fulano", name: "Fulano", inventory: [], memories: []
                scene: { place: { id: "praca", name: "Praça" }, characters: [],
                         items: [{ id: "corda-velha", name: "Corda Velha" }], objects: [], exits: [] } };
 
-async function turno() {
+async function turno(plano = planoDeLista("- Pegar a Corda Velha")) {
   const eventos = [];
   const mundo = {
     personagem: "fulano", conhece: () => true, listarCapacidades: async () => TOOLS,
@@ -61,7 +61,7 @@ async function turno() {
     config: () => ({ harness: {} }), ROTINAS: [],
     _contextoPayload: async () => ({}), _cenaEmProsa: () => "cena",
     custoDoTurno: () => ({ entrada: 0, saida: 0, chamadas: 0 }),
-    conversar: async () => planoDeLista("- Pegar a Corda Velha"),
+    conversar: async () => plano,
     narrate: async () => "Você pega a corda.",
   };
   const f = async (e, c, ops, extra) => {
@@ -128,4 +128,32 @@ test("os eventos novos validam contra o schema ACP v2 (plan_update, bloqueio, ob
     assert.ok(p, "um evento novo não foi traduzido");
     assert.deepStrictEqual(erros(notificacao("session/update", p)), []);
   }
+});
+
+// --- spec 076: o racional do plano M na camada visível ----------------------------- //
+
+function planoM(viabilidade, passos, resposta) {
+  return JSON.stringify({ chain_of_thought: { condicao_fisica: "", avaliacao_de_viabilidade: viabilidade,
+    passos_do_plano: passos }, resposta });
+}
+
+test("GUARDA (spec 076): o racional do plano M — postura, fala, gesto e ato — passa sem vazar mecânica", async () => {
+  const eventos = await turno(planoM("Dá para pegar sem incomodar ninguém.", [
+    { tipo: "gesto", acao: "Olhar a corda com cuidado", com: [], espera: "" },
+    { tipo: "fala", acao: "Dizer que a corda serve", com: [], espera: "" },
+    { tipo: "ato", acao: "Pegar a Corda Velha", com: ["Corda Velha"], espera: "a corda na mão" },
+  ], "Essa serve."));
+  const rac = eventos.find((e) => e.ev === "objetivos");
+  assert.ok(rac, "o racional não subiu");
+  assert.match(rac.texto, /Dá para pegar/);
+  assert.match(rac.texto, /Dizer que a corda serve/);
+  assert.match(rac.texto, /"Essa serve\."/);
+  assert.deepStrictEqual(vazamentos(eventos), []);
+});
+
+test("GUARDA (spec 076) vista falhar: o nome de uma capacidade NO RACIONAL é pego", async () => {
+  const eventos = await turno(planoM("Vou usar take na corda.", [
+    { tipo: "ato", acao: "Pegar a Corda Velha", com: ["Corda Velha"], espera: "" },
+  ], ""));
+  assert.ok(vazamentos(eventos).some((v) => v.includes("'take'")), "a guarda não varre o racional");
 });
