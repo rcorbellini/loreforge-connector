@@ -64,4 +64,35 @@ function whereIs(texto, idx) {
   return { onde: pool[0].onde, nome: pool[0].nome, id: pool[0].id, ambiguo: ids.size > 1 };
 }
 
-module.exports = { BOX, cited, whereIs };
+// R1 (spec 076) — DESTINO → SAÍDA, depois da escolha da capacidade. O passo de andar nomeia o
+// destino ("caminhar para a Taverna do Gancho") e a capacidade escolhida pede uma SAÍDA que o
+// passo não citou: as saídas que levam a esse destino entram no lugar dele. Fica FORA do índice
+// da cena de propósito: lá, o destino virava alvo de todo passo que cita um lugar, mudava o C4 e
+// o filtro da C6 (paridade B3/B5) e punha "andar" entre as candidatas de "rezar pelos mortos do
+// porto". Aqui ela só vale quando a C6 já escolheu algo que aceita saída, que é o que a
+// V3-resolver mediu (6 deslocamentos legítimos recuperados, nenhum perdido).
+function withDestinations(texto, citados, ctx, toolRefs) {
+  const exits = ((ctx && ctx.scene && ctx.scene.exits) || []).filter((e) => e && e.id);
+  const exitIds = new Set(exits.map((e) => e.id));
+  const pedeSaida = Object.values(toolRefs || {}).some((en) => (en || []).some((id) => exitIds.has(id)));
+  if (!pedeSaida || citados.some((a) => exitIds.has(a.id))) return citados;
+  const idx = new Map();
+  for (const e of exits) {
+    if (!e.destination_name) continue;
+    const chaves = [norm(e.destination_name), norm(String(e.destination_name).split(",")[0])];
+    for (const k of new Set(chaves.filter(Boolean))) {
+      if (!idx.has(k)) idx.set(k, []);
+      idx.get(k).push({ onde: "aqui", nome: e.name, id: e.id, destino: e.destination_name });
+    }
+  }
+  const saidas = [];
+  for (const [, , , alvos] of _achados(texto, idx)) {
+    for (const a of alvos) if (!saidas.some((s) => s.id === a.id)) saidas.push(a);
+  }
+  if (!saidas.length) return citados;
+  const destinos = new Set(saidas.map((s) => norm(s.destino)));
+  const resto = citados.filter((a) => !destinos.has(norm(a.nome)));
+  return saidas.map(({ onde, nome, id }) => ({ onde, nome, id })).concat(resto);
+}
+
+module.exports = { BOX, cited, whereIs, withDestinations };

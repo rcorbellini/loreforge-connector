@@ -367,10 +367,14 @@ class Laco {
       return { subiu: c6.subiu };
     }
     const tool = tools.find((x) => x.name === c6.tool);
+    // R1 (spec 076): a capacidade pede uma saída e o passo nomeou o DESTINO — a saída que leva
+    // lá entra no lugar dele (ver `target.withDestinations`).
+    const citados = H.target.withDestinations(objetivo, c4.citados, ctx, H.tool.refsOf(tool));
+    const alvosC7 = citados.filter((a) => a.onde === "aqui" || a.onde === "longe");
     // SEM ALVO NENHUM citado e a tool pede referência: escolher no enum inteiro seria
     // a TROCA SILENCIOSA (pediram a caneca que não existe, beberia do cantil). Sobe.
     // Regra da montagem (`v1/montagem/rodar.py`: `not cit and t not in SEM_ALVO`).
-    if (!alvos.length && Object.keys(H.tool.refsOf(tool)).length) {
+    if (!alvosC7.length && Object.keys(H.tool.refsOf(tool)).length) {
       // a subida vai ao REGISTRO como caixa C7 (sem ela, o relatório não a veria)
       if (t) t.caixa("C7", { entrada: { objetivo, tool: c6.tool }, saida: { subiu: "alvo_desconhecido" } });
       this._bastidor("C7", { objetivo, tool: c6.tool, subiu: "alvo_desconhecido" });
@@ -380,7 +384,7 @@ class Laco {
     // C7 · os parâmetros
     const p7 = this._prompt("c7_param");
     const [c7, d7] = await this._caixa(t, "C7", () => H.params.fillParams({
-      texto: objetivo, tool, citados: c4.citados, ctx, decider: this._decider(), pergunta: p7.texto }),
+      texto: objetivo, tool, citados, ctx, decider: this._decider(), pergunta: p7.texto }),
     { prompt: p7, rotulo: label("C7") });
     if (t) t.caixa("C7", { ...d7, entrada: { objetivo, tool: c6.tool },
                            saida: c7.args ? { args: _semProsa(c7.args) } : { subiu: c7.subiu, objeto: c7.objeto },

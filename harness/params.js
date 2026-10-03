@@ -41,11 +41,19 @@ async function _escolher(decider, pergunta, texto, toolName, ops) {
 // real mostrou: a pergunta chega ao mundo sem assunto. Ordem: o que vem depois de
 // "sobre"/"a respeito de"; senão, o alvo citado que sobrou (quem não coube em parâmetro);
 // senão, o objetivo como veio.
+// → { value, found }. `found` é falso quando nada indicou o assunto e o valor é o objetivo
+// inteiro. A busca do "sobre" olha só a AÇÃO: no plano M (spec 076) o texto do resolvedor é
+// "ação — nomes do com", e os nomes da cena não são o assunto.
+function subjectOf(texto, sobra) {
+  const acao = String(texto || "").split(" — ")[0];
+  const m = acao.match(/\b(?:sobre|a respeito d[eoa]s?|acerca d[eoa]s?)\s+(.+)$/i);
+  if (m && m[1].trim()) return { value: m[1].trim().replace(/[.!?]+$/, ""), found: true };
+  if (sobra && sobra.length) return { value: sobra[0].nome, found: true };
+  return { value: texto, found: false };
+}
+
 function assunto(texto, sobra) {
-  const m = String(texto || "").match(/\b(?:sobre|a respeito d[eoa]s?|acerca d[eoa]s?)\s+(.+)$/i);
-  if (m && m[1].trim()) return m[1].trim().replace(/[.!?]+$/, "");
-  if (sobra && sobra.length) return sobra[0].nome;
-  return texto;
+  return subjectOf(texto, sobra).value;
 }
 
 // → { args, subiu?, decisoes: {param: decisao} }
@@ -87,7 +95,12 @@ async function fillParams({ texto, tool, citados, ctx, decider, pergunta }) {
         decisoes[p] = { vencedora: r.vencedora, margem: r.margem, via: "decisor",
                         descartadas: (r.ranking || []).slice(1, 4).map(([id, pr]) => [id, Number(pr.toFixed(3))]) };
       }
-    } else if (req.includes(p) && en.length) {
+    } else if (req.includes(p) && en.length && !en.some((i) => Object.prototype.hasOwnProperty.call(rot, i))) {
+      // R3/R5 (spec 076): escolher do conjunto inteiro só vale para o que NÃO é da cena (as
+      // lembranças do accuse, do sing, do write, que o passo descreve em prosa). Pessoa, item,
+      // objeto, saída ou lugar que o passo não citou fica vazio e a chamada sobe: era daqui que
+      // saíam as trocas silenciosas medidas (carry do Bramm sem o Bramm no passo, o stow do
+      // Atiçador de outro, o expulsar pela saída que ninguém disse).
       const ops = en.map((i) => [i, rot[i] || _nomeDe(tool, p, i, rot)]);
       const r = await _escolher(decider, perguntaDe(p), texto, tool.name, ops);
       args[p] = r.vencedora;
@@ -121,10 +134,17 @@ async function fillParams({ texto, tool, citados, ctx, decider, pergunta }) {
     const esq = props[p] || {};
     if (esq.type === "boolean") args[p] = false;
     else if (esq.type === "number" || esq.type === "integer") continue;
-    else if (esq.type === "string" || !esq.type) args[p] = assunto(texto, sobra);
+    else if (esq.type === "string" || !esq.type) {
+      const sub = subjectOf(texto, sobra);
+      // R2 (spec 076): um "sobre" sem assunto não é pergunta. O passo que o decisor levou a uma
+      // pergunta ("pede ajuda para coletar materiais") é um ATO que nenhuma capacidade cobre: o
+      // sinal de tool ausente, e não uma pergunta vazia ao mundo.
+      if (p === "sobre" && !sub.found) return { args: null, subiu: "sem_tool", decisoes };
+      args[p] = sub.value;
+    }
   }
   args.prosa = { acao: texto };
   return { args, decisoes };
 }
 
-module.exports = { BOX, fillParams, assunto };
+module.exports = { BOX, fillParams, assunto, subjectOf };
