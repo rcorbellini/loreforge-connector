@@ -697,7 +697,7 @@ test("TRAVAMENTO: duas vezes sem avanço abrem o ponto de intervenção, em pala
   await laco.talvezAgirSozinho({ autonomia: false });
   const b = c.eventos.find((e) => e.ev === "bloqueio");
   assert.ok(b, "duas vezes sem avanço e nenhum ponto de intervenção");
-  assert.match(b.texto, /empacou no pedido “amarre o barco com a corda”: a corda está presa no poste/);
+  assert.match(b.texto, /^Fulano empacou no pedido “amarre o barco com a corda”: a corda está presa no poste\.$/);
   assert.doesNotMatch(b.texto, NOMES_DE_TOOL);
   const pagas = mente.conversas.length;
   await laco.talvezAgirSozinho({ autonomia: false });
@@ -807,4 +807,54 @@ test("PRINCÍPIO V: o que o mundo devolve como objeto (o reconhecimento) NUNCA v
     kind: "character", posse: { de: null, grau: "ausente" }, prosa: "Bram fala pouco." }] });
   assert.strictEqual(txt, "Bram, o Pescador");
   assert.doesNotMatch(txt, /[{}"]|bram-pescador|posse/);
+});
+
+// --- achados jogando pela tela (03/10) --------------------------------------------- //
+
+test("O BASTIDOR se lê: onde está o que ele citou, o que a capacidade faz e com o quê — sem código de caixa nem id", async () => {
+  const c = coletor();
+  const mundo = mundoDe({ respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["Fulano pegou a corda."] } }] });
+  await lacoDe({ mundo, mente: menteDe({ objetivos: "- Pegar a Corda de Cânhamo" }), emitir: c.emitir }).sussurrar("pegue a corda");
+  const textos = c.eventos.filter((e) => e.ev === "bastidor").map((e) => e.texto);
+  assert.deepStrictEqual(textos, ["Corda de Cânhamo está aqui",
+    "escolheu: pega um item para a mão do personagem que age", "com Corda de Cânhamo"]);
+  assert.ok(textos.every((x) => !/\bC\d|corda\b(?! de)|take|\{/.test(x)), "código interno no bastidor: " + textos.join(" | "));
+});
+
+test("TURNO SÓ DE FALA não diz 'nada em que agir' (a fala dele já está no pensamento); sem fala, o recado usa o NOME", async () => {
+  const fala = coletor();
+  const m1 = mundoVivo({ personagem: "p077s", cenas: cenasDoFulano("p077s"), inicial: "base" });
+  await lacoComPensar({ mundo: m1, mente: menteEmFila([planoM2([{ tipo: "fala", acao: "Dizer que está com sede", com: [], espera: "" }],
+    { resposta: "Que sede!" })]), emitir: fala.emitir, pensar: false }).sussurrar("beba algo");
+  assert.ok(!fala.eventos.some((e) => e.ev === "sistema"), "o recado desmentiu a fala");
+  const mudo = coletor();
+  const m2 = mundoVivo({ personagem: "p077t", cenas: cenasDoFulano("p077t"), inicial: "base" });
+  await lacoComPensar({ mundo: m2, mente: menteEmFila([planoM2([])]), emitir: mudo.emitir, pensar: false }).sussurrar("nada");
+  const s = mudo.eventos.find((e) => e.ev === "sistema");
+  assert.ok(s && /^Nada em que Fulano pudesse agir agora\.$/.test(s.texto), "sem o nome: " + (s && s.texto));
+});
+
+test("A VEZ SEM SUSSURRO diz a que veio: 'Levando adiante o pedido “…”' antes do plano", async () => {
+  const H = require("../harness");
+  const c = coletor();
+  const mundo = mundoVivo({ personagem: "p077u", cenas: cenasDoFulano("p077u"), inicial: "base" });
+  await mundo.criarIntencao("mate a sede.\n- beber do Cantil de Água\nPronto quando: sede saciada.");
+  const nb = new H.desire.Notebook("p077u");
+  nb.sync(mundo.ativas);
+  nb.marcarOrigem(mundo.ativas[0].id, "pedido");
+  await lacoComPensar({ mundo, mente: menteEmFila([planoM2([{ tipo: "fala", acao: "Dizer que vai beber", com: [], espera: "" }],
+    { depois: ["beber do Cantil de Água"], pronto: "sede saciada" })]), emitir: c.emitir }).talvezAgirSozinho({ autonomia: false });
+  const pensamentos = c.eventos.filter((e) => e.ev === "objetivos").map((e) => e.texto);
+  assert.strictEqual(pensamentos[0], "Levando adiante o pedido “mate a sede”.");
+});
+
+test("ENQUANTO ISSO só quando ELE ficou: quem andou foi ele, e a praça não 'saiu do local' (achado jogando)", async () => {
+  const c = coletor();
+  const cenas = cenasDoFulano("p077v");
+  cenas.base.scene.characters = [{ id: "bento", name: "Bento" }];
+  const mundo = mundoVivo({ personagem: "p077v", cenas, inicial: "base",
+    respostas: [ACEITO("Fulano saiu para a taverna.", "outroLugar")] });
+  await lacoComPensar({ mundo, mente: menteEmFila([planoM2([{ tipo: "ato", acao: "Pegar a Corda de Cânhamo", com: ["Corda de Cânhamo"], espera: "" }])]),
+                        emitir: c.emitir, pensar: false }).sussurrar("vá");
+  assert.ok(!c.eventos.some((e) => e.ev === "paralelo"), "a mudança dele virou 'enquanto isso'");
 });

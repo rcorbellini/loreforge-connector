@@ -41,18 +41,17 @@ function motivoEmMundo(subiu, objetivo, extra) {
   }
 }
 
-// O RACIONAL do plano (specs 076 e 077) para a camada VISÍVEL: a postura, uma linha por passo,
-// o que fica para depois e a fala, como a Mente escreveu, em prosa. Sem nome de capacidade, id
-// nem número (a guarda é o `harness-front.test.js`). É o que ele PENSA e PRETENDE: o que
-// aconteceu vem do mundo.
+// O RACIONAL do plano (specs 076 e 077) para a camada VISÍVEL: a postura, uma linha por passo e
+// a fala, como a Mente escreveu, em prosa. O que fica para DEPOIS não vai aqui: ele sobe como o
+// plano (`plano` → `plan_update`), que a tela mostra logo abaixo — nos dois, saía repetido
+// (achado jogando, 03/10). Sem nome de capacidade, id nem número (a guarda é o
+// `harness-front.test.js`). É o que ele PENSA e PRETENDE: o que aconteceu vem do mundo.
 function rationaleText(plan) {
   const linhas = [];
   if (plan && plan.stance) linhas.push(plan.stance);
   for (const s of (plan && plan.steps) || []) {
     if (s.action && s.type !== "defeito") linhas.push(`— ${_acaoComNomes(s)}`);
   }
-  const depois = ((plan && plan.later) || []).filter(Boolean);
-  if (depois.length) linhas.push(`Depois: ${depois.join("; ")}.`.replace(/\.\.$/, "."));
   if (plan && plan.reply) linhas.push(`"${plan.reply}"`);
   return linhas.join("\n");
 }

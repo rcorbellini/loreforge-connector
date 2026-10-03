@@ -145,11 +145,11 @@ test("o `user` da vez N leva o andamento entre a instrução e a cena; sem andam
   assert.strictEqual(u, "O que ele faz?\n\nINSTRUÇÃO: vá à taverna\n\nO QUE FALTAVA:\n- pedir uma bebida\n\nA CENA");
 });
 
-test("o racional mostra o que fica para depois, em prosa", () => {
+test("o racional NÃO repete o que fica para depois — isso sobe como o plano, logo abaixo na tela", () => {
   const p = parsePlan(JSON.stringify({ chain_of_thought: { avaliacao_de_viabilidade: "Vou.",
     passos_do_plano: [{ tipo: "ato", acao: "Subir a Ladeira do Sal", com: [], espera: "" }],
     depois: ["chegar à Taverna do Gancho", "pedir uma bebida"], pronto_quando: "sede saciada" }, resposta: "Sede." }));
-  assert.strictEqual(rationaleText(p), "Vou.\n— Subir a Ladeira do Sal\nDepois: chegar à Taverna do Gancho; pedir uma bebida.\n\"Sede.\"");
+  assert.strictEqual(rationaleText(p), "Vou.\n— Subir a Ladeira do Sal\n\"Sede.\"");
 });
 
 test("o racional junta os nomes do `com` à ação quando ela veio sem eles (o qwen: '— Seguir'), e não repete quando já estão", () => {

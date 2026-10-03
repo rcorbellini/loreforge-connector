@@ -334,7 +334,7 @@ class Laco {
     // O turno que mudou alguma coisa (spec 072, FR-032) — a sala lê para decidir se o
     // assento está girando à toa.
     this.ultimoTurnoAplicou = ex.desfechos.some((d) => d && d.ok);
-    return this._fecharTurno(ex.desfechos, ctx, ex.naoAconteceu, t, extras);
+    return this._fecharTurno(ex.desfechos, ctx, ex.naoAconteceu, t, extras, { falou: _falou(c3.plan) });
   }
 
   // C3 · O PLANO DO TURNO (specs 076 e 077, PAGO, sem tools), para o sussurro e para a vez de
@@ -416,7 +416,7 @@ class Laco {
                            saida: c7.args ? { args: _semProsa(c7.args) } : { subiu: c7.subiu, objeto: c7.objeto },
                            decisao: c7.decisoes });
     this._bastidor("C7", { objetivo, tool: c6.tool, args: c7.args ? _semProsa(c7.args) : null,
-                           subiu: c7.subiu || null });
+                           com: c7.args ? _nomesDosArgs(ctx, c7.args) : null, subiu: c7.subiu || null });
     if (!c7.args) return { subiu: c7.subiu, objeto: c7.objeto, tool: c6.tool };
 
     // M2 · o mundo
@@ -424,8 +424,33 @@ class Laco {
     return { out, chamada: { tool: c6.tool, args: c7.args } };
   }
 
+  // O BASTIDOR é só leitura, mas tem de se ler (achado jogando, 03/10): "C4 · objetivo: … ·
+  // onde: desconhecido" e "args: {item: cantil-…}" só faziam sentido para quem conhece o código.
+  // Cada caixa leva também uma frase em palavras (`texto`): onde está o que ele citou, o que a
+  // capacidade faz (a primeira oração da descrição da face) e com quem/o quê.
   _bastidor(box, dados) {
-    this._emite("bastidor", { box, ...dados, numeroTurno: this.numeroTurno });
+    this._emite("bastidor", { box, ...dados, texto: this._bastidorEmPalavras(box, dados),
+                              numeroTurno: this.numeroTurno });
+  }
+
+  _bastidorEmPalavras(box, d) {
+    if (box === "C4") {
+      if (!d.alvo) return "não citou nada da cena";
+      return d.onde === "aqui" ? `${d.alvo} está aqui`
+        : d.onde === "longe" ? `${d.alvo} está em outro lugar` : `não achou ${d.alvo}`;
+    }
+    if (box === "C6") {
+      if (d.tool) {
+        const desc = this.mundo.descricaoDe ? this.mundo.descricaoDe(d.tool) : "";
+        return `escolheu: ${_comoFaz(desc) || "uma capacidade"}`;
+      }
+      return d.subiu === "gesto" ? "é só um gesto" : "não há como fazer isso aqui";
+    }
+    if (box === "C7") {
+      if (d.com && d.com.length) return `com ${d.com.join(", ")}`;
+      if (d.subiu) return `faltou ${_FALTOU[d.subiu] || "o alvo"}`;
+    }
+    return "";
   }
 
   // M2 · a chamada ao mundo, com a tentativa visível e a recusa em linguagem de mundo.
@@ -535,12 +560,13 @@ class Laco {
   }
 
   // O fim do turno: ou o recado de por que nada houve, ou a narração do ARCO (C9).
-  async _fecharTurno(desfechos, contexto, naoAconteceu, t, fatosExtras) {
+  async _fecharTurno(desfechos, contexto, naoAconteceu, t, fatosExtras, { falou = false } = {}) {
     const extras = fatosExtras || [];
     if (!desfechos.length && !(naoAconteceu || []).length && !extras.length) {
       // Turno vazio. NÃO narramos: sem fato nenhum, a narração preenche o vazio com
-      // cenário inventado — o pior erro possível.
-      this._emite("sistema", { texto: this._porQueNada(contexto) });
+      // cenário inventado — o pior erro possível. Se ele FALOU (o plano só tinha fala e gesto),
+      // a fala já está no pensamento dele na tela: o recado "nada em que agir" a desmentia.
+      if (!falou) this._emite("sistema", { texto: this._porQueNada(contexto) });
       return;
     }
     const juntar = (chave) => desfechos.flatMap((d) => d[chave] || []);
@@ -549,7 +575,9 @@ class Laco {
     try {
       depois = await this.mundo.contexto();
     } catch (_) { /* sem diff; a narração segue com o que já tem */ }
-    const paralelos = diffTextual(contexto, depois);
+    // O QUE MUDOU AO REDOR só vale se ELE ficou no mesmo lugar: quando quem andou foi ele, a
+    // comparação lia a praça inteira como "saiu do local" (achado jogando, 03/10).
+    const paralelos = _lugarDe(contexto) === _lugarDe(depois) ? diffTextual(contexto, depois) : [];
     if (paralelos.length) {
       this._emite("paralelo", { texto: paralelos.join(" "), numeroTurno: this.numeroTurno });
     }
@@ -570,10 +598,12 @@ class Laco {
   _porQueNada(contexto) {
     const caps = (contexto && contexto.capacidades) || [];
     const prosas = caps.map((c) => (c.descricao || "").trim()).filter(Boolean);
+    // o NOME, não "ele": a Elga não é "ele" (achado jogando, 03/10)
+    const nome = _nomeCurto(contexto, this.mundo.personagem);
     if (caps.length && caps.length <= 3 && prosas.length) {
-      return "Ele não fez nada. " + prosas.join(" ");
+      return `${nome} não fez nada. ` + prosas.join(" ");
     }
-    return "Nada em que ele pudesse agir agora.";
+    return `Nada em que ${nome} pudesse agir agora.`;
   }
 
   async _narrar(arco, t) {
@@ -730,7 +760,7 @@ class Laco {
     // O TETO do pedido: vezes demais, ou custo demais, sem fechar (FR-009)
     if ((d.vezes || 0) >= (h.tetoVezesPedido || TETO_VEZES) || H.progress.overBudget(d.tokens_pagos, cfg)) {
       await this._fecharPedido(d, "abandonada", { lembrar: true });
-      this._emite("sistema", { texto: `Ele desiste do pedido ${_aspas(palavras)}.` });
+      this._emite("sistema", { texto: `${_nomeCurto(ctx, this.mundo.personagem)} desiste do pedido ${_aspas(palavras)}.` });
       if (t) t.pedido({ ...base, desfecho: "teto", estado: "largado", vezes: d.vezes || 0 });
       return;
     }
@@ -752,6 +782,11 @@ class Laco {
       nb.salvar();
     }
 
+    // A VEZ SEM SUSSURRO diz a que veio (achado jogando, 03/10): o balão abria do nada, e o
+    // jogador não sabia que ele estava levando o pedido adiante.
+    this._emite("objetivos", { numeroTurno: this.numeroTurno, texto: d.origem === "pedido"
+      ? `Levando adiante o pedido ${_aspas(palavras)}.` : `Levando adiante o que queria: ${_aspas(palavras)}.` });
+
     // C3 · o M2 repensa o pedido inteiro, com o que já foi feito e o que faltava
     const andamento = { feito: this._feito(d), faltava: d.passos || [] };
     const instrucao = palavras[palavras.length - 1];
@@ -765,7 +800,7 @@ class Laco {
         nb.contarVez(d.id, false);
         pagar();
         if ((d.vezes_sem_avanco || 0) >= (h.vezesSemAvanco || VEZES_SEM_AVANCO)) {
-          await this._abrirIntervencao(d, "plano_fora_do_contrato", null, t);
+          await this._abrirIntervencao(d, "plano_fora_do_contrato", null, t, ctx);
         }
       }
       throw e;
@@ -806,7 +841,7 @@ class Laco {
       // ELE DESISTIU (a decisão é dele, numa vez sem sussurro): a desistência vira lembrança.
       await this._fecharPedido(d, "abandonada", { lembrar: true });
       estado = "largado";
-      this._emite("sistema", { texto: `Ele desiste do pedido ${_aspas(palavras)}.` });
+      this._emite("sistema", { texto: `${_nomeCurto(ctx, this.mundo.personagem)} desiste do pedido ${_aspas(palavras)}.` });
     } else if (!plan.later.length && (!fim || fim.familia === "nenhuma") && ex.aceitos > 0) {
       await this._fecharPedido(d, "concluida");
       estado = "vontade";
@@ -818,7 +853,7 @@ class Laco {
       nb.contarVez(d.id, ex.andou);
       const kSem = h.vezesSemAvanco || VEZES_SEM_AVANCO;
       if (ex.bloqueio || (d.vezes_sem_avanco || 0) >= kSem) {
-        await this._abrirIntervencao(d, ex.bloqueio || "sem_avanco", ex, t);
+        await this._abrirIntervencao(d, ex.bloqueio || "sem_avanco", ex, t, ctx);
         desfecho = "intervencao";
       }
       this._emitePlano(d);
@@ -826,7 +861,7 @@ class Laco {
     pagar();
     if (t) t.pedido({ ...reg, desfecho, estado, vezes: (d.vezes || 0) + (estado === "aberto" ? 0 : 1) });
     this.ultimoTurnoAplicou = ex.desfechos.some((x) => x && x.ok);
-    return this._fecharTurno(ex.desfechos, ctx, ex.naoAconteceu, t, extras);
+    return this._fecharTurno(ex.desfechos, ctx, ex.naoAconteceu, t, extras, { falou: _falou(plan) });
   }
 
   // O SUSSURRO COM O PENSAR LIGADO (spec 077, research D7): o que o plano deixou para depois
@@ -977,14 +1012,16 @@ class Laco {
 
   // O PONTO DE INTERVENÇÃO (FR-009): sobe à tela em palavras de mundo — onde ele empacou e o
   // que o mundo disse por último — e a janela espera a voz do jogador.
-  async _abrirIntervencao(d, motivo, ex, t) {
+  async _abrirIntervencao(d, motivo, ex, t, ctx) {
     const nb = this._notebook();
     d.bloqueio = { motivo, instante: new Date().toISOString() };
     d.intervencao = { ticks: 0 };
     nb.salvar();
     const ultima = [...((ex && ex.tentativas) || [])].reverse().find((x) => x.mundo);
-    const texto = `Ele empacou no pedido ${_aspas(_palavrasDe(d))}`
-      + (ultima ? `: ${_minusc(ultima.mundo)}.` : ": nada do que tentou adiantou.");
+    // o texto do mundo vai COMO VEIO: ele começa às vezes com um nome ("Elga, a Taverneira está
+    // de mãos ocupadas"), e baixar a inicial o estragava
+    const texto = `${_nomeCurto(ctx, this.mundo.personagem)} empacou no pedido ${_aspas(_palavrasDe(d))}`
+      + (ultima ? `: ${String(ultima.mundo).replace(/\.$/, "")}.` : ": nada do que tentou adiantou.");
     this._emite("bloqueio", { texto, motivo, desejo: d.desejo });
     if (t) t.caixa("C8", { saida: { veredito: "blocked", motivo, intervencao: true } });
   }
@@ -995,6 +1032,39 @@ class Laco {
     this._notebook().sync(((await this.mundo.contexto()).self || {}).intentions);
   }
 }
+
+// O nome do personagem para os recados, sem o epíteto ("Elga, a Taverneira" → "Elga").
+function _nomeCurto(ctx, personagem) {
+  const n = (ctx && ctx.self && ctx.self.name) || personagem || "";
+  return String(n).split(",")[0].trim() || "O personagem";
+}
+
+// O plano disse ou expressou alguma coisa (fala, gesto, a resposta)?
+function _falou(plan) {
+  return !!(plan && ((plan.reply && plan.reply.trim())
+    || (plan.steps || []).some((s) => s.type === "fala" || s.type === "gesto")));
+}
+
+// O que a capacidade faz, para o bastidor: a primeira oração da descrição da face, em minúsculas
+// (as descrições falam ao modelo — "QUEM AGE se desloca por um caminho — é a tool de andar. Use
+// SEMPRE…" — e só o começo se lê como ação).
+function _comoFaz(descricao) {
+  const primeira = String(descricao || "").split(/[.—;:(]/)[0].replace(/\s+/g, " ").trim().toLowerCase();
+  return primeira.length > 90 ? primeira.slice(0, 89) + "…" : primeira;
+}
+
+// Os nomes dos alvos de uma chamada (o id vira o nome da cena).
+function _nomesDosArgs(ctx, args) {
+  return Object.values(_semProsa(args)).flat()
+    .map((v) => nameOf(ctx, v) || (typeof v === "string" ? v : null)).filter(Boolean);
+}
+
+// O que faltou ao preencher a capacidade, em palavras.
+const _FALTOU = {
+  alvo_desconhecido: "saber com quem ou com o quê",
+  alvo_ausente: "o alvo, que não estava ali",
+  empate: "decidir entre os alvos",
+};
 
 // As palavras do jogador de um desejo (as linhas da prosa antes do que falta); o desejo que ele
 // inventou tem uma só.
