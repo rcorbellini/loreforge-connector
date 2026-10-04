@@ -298,11 +298,17 @@ function criarMente({ mundo, extensoes } = {}) {
     return text;
   }
 
-  async function openrouter(cfg, system, user, { temperature = 0.4, onToken } = {}) {
-    if (!cfg.openrouterKey) throw new Error("configure sua chave do OpenRouter no ⚙.");
+  async function openrouter(cfg, system, user, { forceJson = false, temperature = 0.4, onToken, think } = {}) {
+    const url = (cfg.openrouterEndpoint || DEFAULTS.openrouterEndpoint).replace(/\/$/, "") + "/chat/completions";
+    // O MESMO FORMATO (OpenAI) serve a outra API: a do DeepSeek. Ela PENSA POR PADRÃO
+    // (o `deepseek-flash` também), e o thinking nativo nunca entra (mantenedor, 03/10):
+    // desliga-se com `thinking` no corpo. O OpenRouter tem outro campo para isso, ainda
+    // não medido — por ora só o DeepSeek o recebe.
+    const deepseek = /api\.deepseek\.com/.test(url);
+    const quem = deepseek ? "DeepSeek" : "OpenRouter";
+    if (!cfg.openrouterKey) throw new Error(`configure sua chave do ${quem} no ⚙.`);
     const emit = _safeToken(onToken);
     let res;
-    const url = (cfg.openrouterEndpoint || DEFAULTS.openrouterEndpoint).replace(/\/$/, "") + "/chat/completions";
     try {
       res = await fetch(url, {
         method: "POST",
@@ -310,22 +316,29 @@ function criarMente({ mundo, extensoes } = {}) {
         body: JSON.stringify({
           model: cfg.openrouterModel, temperature, stream: !!emit,
           messages: [{ role: "system", content: system }, { role: "user", content: user }],
+          ...(deepseek ? { thinking: { type: think === true ? "enabled" : "disabled" } } : {}),
+          // o plano pede JSON: o mesmo modo que o Ollama (`format`) e o Gemini (`responseMimeType`) têm
+          ...(deepseek && forceJson ? { response_format: { type: "json_object" } } : {}),
+          // sem isto a narração (a única chamada streamada) some do custo do turno
+          ...(deepseek && emit ? { stream_options: { include_usage: true } } : {}),
         }),
       });
-    } catch (_) { throw new Error("não foi possível falar com o OpenRouter."); }
+    } catch (_) { throw new Error(`não foi possível falar com o ${quem}.`); }
     if (!res.ok) {
-      let msg = `erro OpenRouter (${res.status}).`;
+      let msg = `erro ${quem} (${res.status}).`;
       try { const err = await res.json(); if (err?.error?.message) msg = err.error.message; } catch (_) {}
       throw new Error(msg);
     }
     if (emit) {
-      // SSE estilo OpenAI: o delta vem em `choices[0].delta.content`.
+      // SSE estilo OpenAI: o delta vem em `choices[0].delta.content`; o último pedaço
+      // traz `usage` quando a API o manda.
       let texto = "";
       await _lines(res, (linha) => {
         const ev = _sse(linha);
         const delta = ev && ev.choices && ev.choices[0] && ev.choices[0].delta
                       && ev.choices[0].delta.content;
         if (delta) { texto += delta; emit(delta); }
+        if (ev && ev.usage) _contabiliza(ev.usage.prompt_tokens, ev.usage.completion_tokens);
       });
       return texto;
     }
