@@ -219,11 +219,12 @@ function criarMente({ mundo, extensoes } = {}) {
 
   async function ollama(cfg, system, user, { forceJson = false, temperature = 0.4, onToken, think } = {}) {
     const emit = _safeToken(onToken);
+    const janela = Number(cfg.janela) || DEFAULTS.janela;
     const body = {
       model: cfg.model,
       messages: [{ role: "system", content: system }, { role: "user", content: user }],
       stream: !!emit,
-      options: { temperature },
+      options: { temperature, num_ctx: janela },
       // spec 073: `think:false` viaja no CORPO — `/no_think` no prompt não funciona
       // nesta versão do Ollama. Só desce quando a rotina pediu.
       ...(think !== undefined ? { think } : {}),
@@ -239,6 +240,13 @@ function criarMente({ mundo, extensoes } = {}) {
     if (!emit) {
       const data = await res.json();
       _contabiliza(data.prompt_eval_count, data.eval_count);
+      // O ALARME DA JANELA: o Ollama não recusa o prompt grande, ele corta o começo — o
+      // system, onde mora o contrato — e responde. Uma resposta dessas é falha, nunca plano.
+      if (configuracao.janelaEstourou(data.prompt_eval_count, janela)) {
+        devlog("A JANELA ESTOUROU", `${data.prompt_eval_count} tokens lidos numa janela de ${janela}`);
+        throw new Error(`a cena não coube na janela do modelo (${janela} tokens): `
+          + "o começo das instruções foi cortado, e a resposta não vale.");
+      }
       const msg = data.message || {};
       return msg.content || "";
     }
@@ -250,7 +258,13 @@ function criarMente({ mundo, extensoes } = {}) {
       if (delta) { texto += delta; emit(delta); }
       // o ÚLTIMO pedaço (`done`) traz a conta da chamada inteira — sem isto a narração,
       // que é a única chamada streamada, sumia do custo do turno (C9 sem `custo_pago`)
-      if (obj.done) _contabiliza(obj.prompt_eval_count, obj.eval_count);
+      if (obj.done) {
+        _contabiliza(obj.prompt_eval_count, obj.eval_count);
+        // streamado, o texto já foi à tela: o alarme fica no registro do desenvolvedor
+        if (configuracao.janelaEstourou(obj.prompt_eval_count, janela)) {
+          devlog("A JANELA ESTOUROU", `${obj.prompt_eval_count} tokens lidos numa janela de ${janela}`);
+        }
+      }
     });
     return texto;
   }

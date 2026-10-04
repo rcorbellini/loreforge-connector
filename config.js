@@ -35,6 +35,14 @@ const DEFAULTS = {
   // modelos voltam a se revezar na VRAM, e isso é custo medido, não esquecido.
   model: "qwen3:8b",
   think: false,
+  // A JANELA DO OLLAMA (`num_ctx`), a MESMA para a Mente e para o decisor (mantenedor, 04/10/2026;
+  // medido em `ferramentas/harness-objetivos/v2/V5-ab-modelo/janela.py`). Sem ela a Mente pegava o
+  // padrão do servidor Ollama (32.768), que não cabe na GPU de 8 GB junto dos pesos: 36% na CPU e
+  // o plano em 24 s; com 8.192 tudo cabe e o plano leva ~5 s. Janelas diferentes entre a Mente e o
+  // decisor recarregam o modelo a cada troca (+3,5 s). O maior prompt medido é o do plano, ~3,4 mil
+  // tokens. Passar da janela NÃO dá erro no Ollama: ele corta o COMEÇO (o contrato) e responde
+  // assim mesmo — por isso toda chamada confere os tokens que ele leu (`janelaEstourou`).
+  janela: 8192,
   remoteModel: "claude-haiku-4-5-20251001",
   openrouterModel: "poolside/laguna-m.1:free",
   openrouterEndpoint: "https://openrouter.ai/api/v1",
@@ -352,5 +360,14 @@ function gravarSala(cfg, sala) {
   return gravar(cfg);
 }
 
+// A janela ESTOUROU quando o Ollama leu tantos tokens quantos cabem nela: medido (04/10), um
+// prompt de 5.151 tokens numa janela de 1.024 volta com `prompt_eval_count` 1.023 e a resposta
+// de quem nunca viu o começo. Abaixo disso, o prompt coube inteiro.
+function janelaEstourou(lidos, janela) {
+  const n = Number(lidos);
+  const j = Number(janela);
+  return Number.isFinite(n) && Number.isFinite(j) && j > 0 && n >= j - 1;
+}
+
 module.exports = { DEFAULTS, SEGREDOS, carregar, gravar, credencialDe, faltando,
-                   paraPagina, aplicar, gravarAdiado, credenciais, gravarSala };
+                   paraPagina, aplicar, gravarAdiado, credenciais, gravarSala, janelaEstourou };

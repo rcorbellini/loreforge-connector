@@ -440,7 +440,8 @@ test("PLANO M: o racional sobe na camada visível com o tipo de cada passo em _m
   ], { viabilidade: "Dá para pegar.", resposta: "É minha agora." }),
   { respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["ok"] } }] });
   const rac = eventos.find((e) => e.ev === "objetivos");
-  assert.strictEqual(rac.texto, "Dá para pegar.\n— Olhar a corda\n— Pegar a Corda de Cânhamo\n\"É minha agora.\"");
+  // o `espera` do passo sobe junto (04/10/2026): é o porquê de cada passo
+  assert.strictEqual(rac.texto, "Dá para pegar.\n— Olhar a corda\n— Pegar a Corda de Cânhamo → a corda na mão\n\"É minha agora.\"");
   assert.deepStrictEqual(rac.passos, [{ tipo: "gesto" }, { tipo: "ato" }]);
 });
 
@@ -669,7 +670,9 @@ test("SUSSURRO com pedido aberto: o plano recebe o pedido anterior e o que já f
   assert.strictEqual(mundo.registrados[1].corpo.pedido.estado, "cancelado");
 });
 
-test("SUSSURRO com pedido aberto que AJUSTA: as palavras viram uma sequência e o pedido é regravado", async () => {
+// O SUSSURRO NOVO COMEÇA UM PLANO NOVO (mantenedor, 04/10/2026). Era ajuste: as palavras se somavam
+// e as VEZES também, e no jogo em dois modelos o "vai até o cais" morreu no teto da pergunta à Mira.
+test("SUSSURRO com pedido aberto: o velho fecha trocado (sem lembrança) e o novo nasce do zero", async () => {
   const mundo = mundoVivo({ personagem: "p077i", cenas: cenasDoFulano("p077i"), inicial: "base",
     respostas: [ACEITO("Fulano pegou a corda.", "comCorda")] });
   const mente = menteEmFila([
@@ -680,9 +683,58 @@ test("SUSSURRO com pedido aberto que AJUSTA: as palavras viram uma sequência e 
   ]);
   const laco = lacoComPensar({ mundo, mente });
   await laco.sussurrar("mate a sede");
+  const velho = mundo.ops.find((o) => o.op === "create").id;
   await laco.sussurrar("beba devagar");
-  const upd = mundo.ops.filter((o) => o.op === "update").pop();
-  assert.strictEqual(upd.content, "mate a sede.\nbeba devagar.\n- beber do Cantil de Água devagar\nPronto quando: sede saciada.");
+  const fecha = mundo.ops.find((o) => o.op === "close" && o.id === velho);
+  assert.ok(fecha, "o pedido velho não fechou");
+  assert.deepStrictEqual([fecha.status, !!fecha.lembrar], ["abandonada", false]);
+  const criados = mundo.ops.filter((o) => o.op === "create");
+  assert.strictEqual(criados.length, 2, "o sussurro novo não abriu um pedido seu");
+  assert.strictEqual(criados[1].content, "beba devagar.\n- beber do Cantil de Água devagar\nPronto quando: sede saciada.");
+  const pd = mundo.registrados[mundo.registrados.length - 1].corpo.pedido;
+  assert.deepStrictEqual([pd.estado, pd.vezes, pd.trocou && pd.trocou.id, pd.trocou && pd.trocou.estado],
+    ["aberto", 1, velho, "cancelado"]);
+});
+
+test("SUSSURRO com pedido aberto: o comando novo NÃO herda as vezes do velho (o teto dele não o mata)", async () => {
+  const mundo = mundoVivo({ personagem: "p077i2", cenas: cenasDoFulano("p077i2"), inicial: "base",
+    respostas: [ACEITO("Fulano pegou a corda.", "comCorda")] });
+  const vez = (depois) => planoM2([{ tipo: "fala", acao: "Dizer que já vai", com: [], espera: "" }],
+                                  { depois: [depois], pronto: "nenhum" });
+  const mente = menteEmFila([vez("perguntar à Mira"), vez("chegar ao cais"), vez("chegar ao cais")]);
+  const laco = lacoComPensar({ mundo, mente });
+  await laco.sussurrar("pergunta pra Mira se viu alguém suspeito");
+  const nb = laco._notebook();
+  const velho = nb.ativo({ soPedido: true });
+  velho.vezes = 11;                                   // a um passo do teto de 12
+  nb.salvar();
+  await laco.sussurrar("vai até o cais ver se tá tranquilo");
+  const novo = laco._notebook().ativo({ soPedido: true });
+  assert.ok(novo && novo.id !== velho.id, "o comando novo não virou um pedido seu");
+  assert.strictEqual(novo.vezes, 1);
+  await laco.talvezAgirSozinho({ autonomia: false });
+  const pd = mundo.registrados[mundo.registrados.length - 1].corpo.pedido;
+  assert.notStrictEqual(pd.estado, "largado", "o teto do pedido velho matou o novo");
+  assert.strictEqual(pd.vezes, 2);
+});
+
+test("SUSSURRO com pedido aberto cujo fato aconteceu nesta vez: o velho fecha CUMPRIDO, narrado pelo fato", async () => {
+  const mundo = mundoVivo({ personagem: "p077i3", cenas: cenasDoFulano("p077i3"), inicial: "base",
+    respostas: [ACEITO("Fulano pegou a corda.", "comCorda")] });
+  const mente = menteEmFila([
+    planoM2([{ tipo: "fala", acao: "Dizer que vai atrás da corda", com: [], espera: "" }],
+            { depois: ["ter a Corda de Cânhamo"], pronto: "posse de Corda de Cânhamo" }),
+    planoM2([{ tipo: "ato", acao: "Pegar a Corda de Cânhamo", com: ["Corda de Cânhamo"], espera: "" }],
+            { depois: [], pronto: "nenhum" }),
+  ]);
+  const laco = lacoComPensar({ mundo, mente });
+  await laco.sussurrar("consiga uma corda");
+  const velho = mundo.ops.find((o) => o.op === "create").id;
+  await laco.sussurrar("pega aquela corda ali");
+  const fecha = mundo.ops.find((o) => o.op === "close" && o.id === velho);
+  assert.ok(fecha && fecha.status === "concluida", "o fato do pedido velho aconteceu e ele não fechou cumprido");
+  const pd = mundo.registrados[mundo.registrados.length - 1].corpo.pedido;
+  assert.deepStrictEqual([pd.id, pd.estado], [velho, "cumprido"]);
 });
 
 test("TRAVAMENTO: duas vezes sem avanço abrem o ponto de intervenção, em palavras de mundo; a janela espera a voz do jogador SEM pagar a Mente", async () => {
@@ -703,6 +755,50 @@ test("TRAVAMENTO: duas vezes sem avanço abrem o ponto de intervenção, em pala
   await laco.talvezAgirSozinho({ autonomia: false });
   assert.strictEqual(mente.conversas.length, pagas, "a janela de intervenção pagou a Mente");
   assert.strictEqual(mundo.registrados[mundo.registrados.length - 1].corpo.pedido.desfecho, "esperando");
+});
+
+// DESISTIR DEPOIS DO AVISO SEM RESPOSTA (mantenedor, 04/10/2026): a janela passou sem a voz do
+// jogador, a vez seguinte é a última chance; sem avanço, ele desiste e lembra. Antes girava aviso →
+// espera → de novo até o teto de 12 (a Elga repetindo "alguém me ajude" até o fim).
+test("AVISO SEM RESPOSTA: a vez depois da janela que também não anda é a desistência, COM lembrança", async () => {
+  const c = coletor();
+  const mundo = mundoVivo({ personagem: "p077j2", cenas: cenasDoFulano("p077j2"), inicial: "base",
+    respostas: [RECUSADO("a corda está presa no poste"), RECUSADO("a corda está presa no poste"),
+                RECUSADO("a corda está presa no poste")] });
+  const preso = () => planoM2([{ tipo: "ato", acao: "Pegar a Corda de Cânhamo", com: ["Corda de Cânhamo"], espera: "" }],
+                              { depois: ["amarrar o barco"], pronto: "posse de Corda de Cânhamo" });
+  const mente = menteEmFila([preso(), preso(), preso()]);
+  const laco = lacoComPensar({ mundo, mente, emitir: c.emitir });
+  await laco.sussurrar("amarre o barco com a corda");
+  await laco.talvezAgirSozinho({ autonomia: false });           // 2ª sem avanço: o aviso
+  assert.ok(c.eventos.find((e) => e.ev === "bloqueio"), "não houve o aviso");
+  await laco.talvezAgirSozinho({ autonomia: false });           // a janela: espera, sem pagar
+  await laco.talvezAgirSozinho({ autonomia: false });           // a última chance, sem avanço
+  const fecha = mundo.ops.find((o) => o.op === "close");
+  assert.ok(fecha, "a última chance sem avanço não fechou o pedido");
+  assert.deepStrictEqual([fecha.status, !!fecha.lembrar], ["abandonada", true]);
+  const pd = mundo.registrados[mundo.registrados.length - 1].corpo.pedido;
+  assert.deepStrictEqual([pd.estado, pd.desfecho], ["largado", "sem_resposta"]);
+  assert.ok(c.eventos.some((e) => e.ev === "sistema" && /^Fulano desiste do pedido “amarre o barco com a corda”\.$/.test(e.texto)),
+    "a desistência não foi dita ao jogador");
+});
+
+test("AVISO SEM RESPOSTA: se a última chance ANDA, o pedido segue (e a chance se renova)", async () => {
+  const mundo = mundoVivo({ personagem: "p077j3", cenas: cenasDoFulano("p077j3"), inicial: "base",
+    respostas: [RECUSADO("a corda está presa no poste"), RECUSADO("a corda está presa no poste"),
+                ACEITO("Fulano pegou a corda.", "comCorda")] });
+  const plano = () => planoM2([{ tipo: "ato", acao: "Pegar a Corda de Cânhamo", com: ["Corda de Cânhamo"], espera: "" }],
+                              { depois: ["amarrar o barco"], pronto: "nenhum" });
+  const mente = menteEmFila([plano(), plano(), plano()]);
+  const laco = lacoComPensar({ mundo, mente });
+  await laco.sussurrar("amarre o barco com a corda");
+  await laco.talvezAgirSozinho({ autonomia: false });
+  await laco.talvezAgirSozinho({ autonomia: false });
+  await laco.talvezAgirSozinho({ autonomia: false });           // a última chance pega a corda
+  assert.ok(!mundo.ops.some((o) => o.op === "close"), "a última chance andou e mesmo assim fechou");
+  const pd = mundo.registrados[mundo.registrados.length - 1].corpo.pedido;
+  assert.deepStrictEqual([pd.estado, pd.desfecho], ["aberto", "andou"]);
+  assert.strictEqual(laco._notebook().get(pd.id).ultima_chance, false);
 });
 
 test("TETO: o pedido que chega ao teto de vezes, ou de custo, é largado COM a lembrança da desistência", async () => {

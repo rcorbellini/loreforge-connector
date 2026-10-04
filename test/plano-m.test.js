@@ -145,11 +145,25 @@ test("o `user` da vez N leva o andamento entre a instrução e a cena; sem andam
   assert.strictEqual(u, "O que ele faz?\n\nINSTRUÇÃO: vá à taverna\n\nO QUE FALTAVA:\n- pedir uma bebida\n\nA CENA");
 });
 
-test("o racional NÃO repete o que fica para depois — isso sobe como o plano, logo abaixo na tela", () => {
+test("o racional NÃO repete o que fica para depois (sobe como o plano, logo abaixo); o fato que fecha, SIM", () => {
   const p = parsePlan(JSON.stringify({ chain_of_thought: { avaliacao_de_viabilidade: "Vou.",
     passos_do_plano: [{ tipo: "ato", acao: "Subir a Ladeira do Sal", com: [], espera: "" }],
     depois: ["chegar à Taverna do Gancho", "pedir uma bebida"], pronto_quando: "sede saciada" }, resposta: "Sede." }));
-  assert.strictEqual(rationaleText(p), "Vou.\n— Subir a Ladeira do Sal\n\"Sede.\"");
+  assert.strictEqual(rationaleText(p), "Vou.\n— Subir a Ladeira do Sal\nDá por feito quando a sede passar.\n\"Sede.\"");
+});
+
+// O PORQUÊ DE CADA PASSO na tela (mantenedor, 04/10/2026): o `espera` já vinha no plano e a tela
+// não mostrava; o fato que fecha vira "Dá por feito quando …" em palavras de mundo.
+test("o racional leva o que ele ESPERA de cada passo, depois de \" → \", e o fato que fecha em palavras", () => {
+  const p = parsePlan(JSON.stringify({ chain_of_thought: { avaliacao_de_viabilidade: "Vou buscar.",
+    passos_do_plano: [{ tipo: "ato", acao: "Descer a Ladeira do Sal", com: ["Ladeira do Sal"], espera: "chegar ao Cais Velho" },
+                      { tipo: "fala", acao: "Dizer que já volta", com: [], espera: "" }],
+    depois: ["pegar um Peixe Fresco"], pronto_quando: "posse de Peixe Fresco." }, resposta: "" }));
+  assert.strictEqual(rationaleText(p),
+    "Vou buscar.\n— Descer a Ladeira do Sal → chegar ao Cais Velho\n— Dizer que já volta\nDá por feito quando tiver Peixe Fresco.");
+  const { prontoEmPalavras } = require("../harness/labels");
+  assert.deepStrictEqual(["estar em Cais Velho", "lembrança sobre Obadiah", "fome saciada", "nenhum", "qualquer coisa"]
+    .map(prontoEmPalavras), ["estiver em Cais Velho", "souber algo sobre Obadiah", "a fome passar", null, null]);
 });
 
 test("o racional junta os nomes do `com` à ação quando ela veio sem eles (o qwen: '— Seguir'), e não repete quando já estão", () => {

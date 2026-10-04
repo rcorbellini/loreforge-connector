@@ -20,6 +20,8 @@
 
 "use strict";
 
+const { janelaEstourou, DEFAULTS: { janela: DEFAULTS_JANELA } } = require("../config");
+
 const LETRAS = "ABCDEFGHIJKLMNOP";
 const TIMEOUT = 120000;
 
@@ -40,10 +42,14 @@ function createDecider({ cfg, fetchImpl, system } = {}) {
     return typeof system === "function" ? system() : (system || SYSTEM_PADRAO);
   }
 
+  // A MESMA janela da Mente (`cfg.janela`, 04/10/2026): era 4.096 aqui e 32.768 lá, e o Ollama
+  // recarregava o modelo a cada troca entre os dois (+3,5 s cada).
+  const janela = Number(cfg && cfg.janela) || DEFAULTS_JANELA;
+
   async function _ollama(payload) {
     const corpo = {
       model: conf.model, stream: false, think: false, logprobs: true, top_logprobs: 20,
-      keep_alive: "30m", options: { num_predict: 1, temperature: 0, num_ctx: 4096 },
+      keep_alive: "30m", options: { num_predict: 1, temperature: 0, num_ctx: janela },
       messages: [{ role: "system", content: sistema() },
                  { role: "user", content: JSON.stringify(payload) }],
     };
@@ -58,6 +64,10 @@ function createDecider({ cfg, fetchImpl, system } = {}) {
     }
     if (!res.ok) throw new DeciderUnavailable(`o decisor respondeu ${res.status}`);
     const r = await res.json();
+    // o corte do começo levaria o critério e as opções: uma letra assim não decide nada
+    if (janelaEstourou(r.prompt_eval_count, janela)) {
+      throw new Error(`a pergunta ao decisor não coube na janela (${janela} tokens)`);
+    }
     custo.chamadas += 1;
     custo.tokens_prompt += Number(r.prompt_eval_count) || 0;
     const lps = r.logprobs && r.logprobs[0] && r.logprobs[0].top_logprobs;

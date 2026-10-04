@@ -775,10 +775,15 @@ class Laco {
         if (t) t.pedido({ ...base, desfecho: "esperando", estado: "aberto", vezes: d.vezes || 0 });
         return;
       }
+      // A janela passou sem a voz do jogador: esta vez é a ÚLTIMA CHANCE (mantenedor, 04/10/2026).
+      // Antes ele repensava e girava intervenção → espera → de novo até o teto de 12 vezes — no
+      // jogo, a Elga repetiu "alguém me ajude a pegar o cantil" até o fim. Se esta vez também não
+      // andar, ele desiste e guarda a lembrança.
       d.intervencao = null;
       d.bloqueio = null;
       d.vezes_sem_avanco = 0;
       d.step = null;
+      d.ultima_chance = true;
       nb.salvar();
     }
 
@@ -799,7 +804,12 @@ class Laco {
       if (e instanceof H.objectives.PlanContractError) {
         nb.contarVez(d.id, false);
         pagar();
-        if ((d.vezes_sem_avanco || 0) >= (h.vezesSemAvanco || VEZES_SEM_AVANCO)) {
+        if (d.ultima_chance) {
+          // a última chance depois do aviso falhou também: desiste, como a vez sem avanço
+          await this._fecharPedido(d, "abandonada", { lembrar: true });
+          this._emite("sistema", { texto: `${_nomeCurto(ctx, this.mundo.personagem)} desiste do pedido ${_aspas(palavras)}.` });
+          if (t) t.pedido({ ...base, desfecho: "sem_resposta", estado: "largado", vezes: d.vezes || 0 });
+        } else if ((d.vezes_sem_avanco || 0) >= (h.vezesSemAvanco || VEZES_SEM_AVANCO)) {
           await this._abrirIntervencao(d, "plano_fora_do_contrato", null, t, ctx);
         }
       }
@@ -846,7 +856,14 @@ class Laco {
       await this._fecharPedido(d, "concluida");
       estado = "vontade";
       extras.push(_fatoCumprido(null));
+    } else if (d.ultima_chance && !ex.andou) {
+      // a última chance depois do aviso também não andou: ele desiste, e lembra que desistiu
+      await this._fecharPedido(d, "abandonada", { lembrar: true });
+      estado = "largado";
+      desfecho = "sem_resposta";
+      this._emite("sistema", { texto: `${_nomeCurto(ctx, this.mundo.personagem)} desiste do pedido ${_aspas(palavras)}.` });
     } else {
+      d.ultima_chance = false;
       const content = H.desire.formatContent(palavras, plan.later, fim && fim.texto);
       await this.mundo.atualizarIntencao(d.id, content);
       nb.regravar(d.id, { palavras, passos: plan.later, fim, content });
@@ -870,46 +887,36 @@ class Laco {
   // jogador. → os fatos extras da narração.
   async _pedidoDoSussurro({ texto, plan, ctx, ex, aberto, t, custoDoPlano = 0 }) {
     const nb = this._notebook();
-    const palavras = aberto ? _palavrasDe(aberto).concat([texto]) : [texto];
-    const fi = H.ending.fromPlan(plan.doneWhen, palavras, _textosDoPlano(plan), ctx);
     const depoisCtx = ex.ctxDepois || ctx;
+    // O SUSSURRO NOVO COMEÇA UM PLANO NOVO (mantenedor, 04/10/2026). Antes ele virava ajuste do
+    // pedido aberto: as palavras se somavam e as VEZES também — no jogo em dois modelos, o "vai até
+    // o cais" virou pedaço da pergunta à Mira e morreu no teto dela, em trânsito. Agora o pedido
+    // velho fecha (cumprido, se o fato dele aconteceu nesta vez; senão trocado, sem lembrança, como
+    // o "esquece isso") e o novo nasce do zero. O M2 desta vez já leu o velho como contexto ("ANTES,
+    // O JOGADOR TINHA PEDIDO"): o ajuste ("traga dois") segue entendido, e o que ficar para depois
+    // é do pedido novo.
+    let trocou = null;
+    const narrar = [];
+    if (aberto) {
+      const fezOVelho = !!aberto.fim && H.ending.isDone(aberto.fim, depoisCtx) === true;
+      await this._fecharPedido(aberto, fezOVelho ? "concluida" : "abandonada");
+      trocou = { id: aberto.id, origem: aberto.origem, palavras: _palavrasDe(aberto),
+                 desfecho: fezOVelho ? "cumprido" : "trocado", estado: fezOVelho ? "cumprido" : "cancelado",
+                 vezes: aberto.vezes || 0 };
+      if (fezOVelho) narrar.push(_fatoCumprido(aberto.fim));
+    }
+    const palavras = [texto];
+    const fi = H.ending.fromPlan(plan.doneWhen, palavras, _textosDoPlano(plan), ctx);
     const conferido = H.ending.isDone(fi.fim, depoisCtx);
     const reg = { palavras, depois: plan.later, defeitos: plan.defects,
                   fato: { texto: fi.fim.texto, valeu: fi.fim.familia !== "nenhuma",
                           motivo: fi.motivo || (plan.defects.includes("pronto_quando") ? "formato" : null) },
                   conferido: { antes: null, depois: conferido } };
-    if (aberto) {
-      for (const x of ex.tentativas) nb.attempt(aberto.id, { vez: (aberto.vezes || 0) + 1, ...x });
-      nb.pay(aberto.id, custoDoPlano);
-      const base = { ...reg, id: aberto.id, origem: aberto.origem };
-      if (conferido === true) {
-        await this._fecharPedido(aberto, "concluida");
-        if (t) t.pedido({ ...base, desfecho: ex.andou ? "andou" : "sem_aceite", estado: "cumprido",
-                          vezes: (aberto.vezes || 0) + 1 });
-        return [_fatoCumprido(fi.fim)];
-      }
-      if (!plan.later.length) {
-        await this._fecharPedido(aberto, "abandonada");
-        if (t) t.pedido({ ...base, desfecho: ex.andou ? "andou" : "sem_aceite", estado: "cancelado",
-                          vezes: (aberto.vezes || 0) + 1 });
-        return [];
-      }
-      const fim = fi.fim.familia !== "nenhuma" ? fi.fim : (aberto.fim || fi.fim);
-      const content = H.desire.formatContent(palavras, plan.later, fim && fim.texto);
-      await this.mundo.atualizarIntencao(aberto.id, content);
-      nb.regravar(aberto.id, { palavras, passos: plan.later, fim, content });
-      // a voz do jogador desfaz o travamento: o "andou?" recomeça daqui
-      aberto.bloqueio = null;
-      aberto.intervencao = null;
-      aberto.vezes_sem_avanco = 0;
-      aberto.step = null;
-      nb.contarVez(aberto.id, ex.andou);
-      this._emitePlano(aberto);
-      if (t) t.pedido({ ...base, desfecho: ex.andou ? "andou" : "sem_aceite", estado: "aberto",
-                        vezes: aberto.vezes });
-      return [];
+    if (!plan.later.length || conferido === true) {
+      // sem pedido novo: o que fica no registro desta vez é o fechamento do velho
+      if (trocou && t) t.pedido(trocou);
+      return narrar;
     }
-    if (!plan.later.length || conferido === true) return [];
     // ABRE: o desejo nasce no mundo (a prosa) e o caderno o marca como pedido do jogador.
     const content = H.desire.formatContent(palavras, plan.later, fi.fim.texto);
     const antes = new Set(Object.keys(nb.dados.desejos));
@@ -927,8 +934,8 @@ class Laco {
       this._emitePlano(novo);
     }
     if (t) t.pedido({ ...reg, id: novo && novo.id, origem: "pedido", desfecho: "abriu", estado: "aberto",
-                      vezes: 1 });
-    return [];
+                      vezes: 1, ...(trocou ? { trocou } : {}) });
+    return narrar;
   }
 
   // OS ATOS DE UM PLANO (specs 076 e 077, research D4), no sussurro e na vez do pedido: só o
