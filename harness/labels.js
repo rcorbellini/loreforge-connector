@@ -7,6 +7,7 @@
 "use strict";
 
 const { extractEnding } = require("./ending");
+const { norm, base } = require("./text");
 
 const ROTULOS = {
   C3: "pensando no que fazer…",
@@ -85,12 +86,18 @@ function prontoEmPalavras(doneWhen) {
 // A linha do passo no racional: a ação como a Mente escreveu e, quando os nomes da cena ficaram só no
 // `com` (o qwen escreve "Seguir" e põe "Ladeira do Sal" à parte), os nomes junto — a mesma leitura do
 // resolvedor. Sem isso a tela lia "— Seguir", "— Ir" (achado da revisão da 076 e da bateria da 077).
-function _acaoComNomes(s) {
+//
+// O nome conta como presente pela parte antes da vírgula ("Vranna" por "Vranna, a Vigia
+// Esquecida"), sem acento nem caixa: "olhar para Vranna" não vira "olhar para Vranna — Vranna, a
+// Vigia Esquecida". É também o texto do ato que vai ao mundo (`prosa.acao`), que o grava como o
+// que ele está fazendo (05/10/2026).
+function acaoComNomes(s) {
   const nomes = (s.with || []).filter(Boolean);
   const acao = String(s.action || "");
-  const baixo = acao.toLowerCase();
-  const faltam = nomes.filter((n) => !baixo.includes(String(n).toLowerCase()));
+  const t = " " + norm(acao) + " ";
+  const faltam = nomes.filter((n) => !t.includes(" " + base(n) + " "));
   return faltam.length ? `${acao} — ${faltam.join(", ")}` : acao;
 }
+const _acaoComNomes = acaoComNomes;
 
-module.exports = { ROTULOS, label, motivoEmMundo, rationaleText, prontoEmPalavras };
+module.exports = { ROTULOS, label, motivoEmMundo, rationaleText, prontoEmPalavras, acaoComNomes };

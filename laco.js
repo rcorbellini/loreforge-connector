@@ -36,7 +36,7 @@
 const { log } = require("./log");
 const H = require("./harness");
 const { createDecider, DeciderUnavailable } = H.decider;
-const { label, motivoEmMundo } = H.labels;
+const { label, motivoEmMundo, acaoComNomes } = H.labels;
 // importados por nome: `H.scene.x` casaria com a guarda de `contexto.scene.x`
 // (`test/contrato.test.js`), que procura leitura de chave fora do contrato.
 const { sceneIndex, nameOf } = H.scene;
@@ -363,7 +363,7 @@ class Laco {
   }
 
   // C4 → C6 → C7 → M2 para UM objetivo. → { out?, subiu?, objeto?, chamada?, tool? }
-  async _resolverEAgir({ objetivo, ctx, tools, idx, t, sussurro, noDesejo }) {
+  async _resolverEAgir({ objetivo, acao, ctx, tools, idx, t, sussurro, noDesejo }) {
     // C4 · onde está o alvo
     const [c4, d4] = await this._caixa(t, "C4", async () => {
       const citados = H.target.cited(objetivo, idx);
@@ -419,9 +419,12 @@ class Laco {
                            com: c7.args ? _nomesDosArgs(ctx, c7.args) : null, subiu: c7.subiu || null });
     if (!c7.args) return { subiu: c7.subiu, objeto: c7.objeto, tool: c6.tool };
 
-    // M2 · o mundo
-    const out = await this._m2({ tool, args: c7.args, objetivo, ctx, t, sussurro, noDesejo });
-    return { out, chamada: { tool: c6.tool, args: c7.args } };
+    // M2 · o mundo. O texto do ato (`prosa.acao`) é o do PLANO, nas palavras dele: o mundo o
+    // grava como o que ele está fazendo, e o "objetivo" (a ação com os nomes do `com` colados,
+    // para achar o alvo) saía na cena como "olhar para Vranna — Vranna, a Vigia Esquecida".
+    const args = acao ? { ...c7.args, prosa: { ...(c7.args.prosa || {}), acao } } : c7.args;
+    const out = await this._m2({ tool, args, objetivo, ctx, t, sussurro, noDesejo });
+    return { out, chamada: { tool: c6.tool, args } };
   }
 
   // O BASTIDOR é só leitura, mas tem de se ler (achado jogando, 03/10): "C4 · objetivo: … ·
@@ -962,8 +965,8 @@ class Laco {
       }
       atos += 1;
       const objetivo = H.objectives.actText(step);
-      const res = _comoAto(await this._resolverEAgir({ objetivo, ctx: antes, tools, idx, t, sussurro,
-                                                      noDesejo: d ? d.id : null }));
+      const res = _comoAto(await this._resolverEAgir({ objetivo, acao: acaoComNomes(step), ctx: antes, tools,
+                                                      idx, t, sussurro, noDesejo: d ? d.id : null }));
       if (t) t.passo(_stepRecord(step, _desfechoDoAto(res), res));
       if (res.out) r.desfechos.push(res.out);
       if (!res.chamada) {

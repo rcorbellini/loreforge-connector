@@ -387,6 +387,20 @@ async function turnoComPlano(plano, { respostas = [], decider } = {}) {
   return { mundo, mente, eventos: c.eventos, linha: mundoDe.registrados[0] };
 }
 
+// O TEXTO DO ATO que vai ao mundo (`prosa.acao`) é o do plano, nas palavras dele (05/10/2026): o
+// mundo o grava como o que ele está FAZENDO, e o objetivo interno (a ação com os nomes do `com`
+// colados, para achar o alvo) saía na cena como "olhar para Vranna — Vranna, a Vigia Esquecida".
+test("PLANO M (LIGAÇÃO): o texto do ato que vai ao mundo é a ação do plano, sem os nomes repetidos", async () => {
+  const { mundo } = await turnoComPlano(planoM([
+    { tipo: "ato", acao: "Pegar a Corda de Cânhamo", com: ["Corda de Cânhamo"], espera: "a corda na mão" },
+  ]), { respostas: [{ recusado: false, texto: "", narrativa: { aconteceu: ["Pegou a corda."] } }] });
+  assert.strictEqual(mundo.chamadas.length, 1);
+  assert.strictEqual(mundo.chamadas[0].args.prosa.acao, "Pegar a Corda de Cânhamo");
+  const { acaoComNomes } = require("../harness/labels");
+  assert.strictEqual(acaoComNomes({ action: "olhar para Vranna", with: ["Vranna, a Vigia Esquecida"] }), "olhar para Vranna");
+  assert.strictEqual(acaoComNomes({ action: "Seguir", with: ["Ladeira do Sal"] }), "Seguir — Ladeira do Sal");
+});
+
 test("PLANO M (LIGAÇÃO): só o passo ATO chega ao mundo; fala e gesto ficam no registro, narrados", async () => {
   const { mundo, linha } = await turnoComPlano(planoM([
     { tipo: "gesto", acao: "Olhar a praça com calma", com: [], espera: "" },
